@@ -2,7 +2,7 @@
   "name": "mmlx-lsp",
   "displayName": "mmlx-lsp",
   "description": "MML language support powered by mmlx and WebAssembly.",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "engines": {
     "vscode": "^1.100.0"
   },
@@ -10,7 +10,8 @@
     "Programming Languages"
   ],
   "activationEvents": [
-    "onLanguage:mmlx"
+    "onLanguage:mmlx",
+    "onTaskType:mmlx"
   ],
   "extensionDependencies": [
     "ms-vscode.wasm-wasi-core"
@@ -22,8 +23,64 @@
   "contributes": {
     "commands": [
       {
+        "command": "mmlx.build",
+        "title": "mmlx: Build"
+      },
+      {
         "command": "mmlx.restartLanguageServer",
         "title": "mmlx: Restart Language Server"
+      },
+      {
+        "command": "mmlx.buildMdx",
+        "title": "mmlx: Build MDX"
+      },
+      {
+        "command": "mmlx.buildVgm",
+        "title": "mmlx: Build VGM"
+      }
+    ],
+    "taskDefinitions": [
+      {
+        "type": "mmlx",
+        "required": ["input"],
+        "properties": {
+          "input": {
+            "type": "string",
+            "description": "MML or MDX input path. Relative paths are resolved from the workspace folder."
+          },
+          "format": {
+            "type": "string",
+            "enum": ["both", "mdx", "vgm"],
+            "description": "Output format. Defaults to mmlx.build.format. Both generates MDX and VGM for MML, or VGM for MDX input."
+          },
+          "output": {
+            "type": "string",
+            "description": "Output path. Overrides mmlx.build.outputDirectory. For both formats, use a base path; an existing .mdx or .vgm suffix is replaced with each output extension."
+          },
+          "pdx": {
+            "type": "string",
+            "description": "PDX path for VGM output. Defaults to the referenced PDX beside the input file."
+          },
+          "adpcmMode": {
+            "type": "string",
+            "enum": ["through", "resample", "lpf"],
+            "default": "through",
+            "description": "ADPCM processing mode for VGM output."
+          },
+          "loopCount": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 4294967295,
+            "description": "Finite VGM loop count. If omitted, preserve native VGM loop points."
+          },
+          "maxTicks": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 4294967295,
+            "default": 100000,
+            "description": "Maximum playback ticks for VGM conversion."
+          }
+        }
       }
     ],
     "configuration": {
@@ -48,6 +105,25 @@
           "default": "auto",
           "scope": "window",
           "description": "Language for completion and argument hints. Auto follows the editor locale, with Japanese as the fallback. Run mmlx: Restart Language Server after changing this setting."
+        },
+        "mmlx.build.format": {
+          "type": "string",
+          "enum": ["both", "mdx", "vgm"],
+          "default": "both",
+          "scope": "resource",
+          "description": "Default build outputs. Both generates MDX and VGM from MML; MDX input produces VGM only. An explicit task format or individual build command overrides this setting."
+        },
+        "mmlx.build.onSave": {
+          "type": "boolean",
+          "default": false,
+          "scope": "resource",
+          "description": "Build MML files when saved in a trusted workspace, using the configured build format and output directory. Consecutive saves are combined and builds of the same file are serialized."
+        },
+        "mmlx.build.outputDirectory": {
+          "type": "string",
+          "default": "build",
+          "scope": "resource",
+          "description": "Build output directory. Relative paths are resolved from the task workspace folder, or the input directory if there is no workspace folder. Absolute paths are also accepted. A task's output property overrides this setting."
         }
       }
     },
@@ -110,14 +186,16 @@
     "build:helix": "npm run build:grammar && node helix/build.mjs",
     "test:helix": "node tree-sitter/run.mjs test",
     "vscode:prepublish": "npm run package",
-    "build": "npm run build:server && npm run compile",
-    "build:server": "cargo rustc --locked --manifest-path server/Cargo.toml --release --target wasm32-wasip1-threads -- -Clink-arg=--initial-memory=10485760 -Clink-arg=--max-memory=134217728",
+    "build": "npm run build:wasm && npm run compile",
+    "build:wasm": "npm run build:server && npm run build:compiler",
+    "build:server": "cargo rustc --locked --manifest-path server/Cargo.toml --bin mmlx-lsp-server --release --target wasm32-wasip1-threads -- -Clink-arg=--initial-memory=10485760 -Clink-arg=--max-memory=134217728",
+    "build:compiler": "cargo rustc --locked --manifest-path server/Cargo.toml --bin mmlx-build --release --target wasm32-wasip1-threads -- -Clink-arg=--initial-memory=10485760 -Clink-arg=--max-memory=134217728",
     "test:server": "cargo test --manifest-path server/Cargo.toml",
     "compile": "npm run check-types && npm run lint && node esbuild.js",
     "watch": "npm-run-all -p watch:*",
     "watch:esbuild": "node esbuild.js --watch",
     "watch:tsc": "tsc --noEmit --watch --project tsconfig.json",
-    "package": "npm run build:server && npm run check-types && npm run lint && node esbuild.js --production",
+    "package": "npm run build:wasm && npm run check-types && npm run lint && node esbuild.js --production",
     "compile-tests": "tsc -p . --outDir out",
     "watch-tests": "tsc -p . -w --outDir out",
     "pretest": "npm run build && npm run compile-tests",

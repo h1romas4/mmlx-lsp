@@ -1,0 +1,245 @@
+use std::io::{self, BufRead};
+
+use mmlx::frontend::SourceFile;
+use mmlx::mdx::frontend::{self, MdxLocation};
+use serde_json::{Value, json};
+use soundlog::mdx::convert::{
+    AdpcmMode, MdxPlaybackCheckError, MdxToVgmOptions, to_vgm_document_with_diagnostics,
+};
+use soundlog::mdx::package::MdxPackage;
+use soundlog::meta::Gd3;
+
+fn failure(message: impl ToString) -> Value {
+    json!({ "ok": false, "message": message.to_string() })
+}
+
+fn diagnostic(source: &str, error: mmlx::diagnostic::Diagnostic) -> Value {
+    let range = error.span.and_then(|span| {
+        let index = SourceFile::new(source)?.line_index();
+        let start = index.utf16_position(span.start())?;
+        let end = index.utf16_position(span.end())?;
+        Some([[start.0, start.1], [end.0, end.1]])
+    });
+    json!({ "ok": false, "message": error.to_string(), "range": range })
+}
+
+fn positive_option(request: &Value, name: &str) -> Result<Option<u32>, Value> {
+    if request[name].is_null() {
+        return Ok(None);
+    }
+    request[name]
+        .as_u64()
+        .and_then(|value| u32::try_from(value).ok())
+        .filter(|value| *value > 0)
+        .map(Some)
+        .ok_or_else(|| failure(format!("{name} must be a positive 32-bit integer")))
+}
+
+fn options(request: &Value) -> Result<MdxToVgmOptions, Value> {
+    let adpcm_mode = match request["adpcmMode"].as_str().unwrap_or("through") {
+        "through" => AdpcmMode::Through,
+        "resample" => AdpcmMode::Resample,
+        "lpf" => AdpcmMode::Lpf,
+        _ => return Err(failure("Unknown ADPCM mode")),
+    };
+    Ok(MdxToVgmOptions {
+        adpcm_mode,
+        loop_count: positive_option(request, "loopCount")?,
+        max_ticks: Some(positive_option(request, "maxTicks")?.unwrap_or(100_000)),
+        ..Default::default()
+    })
+}
+
+fn package(bytes: Vec<u8>, request: &Value) -> Result<MdxPackage, Value> {
+    let pdx = if request["pdx"].is_null() {
+        None
+    } else {
+        Some(serde_json::from_value::<Vec<u8>>(request["pdx"].clone()).map_err(failure)?)
+    };
+    let package = MdxPackage::parse_owned(bytes, pdx).map_err(failure)?;
+    if package.pdx.is_none()
+        && let Some(name) = package.pdx_name()
+    {
+        return Err(json!({
+            "ok": false,
+            "message": format!("PDX file required: {name}"),
+            "pdxName": name
+        }));
+    }
+    Ok(package)
+}
+
+fn vgm(package: &MdxPackage, options: &MdxToVgmOptions) -> Result<Vec<u8>, MdxPlaybackCheckError> {
+    let mut document = to_vgm_document_with_diagnostics(package, options)?;
+    if !package.mdx.header.title.is_empty() {
+        document.gd3 = Some(Gd3 {
+            track_name_origin: Some(package.mdx.header.title.clone()),
+            ..Gd3::default()
+        });
+    }
+    Ok((&document).into())
+}
+
+fn build(request: &Value) -> Result<Vec<u8>, Value> {
+    let format = request["format"].as_str().unwrap_or("mdx");
+    if !matches!(format, "mdx" | "vgm") {
+        return Err(failure("Unknown output format"));
+    }
+    match request["inputKind"].as_str().unwrap_or("mml") {
+        "mml" => {
+            let source = request["source"]
+                .as_str()
+                .ok_or_else(|| failure("Missing MML source"))?;
+            let parsed = frontend::parse(source).map_err(|error| diagnostic(source, error))?;
+            let compiled = frontend::compile(&parsed).map_err(|error| diagnostic(source, error))?;
+            let bytes = compiled.document().to_bytes().map_err(failure)?;
+            if format == "mdx" {
+                return Ok(bytes);
+            }
+            let package = package(bytes, request)?;
+            vgm(&package, &options(request)?).map_err(|error| {
+                let (track, command_index) = match &error {
+                    MdxPlaybackCheckError::Conversion {
+                        track,
+                        command_index,
+                        ..
+                    }
+                    | MdxPlaybackCheckError::LimitExceeded {
+                        track,
+                        command_index,
+                        ..
+                    } => (*track, *command_index),
+                };
+                let span = track.zip(command_index).and_then(|(track, index)| {
+                    compiled
+                        .source_map()
+                        .get(&MdxLocation::TrackCommand { track, index })
+                });
+                diagnostic(
+                    source,
+                    mmlx::diagnostic::Diagnostic::error(
+                        "mmlx.build.playback",
+                        error.to_string(),
+                        span,
+                    ),
+                )
+            })
+        }
+        "mdx" if format == "vgm" => {
+            let bytes =
+                serde_json::from_value::<Vec<u8>>(request["bytes"].clone()).map_err(failure)?;
+            let package = package(bytes, request)?;
+            vgm(&package, &options(request)?).map_err(failure)
+        }
+        "mdx" => Err(failure("MDX input requires VGM output")),
+        _ => Err(failure("Unknown input kind")),
+    }
+}
+
+fn main() {
+    let mut input = String::new();
+    let result = io::stdin()
+        .lock()
+        .read_line(&mut input)
+        .map_err(failure)
+        .and_then(|_| serde_json::from_str::<Value>(&input).map_err(failure))
+        .and_then(|request| build(&request));
+    match result {
+        Ok(bytes) => println!("{}", json!({ "ok": true, "bytes": bytes })),
+        Err(error) => {
+            println!("{error}");
+            std::process::exit(1);
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use soundlog::mdx::document::MdxDocument;
+
+    #[test]
+    fn compiles_mml_to_mdx() {
+        let bytes = build(&json!({ "source": "A r4" })).unwrap();
+        assert!(MdxDocument::parse(&bytes).is_ok());
+    }
+
+    #[test]
+    fn rejects_invalid_source_and_missing_input() {
+        assert!(build(&json!({ "source": "A o999 c4" })).is_err());
+        assert!(build(&json!({})).is_err());
+    }
+
+    #[test]
+    fn converts_mml_and_mdx_to_vgm() {
+        let source = "#title \"Build test\"\nA r4";
+        let mdx = build(&json!({ "source": source })).unwrap();
+        let from_mml = build(&json!({ "source": source, "format": "vgm" })).unwrap();
+        let from_mdx =
+            build(&json!({ "inputKind": "mdx", "bytes": mdx, "format": "vgm" })).unwrap();
+        assert_eq!(from_mml, from_mdx);
+        assert_eq!(&from_mml[..4], b"Vgm ");
+    }
+
+    #[test]
+    fn native_loop_header_matches_cli_conversion() {
+        for source in ["A r4", "A r4 L r4"] {
+            let mdx = build(&json!({ "source": source })).unwrap();
+            let package = MdxPackage::parse(&mdx, None).unwrap();
+            let mut request = json!({ "inputKind": "mdx", "bytes": mdx, "format": "vgm" });
+            let automatic = build(&request).unwrap();
+            assert_eq!(automatic, vgm(&package, &MdxToVgmOptions::default()).unwrap());
+            let loop_offset = u32::from_le_bytes(automatic[0x1c..0x20].try_into().unwrap());
+            let loop_samples = u32::from_le_bytes(automatic[0x20..0x24].try_into().unwrap());
+            assert_eq!(loop_offset > 0, source.contains('L'));
+            assert_eq!(loop_samples > 0, source.contains('L'));
+            for count in [1, 2] {
+                request["loopCount"] = json!(count);
+                let finite = build(&request).unwrap();
+                let cli_options = MdxToVgmOptions {
+                    loop_count: Some(count),
+                    ..Default::default()
+                };
+                assert_eq!(finite, vgm(&package, &cli_options).unwrap());
+                assert_eq!(&finite[0x1c..0x24], &[0; 8]);
+            }
+        }
+    }
+
+    #[test]
+    fn requests_pdx_and_accepts_supplied_samples() {
+        let mut request = json!({ "source": "#pcmfile \"drums\"\nA r4", "format": "vgm" });
+        assert_eq!(build(&request).unwrap_err()["pdxName"], "drums");
+        request["pdx"] = json!(soundlog::mdx::pdx::PdxBuilder::new().finalize().to_bytes());
+        assert!(build(&request).is_ok());
+        request["pdx"] = json!([1, 2]);
+        assert!(build(&request).is_err());
+    }
+
+    #[test]
+    fn maps_playback_errors_and_bounds_conversion() {
+        let error = build(&json!({ "source": "A @42 c4", "format": "vgm" })).unwrap_err();
+        assert!(
+            error["message"]
+                .as_str()
+                .unwrap()
+                .contains("missing tone for voice 42")
+        );
+        assert_eq!(error["range"], json!([[0, 6], [0, 8]]));
+        let error =
+            build(&json!({ "source": "A r1", "format": "vgm", "maxTicks": 2 })).unwrap_err();
+        assert!(
+            error["message"]
+                .as_str()
+                .unwrap()
+                .contains("tick limit exceeded")
+        );
+        for request in [
+            json!({ "source": "A r4", "format": "unknown" }),
+            json!({ "source": "A r4", "format": "vgm", "loopCount": 0 }),
+            json!({ "source": "A r4", "format": "vgm", "adpcmMode": "unknown" }),
+        ] {
+            assert!(build(&request).is_err());
+        }
+    }
+}

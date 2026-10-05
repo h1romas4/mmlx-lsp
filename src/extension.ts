@@ -2,6 +2,7 @@ import { commands, ExtensionContext, Uri, window, workspace } from 'vscode';
 import { LanguageClient, ServerOptions } from 'vscode-languageclient/node';
 import { Wasm } from '@vscode/wasm-wasi/v1';
 import { createStdioOptions, createUriConverters, startServer } from '@vscode/wasm-wasi-lsp';
+import { registerBuildTasks } from './tasks';
 
 let client: LanguageClient | undefined;
 
@@ -11,6 +12,7 @@ export async function activate(context: ExtensionContext): Promise<void> {
 	channel.appendLine('Activating mmlx language support.');
 	const wasm = await Wasm.load();
 	channel.appendLine('WASI runtime loaded.');
+	registerBuildTasks(context, wasm);
 
 	const serverOptions: ServerOptions = async () => {
 		channel.appendLine('Starting WASM language server.');

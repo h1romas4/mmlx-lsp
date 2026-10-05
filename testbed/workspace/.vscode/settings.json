@@ -2,5 +2,6 @@
   "mmlx.language": "ja",
   "files.associations": {
     "*.mml": "mmlx"
-  }
+  },
+  "mmlx.build.onSave": true
 }
