@@ -5,16 +5,14 @@ Currently supports the MDX (MXDRV) dialect and `.mml` files.
 
 ## Features
 
-- Syntax highlighting for notes, commands, track labels, voice definitions, and comments.
-- Error diagnostics for parsing, compilation, and playback checks.
-- Command completion with argument snippets and FM voice-definition templates.
-- Parameter hints while entering command arguments.
-- Japanese and English command descriptions and parameter hints.
-- Built-in VS Code build tasks for MML to MDX and MML/MDX to VGM.
+- **Syntax highlighting** for notes, commands, track labels, voice definitions, and comments.
+- **Error diagnostics** for parsing, compilation, and playback checks.
+- **Command completion** with argument snippets and FM voice-definition templates.
+- **Parameter hints** while entering command arguments.
+- **Japanese and English** command descriptions and parameter hints.
+- **Built-in VS Code build tasks** for MML to MDX and MML/MDX to VGM.
 
 <img src="https://raw.githubusercontent.com/h1romas4/mmlx-lsp/main/assets/docs/mmlx-001.png" alt="VS Code command parameter hints" width="500">
-
-<img src="https://raw.githubusercontent.com/h1romas4/mmlx-lsp/main/assets/docs/mmlx-002.png" alt="Helix syntax highlighting and error diagnostics" width="500">
 
 ## Usage
 
@@ -34,33 +32,24 @@ Use completion to insert commands and voice definitions. Parameter hints show
 the active argument as you type. To read a command's full description, select
 it in the completion list and choose **Show More**.
 
-## Build in VS Code
+## Build MDX/VGM in VS Code
 
-Open an MML file in a trusted workspace and run **Tasks: Run Build Task**
-(`Ctrl+Shift+B`). Select **mmlx: Build** to generate both MDX and VGM by default.
-Set `mmlx.build.format` to `mdx` or `vgm` to generate only that format.
-The same build is available as **mmlx: Build** in the command palette.
-**mmlx: Build MDX** and **mmlx: Build VGM** always build the named format,
-regardless of this setting. Rust and external command-line tools are not required.
+Open an MML file in a trusted workspace and run **mmlx: Build** from the
+command palette or select it via **Tasks: Run Build Task** (`Ctrl+Shift+B`).
+It creates MDX and VGM files in the workspace's `build/` folder.
+No Rust or external CLI is required.
 
-MDX output accepts MML input. VGM output accepts MML or MDX input;
-the default build generates only VGM when the input is already MDX.
-By default, output is saved as `build/<input name>.mdx` or
-`build/<input name>.vgm` under the task's workspace folder. Without a workspace
-folder, the input directory is used as the base. Set `mmlx.build.outputDirectory`
-to change the directory, or use a task's `output` property to choose a specific file.
-After a successful build, Explorer is refreshed automatically. The task terminal
-shows color-coded build stages, output sizes, and elapsed time.
-Build errors use `file:line:column: error:` output. Ctrl-click the location
-(Cmd-click on macOS, depending on your terminal settings) to open and select the
-error in the source. Errors also appear in the Problems view. Stop a running
-task to cancel its separate WASM process without stopping the language server.
+<img src="https://raw.githubusercontent.com/h1romas4/mmlx-lsp/main/assets/docs/mmlx-003.png" alt="VS Code command parameter hints" width="500">
 
-To build automatically when saving an MML file, enable `mmlx.build.onSave`.
-It is disabled by default and uses `mmlx.build.format` and
-`mmlx.build.outputDirectory`. Consecutive saves are combined; saves during a
-build trigger a follow-up build of the latest contents without overlapping
-builds of that file. Build-on-save requires a trusted workspace.
+Use **mmlx: Build MDX** or **mmlx: Build VGM** to build one format.
+MDX input is converted to VGM only.
+
+Errors appear in the Problems view and task terminal. Ctrl-click an error
+location (Cmd-click on macOS, depending on your terminal settings) to jump to
+the source. Stop the task to cancel.
+
+Enable `mmlx.build.onSave` to build MML on save (off by default).
+Change the output formats and directory in [Settings](#settings).
 
 To choose a default build, add this to `.vscode/tasks.json`:
 
@@ -163,6 +152,8 @@ install that dependency separately.
 2. Install the included language server, Tree-sitter library, and highlight queries.
 3. Merge the included Helix language configuration into your own configuration.
 4. Restart Helix and run `hx --health mmlx-mdx` to check the installation.
+
+<img src="https://raw.githubusercontent.com/h1romas4/mmlx-lsp/main/assets/docs/mmlx-002.png" alt="Helix syntax highlighting and error diagnostics" width="500">
 
 Follow the [native installation guide](helix/README.md) for the commands
 and configuration details. The same guide is included in each native archive.
