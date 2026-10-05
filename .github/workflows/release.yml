@@ -132,9 +132,18 @@ jobs:
       - run: npm ci
       - run: npm run test:helix
       - name: Test and build native LSP
+        if: runner.os != 'Windows'
         run: |
           cargo test --locked --manifest-path server/Cargo.toml --target "$TARGET"
           cargo build --locked --manifest-path server/Cargo.toml --release --target "$TARGET"
+      - name: Test and build native LSP (Windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          cargo test --locked --manifest-path server/Cargo.toml --target "$env:TARGET"
+          if ($LASTEXITCODE -ne 0) { throw 'Native LSP tests failed' }
+          cargo build --locked --manifest-path server/Cargo.toml --release --target "$env:TARGET"
+          if ($LASTEXITCODE -ne 0) { throw 'Native LSP build failed' }
       - name: Package Unix binaries and Helix resources
         if: runner.os != 'Windows'
         run: |
