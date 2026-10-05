@@ -156,7 +156,7 @@ export class BuildTerminal implements Pseudoterminal {
 	private async execute(module: WebAssembly.Module, request: object): Promise<BuildResponse> {
 		this.checkCanceled();
 		const process = await this.wasm.createProcess('mmlx-build', module,
-			{ initial: 160, maximum: 2048, shared: true }, {
+			{ initial: 160, maximum: 16384, shared: true }, {
 				stdio: { in: { kind: 'pipeIn' }, out: { kind: 'pipeOut' }, err: { kind: 'pipeOut' } }
 			});
 		this.process = process;
