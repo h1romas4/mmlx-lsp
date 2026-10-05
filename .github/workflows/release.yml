@@ -108,7 +108,7 @@ jobs:
             target: x86_64-unknown-linux-gnu
     env:
       VERSION: ${{ needs.metadata.outputs.version }}
-      PLATFORM: ${{ matrix.platform }}
+      RELEASE_PLATFORM: ${{ matrix.platform }}
       TARGET: ${{ matrix.target }}
     defaults:
       run:
@@ -147,7 +147,7 @@ jobs:
       - name: Package Unix binaries and Helix resources
         if: runner.os != 'Windows'
         run: |
-          name="mmlx-lsp-${VERSION}-${PLATFORM}"
+          name="mmlx-lsp-${VERSION}-${RELEASE_PLATFORM}"
           staging="release/stage/$name"
           mkdir -p "$staging/bin" "$staging/runtime/grammars" "$staging/runtime/queries/mmlx-mdx"
           cc -O3 -shared -fPIC -std=c11 -I tree-sitter/mdx/src tree-sitter/mdx/src/parser.c -o "$staging/runtime/grammars/mmlx-mdx.so"
@@ -160,7 +160,7 @@ jobs:
         if: runner.os == 'Windows'
         shell: pwsh
         run: |
-          $name = "mmlx-lsp-$env:VERSION-$env:PLATFORM"
+          $name = "mmlx-lsp-$env:VERSION-$env:RELEASE_PLATFORM"
           $staging = "release/stage/$name"
           New-Item -ItemType Directory -Force "$staging/bin", "$staging/runtime/grammars", "$staging/runtime/queries/mmlx-mdx" | Out-Null
           cl /nologo /O2 /LD /std:c11 /utf-8 /I tree-sitter/mdx/src tree-sitter/mdx/src/parser.c /link /out:release/mmlx-mdx.dll
@@ -198,12 +198,21 @@ jobs:
       - name: Check assets and create checksums
         working-directory: release
         run: |
-          test -f "mmlx-lsp-${VERSION}.vsix"
-          test -f "mmlx-lsp-${VERSION}-macos-x64.tar.gz"
-          test -f "mmlx-lsp-${VERSION}-macos-arm64.tar.gz"
-          test -f "mmlx-lsp-${VERSION}-linux-x64.tar.gz"
-          test -f "mmlx-lsp-${VERSION}-windows-x64.zip"
-          sha256sum *.vsix *.tar.gz *.zip > SHA256SUMS
+          ls -laR
+          assets=(
+            "mmlx-lsp-${VERSION}.vsix"
+            "mmlx-lsp-${VERSION}-macos-x64.tar.gz"
+            "mmlx-lsp-${VERSION}-macos-arm64.tar.gz"
+            "mmlx-lsp-${VERSION}-linux-x64.tar.gz"
+            "mmlx-lsp-${VERSION}-windows-x64.zip"
+          )
+          for asset in "${assets[@]}"; do
+            if [[ ! -f "$asset" ]]; then
+              echo "::error::Missing release asset: $asset"
+              exit 1
+            fi
+          done
+          sha256sum "${assets[@]}" > SHA256SUMS
       - name: Publish GitHub release
         shell: bash
         run: |
