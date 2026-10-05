@@ -2,6 +2,10 @@
 
 All notable changes to the "mmlx-lsp" extension will be documented in this file.
 
+## [Unreleased]
+
+- [ ] Reduce memory usage when building VGM files.
+
 ## [0.2.0] - 2026-10-05
 
 - VS Code build tasks and commands for MML to MDX and MML/MDX to VGM.
