@@ -2,7 +2,7 @@
 
 All notable changes to the "mmlx-lsp" extension will be documented in this file.
 
-## [0.2.0] - Unreleased
+## [0.2.0] - 2026-10-05
 
 - VS Code build tasks and commands for MML to MDX and MML/MDX to VGM.
 - Separate bundled WASM compiler, without a Rust or CLI installation requirement.
