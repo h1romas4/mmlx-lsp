@@ -11,6 +11,10 @@ Currently supports the MDX (MXDRV) dialect and `.mml` files.
 - Parameter hints while entering command arguments.
 - Japanese and English command descriptions and parameter hints.
 
+<img src="https://raw.githubusercontent.com/h1romas4/mmlx-lsp/main/assets/docs/mmlx-001.png" alt="VS Code command parameter hints" width="500">
+
+<img src="https://raw.githubusercontent.com/h1romas4/mmlx-lsp/main/assets/docs/mmlx-002.png" alt="Helix syntax highlighting and error diagnostics" width="500">
+
 ## Usage
 
 The extension automatically associates `.mml` files with **MML(mdx)**.
