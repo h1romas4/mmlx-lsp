@@ -1,0 +1,31 @@
+#title "Example"
+; <- keyword.directive
+;      ^ string
+A c4
+; <- label
+; ^ function
+;  ^ constant.numeric.integer
+B r8
+; ^ constant.builtin
+;  ^ constant.numeric.integer
+C t120
+; ^ keyword
+;  ^^^ constant.numeric.integer
+D c+8
+;  ^ operator
+E S0
+; ^ keyword
+;  ^ constant.numeric.integer
+F [c4]2
+; ^ punctuation.bracket
+;    ^ punctuation.bracket
+;     ^ constant.numeric.integer
+; A t120 is a comment.
+; <- comment
+/* B r8 is also a comment. */
+; <- comment
+@1 = { 28, 4 }
+;^ constant.numeric.integer
+;  ^ operator
+;    ^ punctuation.bracket
+;        ^ punctuation.delimiter

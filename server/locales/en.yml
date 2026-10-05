@@ -1,0 +1,202 @@
+server:
+  unsupported_dialect: 'Unsupported MML dialect %{dialect}. Supported dialects: %{supported}.'
+_version: 1
+ui:
+  example: Example
+  argument_hints: Show argument hints
+mdx:
+  voice_definition:
+    label: '@ Voice definition'
+    syntax: '@<voice number> = { ... }'
+    description: Defines an FM voice with 47 parameters.
+  commands:
+    t:
+      syntax: t<19..4882 BPM>
+      description: Sets the tempo in BPM. The value is converted to an OPM timer value and applied to all tracks.
+      parameters:
+        p0: BPM
+    '@t':
+      syntax: '@t<0..255>'
+      description: Sets the raw MDX tempo value, not BPM. A value of 0 is treated as 1 when updating the tempo.
+      parameters:
+        p0: tempo value
+    '@':
+      syntax: '@<voice/PCM bank>'
+      description: Selects an FM voice or a PCM PDX bank. FM voice registers are applied when the next note starts.
+      parameters:
+        p0: voice/PCM bank
+    q:
+      syntax: q<1..8>
+      description: Sets key-off timing to `N / 8` of the note length. The duration is `floor((note_ticks - 1) * N / 8) + 1`, where `note_ticks` is the note length in ticks. q8 plays for the full note length.
+      parameters:
+        p0: gate fraction
+    '@q':
+      syntax: '@q<1..256>'
+      description: 'Controls key-off timing. The MDX gate byte is `256 - N`, interpreted as a signed 8-bit value: N from 1..128 gives `max(1, note_ticks - N)`, where `note_ticks` is the note length in ticks, while N from 129..256 uses fractional gating. The entire range is not a fixed-tick mode.'
+      parameters:
+        p0: gate value
+    v:
+      syntax: v<0..15>
+      description: Sets stepped volume. FM applies attenuation to the voice's carriers; PCM updates playback gain. Higher values are louder.
+      parameters:
+        p0: volume
+    '@v':
+      syntax: '@v<0..127>'
+      description: Sets fine volume. The MDX value is `255 - N`; its lower seven bits, `127 - N`, specify direct attenuation instead of a volume-table entry. Higher values are louder.
+      parameters:
+        p0: volume
+    p:
+      syntax: p<0..3>
+      description: 'Sets pan: 0: mute, 3: center. 1 means FM right / PCM left; 2 means FM left / PCM right. Output routing depends on the track type.'
+      parameters:
+        p0: pan
+    o:
+      syntax: o<0..8>
+      description: Sets the octave for subsequent notes. Octave changes are encoded into MDX note pitches rather than a standalone command. Out-of-range octave/note combinations produce a diagnostic.
+      parameters:
+        p0: octave
+    <:
+      syntax: <
+      description: Lowers the octave by one, stopping at zero. No standalone MDX command is emitted; subsequent note pitches change.
+    '>':
+      syntax: '>'
+      description: Raises the octave by one. No standalone MDX command is emitted; subsequent note pitches change. Notes outside the supported pitch range produce a compile diagnostic.
+    l:
+      syntax: l<length>
+      description: Sets the default length for notes and rests without an explicit length. l4 is `192 / 4 = 48` ticks. % specifies ticks directly, . adds a dot, and ^/~ add/subtract lengths. A bare l leaves the setting unchanged.
+      parameters:
+        p0: length
+    (:
+      syntax: (
+      description: Lowers volume by one step by decreasing the v step or increasing @v attenuation, retaining the value at the lower limit.
+    ):
+      syntax: )
+      description: Raises volume by one step by increasing the v step or decreasing @v attenuation, retaining the value at the upper limit.
+    D:
+      syntax: D<-32767..32767>
+      description: Adds a signed MDX detune value to the FM pitch calculation. This is not a direct semitone or Hz setting.
+      parameters:
+        p0: detune
+    'y':
+      syntax: y<register>,<value>
+      description: |-
+        Writes directly to an OPM register. A YM2151 register write is issued immediately.
+
+        - **register**: Destination register number, from 0..255. Registers 0x0f and 0x1b also update values retained for later processing.
+        - **value**: Value to write to the register, from 0..255.
+      parameters:
+        p0: register
+        p1: value
+    k:
+      syntax: k<0..255 ticks>
+      description: Sets the FM key-on delay in ticks. The key-on request is delayed without extending the note's wait time.
+      parameters:
+        p0: key-on delay
+    w:
+      syntax: w<0..31>
+      description: Changes the lower five noise-frequency bits of OPM register 0x0f on FM tracks. The noise-enable bit is preserved, so this command does not enable noise by itself. Use a register write such as y15,128 when needed.
+      parameters:
+        p0: noise frequency
+    F:
+      syntax: F<0..12>
+      description: Selects PCM format and playback rate. For regular ADPCM, F0..F4 select approximately 3.906/5.208/7.812/10.416/15.625 kHz. PCM8A also uses F5..F12 for format/rate selection. Formats are interpreted according to the playback mode.
+      parameters:
+        p0: PCM format/rate
+    S:
+      syntax: S<channel/0..255>
+      description: Releases the specified track's synchronization wait. A..H map to 0..7 and P..W to 8..15. Only a target currently waiting on W is released.
+      parameters:
+        p0: channel
+    W:
+      syntax: W
+      description: Pauses this track's command progression until another track releases it with S. Timing updates such as key-off and LFO processing continue during the wait.
+    MP:
+      syntax: MP<waveform>,<period>,<depth>
+      description: |-
+        Configures and enables the software pitch LFO.
+
+        - **waveform**: The low two bits select 0: saw, 1: square, 2: triangle, 3: random. Values 4..7 use an extended amplitude mode.
+        - **period**: Pitch modulation period. Must be positive. Converted for MDX according to the waveform; the converted value must fit 16 bits.
+        - **depth**: Pitch modulation depth. Converted for MDX according to the waveform; the converted value must fit 16 bits.
+      parameters:
+        p0: waveform
+        p1: period
+        p2: depth
+    MPON:
+      syntax: MPON
+      description: Enables the configured software pitch LFO and resets its phase and counters to their initial state.
+    MPOF:
+      syntax: MPOF
+      description: Disables the software pitch LFO and clears the current pitch offset to zero without changing its configuration.
+    MA:
+      syntax: MA<waveform>,<period>,<depth>
+      description: |-
+        Configures and enables the software amplitude LFO. Attenuation is updated periodically.
+
+        - **waveform**: 0: saw, 1: square, 2: triangle, 3: random. Values 4..7 use the same low two waveform bits.
+        - **period**: Amplitude modulation period. Must be positive. Converted for MDX; the converted value must fit 16 bits.
+        - **depth**: Amplitude modulation depth. Converted for MDX; the converted value must fit 16 bits.
+      parameters:
+        p0: waveform
+        p1: period
+        p2: depth
+    MAON:
+      syntax: MAON
+      description: Enables the configured software amplitude LFO and resets its phase and counters to their initial state.
+    MAOF:
+      syntax: MAOF
+      description: Disables the software amplitude LFO and clears its current attenuation offset to zero.
+    MD:
+      syntax: MD<0..255 ticks>
+      description: Sets the delay from note start to software pitch/amplitude LFO activation. The delay counter and LFO offsets are reset when a note starts.
+      parameters:
+        p0: LFO delay
+    MH:
+      syntax: MH<waveform>,<LFRQ>,<PMD>,<AMD>,<PMS>,<AMS>,<key sync>
+      description: |-
+        Configures the OPM hardware LFO. Shared frequency/depth registers and this FM channel's sensitivity register are updated.
+
+        - **waveform**: LFO waveform number, from 0..3.
+        - **LFRQ**: LFO frequency setting, from 0..255. Shared by all FM channels.
+        - **PMD**: Pitch modulation depth, from 0..255. The low seven bits are stored in MDX. Shared by all FM channels.
+        - **AMD**: Amplitude modulation depth, from 0..255. Shared by all FM channels.
+        - **PMS**: Pitch modulation sensitivity for this FM channel, from 0..255. The low four bits are stored in MDX.
+        - **AMS**: Amplitude modulation sensitivity for this FM channel, from 0..255. The low four bits are stored in MDX.
+        - **key sync**: 0 or 1. A value of 1 resets the LFO when a note starts.
+      parameters:
+        p0: waveform
+        p1: LFRQ
+        p2: PMD
+        p3: AMD
+        p4: PMS
+        p5: AMS
+        p6: key sync
+    MHON:
+      syntax: MHON
+      description: Restores this channel's saved PMS/AMS sensitivity for the OPM hardware LFO. It does not reconfigure the shared oscillator's frequency or waveform.
+    MHOF:
+      syntax: MHOF
+      description: Writes zero PMS/AMS sensitivity for this FM channel to remove the hardware LFO's effect. Shared LFO settings remain intact.
+    L:
+      syntax: L
+      description: Marks the song-loop start. The MDX track terminator jumps back here. This is separate from counted [...]N repeats.
+    '[':
+      syntax: '[commands]count'
+      description: Repeats a command sequence. The count and return address are kept on the MDX repeat stack. Up to 64 nested repeats are supported.
+    ']':
+      syntax: ']<count>'
+      description: Closes the current repeat and specifies its count. The count is encoded in one MDX byte. The remaining count is decremented to decide whether to jump back or continue.
+      parameters:
+        p0: count
+    /:
+      syntax: /
+      description: On the final repeat pass, skips from here to after the matching closing bracket. The branch is taken only when the remaining count is one. [c4/d4]2 omits the last d4.
+    _:
+      syntax: note_note
+      description: Requests portamento between notes, for example c4_e4. The MDX pitch change is calculated from the pitch difference and original length; the target note is not emitted as a separate note-on. The pitch offset is updated during playback.
+    '&':
+      syntax: note&note
+      description: Suppresses key-off for the preceding note, for example c4&d4. The MDX key-off-disable command is attached to that note, stopping its key-off counter for one note.
+    '!':
+      syntax: '!'
+      description: Stops compiling subsequent commands for this track. This ends compilation of the track; it is not a dedicated MDX playback-stop command.

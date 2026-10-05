@@ -1,0 +1,19 @@
+{
+  "name": "MML (mmlx)",
+  "scopeName": "source.mmlx",
+  "patterns": [
+    { "name": "comment.block.mmlx", "begin": "/\\*", "end": "\\*/" },
+    { "name": "comment.line.semicolon.mmlx", "begin": ";", "end": "$" },
+    { "name": "string.quoted.double.mmlx", "begin": "\"", "end": "\"" },
+    { "name": "keyword.control.mmlx", "match": "#(?i:title|pcmfile)\\b" },
+    {
+      "match": "^\\s*([A-HP-W]+)",
+      "captures": { "1": { "name": "entity.name.type.mmlx" } }
+    },
+    { "name": "keyword.control.mmlx", "match": "@(?:t|q|v|(?=\\d))|MP(?:ON|OF)?|MA(?:ON|OF)?|MH(?:ON|OF)?|MD|[tolqvpykwDSWLF!]" },
+    { "name": "constant.language.mmlx", "match": "r" },
+    { "name": "entity.name.function.mmlx", "match": "[a-gn][+-]?" },
+    { "name": "constant.numeric.mmlx", "match": "-?\\d+" },
+    { "name": "keyword.operator.mmlx", "match": "[\\[\\]<>_&()/^~%.,{}=+-]" }
+  ]
+}

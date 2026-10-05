@@ -1,0 +1,11 @@
+[language-server.mmlx]
+command = "mmlx-lsp-server"
+config = { dialect = "mdx", language = "ja" }
+
+[[language]]
+name = "mmlx-mdx"
+scope = "source.mmlx.mdx"
+file-types = ["mml"]
+comment-token = ";"
+language-servers = ["mmlx"]
+grammar = "mmlx-mdx"

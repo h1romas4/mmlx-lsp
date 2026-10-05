@@ -1,0 +1,151 @@
+{
+  "name": "mmlx-lsp",
+  "displayName": "mmlx-lsp",
+  "description": "MML language support powered by mmlx and WebAssembly.",
+  "version": "0.1.0",
+  "engines": {
+    "vscode": "^1.100.0"
+  },
+  "categories": [
+    "Programming Languages"
+  ],
+  "activationEvents": [
+    "onLanguage:mmlx"
+  ],
+  "extensionDependencies": [
+    "ms-vscode.wasm-wasi-core"
+  ],
+  "extensionKind": [
+    "workspace"
+  ],
+  "main": "./dist/extension.js",
+  "contributes": {
+    "commands": [
+      {
+        "command": "mmlx.restartLanguageServer",
+        "title": "mmlx: Restart Language Server"
+      }
+    ],
+    "configuration": {
+      "title": "mmlx",
+      "properties": {
+        "mmlx.dialect": {
+          "type": "string",
+          "enum": [
+            "mdx"
+          ],
+          "default": "mdx",
+          "scope": "window",
+          "description": "MML dialect used by the language server. Currently only MDX is supported. Run mmlx: Restart Language Server after changing this setting."
+        },
+        "mmlx.language": {
+          "type": "string",
+          "enum": [
+            "auto",
+            "ja",
+            "en"
+          ],
+          "default": "auto",
+          "scope": "window",
+          "description": "Language for completion and argument hints. Auto follows the editor locale, with Japanese as the fallback. Run mmlx: Restart Language Server after changing this setting."
+        }
+      }
+    },
+    "languages": [
+      {
+        "id": "mmlx",
+        "aliases": [
+          "MML(mdx)",
+          "mmlx"
+        ],
+        "extensions": [
+          ".mml"
+        ]
+      }
+    ],
+    "grammars": [
+      {
+        "language": "mmlx",
+        "scopeName": "source.mmlx",
+        "path": "./syntaxes/mmlx.tmLanguage.json"
+      }
+    ],
+    "configurationDefaults": {
+      "[mmlx]": {
+        "editor.semanticHighlighting.enabled": true,
+        "editor.suggest.showStatusBar": true
+      }
+    },
+    "semanticTokenScopes": [
+      {
+        "language": "mmlx",
+        "scopes": {
+          "keyword": [
+            "keyword.control.mmlx"
+          ],
+          "function": [
+            "entity.name.function.mmlx"
+          ],
+          "number": [
+            "constant.numeric.mmlx"
+          ],
+          "string": [
+            "string.quoted.double.mmlx"
+          ],
+          "comment": [
+            "comment.block.mmlx"
+          ],
+          "operator": [
+            "keyword.operator.mmlx"
+          ],
+          "enumMember": [
+            "constant.language.mmlx"
+          ]
+        }
+      }
+    ]
+  },
+  "scripts": {
+    "build:grammar": "node tree-sitter/run.mjs generate",
+    "build:helix": "npm run build:grammar && node helix/build.mjs",
+    "test:helix": "node tree-sitter/run.mjs test",
+    "vscode:prepublish": "npm run package",
+    "build": "npm run build:server && npm run compile",
+    "build:server": "cargo rustc --locked --manifest-path server/Cargo.toml --release --target wasm32-wasip1-threads -- -Clink-arg=--initial-memory=10485760 -Clink-arg=--max-memory=134217728",
+    "test:server": "cargo test --manifest-path server/Cargo.toml",
+    "compile": "npm run check-types && npm run lint && node esbuild.js",
+    "watch": "npm-run-all -p watch:*",
+    "watch:esbuild": "node esbuild.js --watch",
+    "watch:tsc": "tsc --noEmit --watch --project tsconfig.json",
+    "package": "npm run build:server && npm run check-types && npm run lint && node esbuild.js --production",
+    "compile-tests": "tsc -p . --outDir out",
+    "watch-tests": "tsc -p . -w --outDir out",
+    "pretest": "npm run build && npm run compile-tests",
+    "check-types": "tsc --noEmit",
+    "lint": "eslint src",
+    "test": "vscode-test"
+  },
+  "dependencies": {
+    "@vscode/wasm-wasi": "^1.0.1",
+    "@vscode/wasm-wasi-lsp": "0.1.0-pre.8",
+    "vscode-languageclient": "10.0.0-next.12"
+  },
+  "devDependencies": {
+    "@types/mocha": "^10.0.10",
+    "@types/node": "24.x",
+    "@types/vscode": "^1.100.0",
+    "@vscode/test-cli": "^0.0.15",
+    "@vscode/test-electron": "^3.0.0",
+    "@vscode/vsce": "4.0.0",
+    "esbuild": "^0.28.1",
+    "eslint": "^10.5.0",
+    "npm-run-all": "^4.1.5",
+    "tree-sitter-cli": "0.25.10",
+    "typescript": "^6.0.3",
+    "typescript-eslint": "^8.61.1"
+  },
+  "overrides": {
+    "diff": "^8.0.4",
+    "serialize-javascript": "^7.0.6"
+  }
+}

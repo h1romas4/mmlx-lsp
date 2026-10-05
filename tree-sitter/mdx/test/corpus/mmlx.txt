@@ -1,0 +1,94 @@
+==================
+Notes, rests, and controls
+==================
+A t120 c+8 r4
+---
+(source_file
+  (track_line
+    (channel)
+    (control_command (command) (number))
+    (note (note_name) (accidental) (length (length_term (number))))
+    (rest (rest_name) (length (length_term (number))))))
+
+==================
+Nested repeats
+==================
+AB [c4 [r8]2 /d4]3
+---
+(source_file
+  (track_line
+    (channel)
+    (repeat_start)
+    (note (note_name) (length (length_term (number))))
+    (repeat_start)
+    (rest (rest_name) (length (length_term (number))))
+    (repeat_end (number))
+    (operator)
+    (note (note_name) (length (length_term (number))))
+    (repeat_end (number))))
+
+==================
+Metadata and comments
+==================
+#title "Example"
+; A t120
+/* MP0,16,1 */
+---
+(source_file
+  (metadata (metadata_command) (string))
+  (comment)
+  (block_comment))
+
+==================
+Repeats across interleaved track lines
+==================
+A [c4
+B r4
+A /d4]2
+---
+(source_file
+  (track_line (channel) (repeat_start) (note (note_name) (length (length_term (number)))))
+  (track_line (channel) (rest (rest_name) (length (length_term (number)))))
+  (track_line (channel) (operator) (note (note_name) (length (length_term (number)))) (repeat_end (number))))
+
+==================
+Multiline voice definition
+==================
+@1 = {
+  /* AR D1R */ 28, 4,
+  ; Remaining parameters may still be in progress.
+  0
+}
+---
+(source_file
+  (voice_definition (number) (block_comment) (number) (number) (comment) (number)))
+
+==================
+Adjacent commands and lengths
+==================
+AP @t200@1o4l8c+8.d-4^%24r%12~8n12,16D-12MP0,4,-5MPONMPOFMA0,4,-5MAONMAOFMH0,1,2,3,4,5,1MHONMHOFSAW!
+---
+(source_file
+  (track_line
+    (channel)
+    (control_command (command) (number))
+    (control_command (command) (number))
+    (control_command (command) (number))
+    (control_command (command) (length (length_term (number))))
+    (note (note_name) (accidental) (length (length_term (number))))
+    (note (note_name) (accidental) (length (length_term (number)) (length_operator) (length_term (number))))
+    (rest (rest_name) (length (length_term (number)) (length_operator) (length_term (number))))
+    (numeric_note (note_name) (number) (length (length_term (number))))
+    (control_command (command) (signed_number))
+    (control_command (command) (number) (number) (signed_number))
+    (control_command (command))
+    (control_command (command))
+    (control_command (command) (number) (number) (signed_number))
+    (control_command (command))
+    (control_command (command))
+    (control_command (command) (number) (number) (number) (number) (number) (number) (number))
+    (control_command (command))
+    (control_command (command))
+    (control_command (command) (channel_reference))
+    (control_command (command))
+    (operator)))

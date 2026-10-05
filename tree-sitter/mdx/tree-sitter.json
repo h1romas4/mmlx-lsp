@@ -1,0 +1,15 @@
+{
+  "grammars": [
+    {
+      "name": "mmlx_mdx",
+      "scope": "source.mmlx.mdx",
+      "path": ".",
+      "file-types": ["mml"],
+      "highlights": "queries/highlights.scm"
+    }
+  ],
+  "metadata": {
+    "version": "0.1.0",
+    "description": "Syntax highlighting for the mmlx MDX MML dialect"
+  }
+}

@@ -1,0 +1,6 @@
+{
+  "mmlx.language": "ja",
+  "files.associations": {
+    "*.mml": "mmlx"
+  }
+}
