@@ -78,7 +78,7 @@ install that dependency separately.
 3. Merge the included Helix language configuration into your own configuration.
 4. Restart Helix and run `hx --health mmlx-mdx` to check the installation.
 
-Follow the [native installation guide](helix/README-release.md) for the commands
+Follow the [native installation guide](helix/README.md) for the commands
 and configuration details. The same guide is included in each native archive.
 Node.js, Rust, and a C compiler are not required.
 

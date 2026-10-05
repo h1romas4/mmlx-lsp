@@ -154,7 +154,7 @@ jobs:
           cp "server/target/$TARGET/release/mmlx-lsp-server" "$staging/bin/"
           cp tree-sitter/mdx/queries/highlights.scm "$staging/runtime/queries/mmlx-mdx/"
           cp helix/languages.release.toml "$staging/languages.toml"
-          cp helix/README-release.md "$staging/README.md"
+          cp helix/README.md "$staging/README.md"
           tar -czf "release/$name.tar.gz" -C release/stage "$name"
       - name: Package Windows binaries and Helix resources
         if: runner.os == 'Windows'
@@ -169,7 +169,7 @@ jobs:
           Copy-Item "server/target/$env:TARGET/release/mmlx-lsp-server.exe" "$staging/bin/"
           Copy-Item tree-sitter/mdx/queries/highlights.scm "$staging/runtime/queries/mmlx-mdx/"
           Copy-Item helix/languages.release.toml "$staging/languages.toml"
-          Copy-Item helix/README-release.md "$staging/README.md"
+          Copy-Item helix/README.md "$staging/README.md"
           Compress-Archive -Path $staging -DestinationPath "release/$name.zip"
       - uses: actions/upload-artifact@v4
         with:
