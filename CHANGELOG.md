@@ -6,6 +6,7 @@ All notable changes to the "mmlx-lsp" extension will be documented in this file.
 
 ## [0.4.0] - Unreleased
 
+- Add MIDI-IN port selection and refresh to Connection settings, with workspace-folder persistence.
 - License mmlx-lsp under BSD-3-Clause.
 - Reduce VGM build memory usage by serializing binary responses directly without creating intermediate JSON value arrays.
 - Avoid cloning JSON byte arrays when reading MDX and PDX inputs.

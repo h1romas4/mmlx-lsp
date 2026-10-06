@@ -56,7 +56,7 @@ window.addEventListener('message', event => {
 		saveState();
 	} else if (message?.type === 'playback') {
 		playbackControls.render(message);
-	} else if (message?.type === 'buildSettings' || message?.type === 'serialSettings') {
+	} else if (message?.type === 'buildSettings' || message?.type === 'serialSettings' || message?.type === 'midiSettings') {
 		settingsControls.render(message);
 	}
 });

@@ -30,6 +30,16 @@ async function listSerialPorts(): Promise<SerialPortInfo[]> {
 	return autoDetect().list();
 }
 
+export async function listMidiInputPorts(): Promise<string[]> {
+	const { Input } = await import('@julusian/midi');
+	const input = new Input();
+	try {
+		return Array.from({ length: input.getPortCount() }, (_, index) => input.getPortName(index));
+	} finally {
+		input.destroy();
+	}
+}
+
 const buildSettingsDefaults = {
 	format: 'both', onSave: false, outputDirectory: 'build', pdx: '',
 	adpcmMode: 'through', loopCount: 0, maxTicks: 100000
@@ -63,20 +73,24 @@ export class VoiceViewProvider implements WebviewViewProvider {
 	private serialPorts: SerialPortInfo[] = [];
 	private serialLoading = false;
 	private serialError = '';
+	private midiPorts: string[] = [];
+	private midiLoading = false;
+	private midiError = '';
 	private editTarget: { document: TextDocument; version: number; token: number; voice: VoiceDefinition } | undefined;
 	private snapshot: { voice: VoiceDefinition | null; source: string; retained: boolean; error: boolean } = {
 		voice: null, source: '', retained: false, error: false
 	};
 
 	constructor(private readonly context: ExtensionContext, private readonly getClient: () => LanguageClient | undefined,
-		private readonly getSerialPorts: () => Promise<SerialPortInfo[]> = listSerialPorts) {
+		private readonly getSerialPorts: () => Promise<SerialPortInfo[]> = listSerialPorts,
+		private readonly getMidiInputPorts: () => Promise<string[]> = listMidiInputPorts) {
 		context.subscriptions.push(
 			window.onDidChangeTextEditorSelection(event => this.follow(event.textEditor)),
-			window.onDidChangeActiveTextEditor(editor => { this.follow(editor); this.sendBuildSettings(); this.sendSerialSettings(); }),
-			workspace.onDidChangeWorkspaceFolders(() => { this.sendBuildSettings(); this.sendSerialSettings(); }),
+			window.onDidChangeActiveTextEditor(editor => { this.follow(editor); this.sendBuildSettings(); this.sendConnectionSettings(); }),
+			workspace.onDidChangeWorkspaceFolders(() => { this.sendBuildSettings(); this.sendConnectionSettings(); }),
 			workspace.onDidChangeConfiguration(event => {
 				if (event.affectsConfiguration('mmlx.build')) { this.sendBuildSettings(); }
-				if (event.affectsConfiguration('mmlx.serial')) { this.sendSerialSettings(); }
+				if (event.affectsConfiguration('mmlx.serial') || event.affectsConfiguration('mmlx.midi')) { this.sendConnectionSettings(); }
 			}),
 			workspace.onDidChangeTextDocument(event => {
 				if (event.document.uri.toString() === this.editor?.document.uri.toString()) { this.schedule(); }
@@ -99,12 +113,17 @@ export class VoiceViewProvider implements WebviewViewProvider {
 		view.webview.options = { enableScripts: true, localResourceRoots: [media] };
 		this.context.subscriptions.push(
 			view.webview.onDidReceiveMessage(message => {
-				if (message?.type === 'ready') { this.send(); this.schedule(); this.sendBuildSettings(); void this.refreshSerialPorts(); }
+				if (message?.type === 'ready') {
+					this.send(); this.schedule(); this.sendBuildSettings();
+					void this.refreshSerialPorts(); void this.refreshMidiInputPorts();
+				}
 				else if (message?.type === 'editVoice') { void this.edit(message); }
 				else if (message?.type === 'updateBuildSetting') { void this.updateBuildSetting(message); }
 				else if (message?.type === 'getBuildSettings') { this.sendBuildSettings(); }
 				else if (message?.type === 'getSerialPorts') { void this.refreshSerialPorts(); }
 				else if (message?.type === 'updateSerialConnection') { void this.updateSerialConnection(message); }
+				else if (message?.type === 'getMidiInputPorts') { void this.refreshMidiInputPorts(); }
+				else if (message?.type === 'updateMidiInput') { void this.updateMidiInput(message); }
 			}),
 			view.onDidChangeVisibility(() => { if (view.visible) { this.schedule(); } }),
 			view.onDidDispose(() => { if (this.view === view) { this.view = undefined; this.sequence++; } })
@@ -118,7 +137,7 @@ export class VoiceViewProvider implements WebviewViewProvider {
 			.replaceAll('{{scriptUri}}', view.webview.asWebviewUri(Uri.joinPath(media, 'voice.js')).toString());
 		this.follow(window.activeTextEditor);
 		this.sendBuildSettings();
-		this.sendSerialSettings();
+		this.sendConnectionSettings();
 	}
 
 	private buildSettingsFolder() {
@@ -149,7 +168,7 @@ export class VoiceViewProvider implements WebviewViewProvider {
 		}
 		this.savingSettings = true;
 		this.sendBuildSettings();
-		this.sendSerialSettings();
+		this.sendConnectionSettings();
 		let error = '';
 		try {
 			await workspace.getConfiguration('mmlx', folder.uri).update(`build.${key}`, value, ConfigurationTarget.WorkspaceFolder);
@@ -158,8 +177,13 @@ export class VoiceViewProvider implements WebviewViewProvider {
 		} finally {
 			this.savingSettings = false;
 			this.sendBuildSettings(error);
-			this.sendSerialSettings();
+			this.sendConnectionSettings();
 		}
+	}
+
+	private sendConnectionSettings(): void {
+		this.sendSerialSettings();
+		this.sendMidiSettings();
 	}
 
 	private sendSerialSettings(error = ''): void {
@@ -199,7 +223,7 @@ export class VoiceViewProvider implements WebviewViewProvider {
 		}
 		this.savingSettings = true;
 		this.sendBuildSettings();
-		this.sendSerialSettings();
+		this.sendConnectionSettings();
 		let error = '';
 		try {
 			await workspace.getConfiguration('mmlx', folder.uri).update('serial.connection', message.value, ConfigurationTarget.WorkspaceFolder);
@@ -209,6 +233,57 @@ export class VoiceViewProvider implements WebviewViewProvider {
 			this.savingSettings = false;
 			this.sendBuildSettings();
 			this.sendSerialSettings(error);
+			this.sendMidiSettings();
+		}
+	}
+
+	private sendMidiSettings(error = ''): void {
+		const folder = this.buildSettingsFolder();
+		const connection = workspace.getConfiguration('mmlx', folder?.uri).get<string>('midi.input', '');
+		void this.view?.webview.postMessage({ type: 'midiSettings', connection, ports: this.midiPorts,
+			folder: folder?.uri.toString() ?? '', editable: !!folder && !this.savingSettings && !this.midiLoading,
+			saving: this.savingSettings, loading: this.midiLoading,
+			error: error || this.midiError || (folder ? '' : 'Open a workspace folder to edit connection settings.') });
+	}
+
+	private async refreshMidiInputPorts(): Promise<void> {
+		if (this.midiLoading) { this.sendMidiSettings(); return; }
+		this.midiLoading = true;
+		this.midiError = '';
+		this.sendMidiSettings();
+		try {
+			this.midiPorts = [...new Set((await this.getMidiInputPorts()).filter(port => port.trim()))]
+				.sort((first, second) => first.localeCompare(second, undefined, { numeric: true }));
+		} catch (failure) {
+			this.midiPorts = [];
+			this.midiError = failure instanceof Error ? failure.message : 'Could not list MIDI input ports.';
+		} finally {
+			this.midiLoading = false;
+			this.sendMidiSettings();
+		}
+	}
+
+	private async updateMidiInput(message: { folder?: unknown; value?: unknown }): Promise<void> {
+		const folder = this.buildSettingsFolder();
+		if (!folder || message.folder !== folder.uri.toString() || this.savingSettings || this.midiLoading) {
+			this.sendMidiSettings(); return;
+		}
+		if (typeof message.value !== 'string' || (message.value !== '' && !this.midiPorts.includes(message.value))) {
+			this.sendMidiSettings('Invalid MIDI input port.'); return;
+		}
+		this.savingSettings = true;
+		this.sendBuildSettings();
+		this.sendConnectionSettings();
+		let error = '';
+		try {
+			await workspace.getConfiguration('mmlx', folder.uri).update('midi.input', message.value, ConfigurationTarget.WorkspaceFolder);
+		} catch (failure) {
+			error = failure instanceof Error ? failure.message : 'Could not save MIDI input settings.';
+		} finally {
+			this.savingSettings = false;
+			this.sendBuildSettings();
+			this.sendSerialSettings();
+			this.sendMidiSettings(error);
 		}
 	}
 

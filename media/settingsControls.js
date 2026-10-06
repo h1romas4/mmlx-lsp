@@ -3,33 +3,49 @@ export function createSettingsControls(root, onChange = () => {}) {
 	const fieldset = root.querySelector('#build-settings-fields');
 	const source = root.querySelector('#build-settings-source');
 	const status = root.querySelector('#build-settings-status');
-	const connectionFields = root.querySelector('#connection-settings-fields');
-	const connection = root.querySelector('#serial-connection');
-	const refresh = root.querySelector('#refresh-serial-ports');
-	const serialStatus = root.querySelector('#serial-settings-status');
 	let snapshot;
-	let serialSnapshot;
+	const renderSerial = createPortControls('serial', 'serial', 'getSerialPorts', 'updateSerialConnection',
+		port => ({ value: port.path, label: port.manufacturer ? `${port.path} (${port.manufacturer})` : port.path }));
+	const renderMidi = createPortControls('midi', 'MIDI input', 'getMidiInputPorts', 'updateMidiInput',
+		port => ({ value: port, label: port }));
 
-	function renderSerial(message) {
-		serialSnapshot = message;
-		connectionFields.disabled = !message.folder || message.saving || message.loading;
-		connection.disabled = !message.editable;
-		refresh.disabled = !message.folder || message.saving || message.loading;
-		serialStatus.textContent = message.error || (message.loading ? 'Loading serial ports' : message.saving ? 'Saving'
-			: message.ports.length === 0 ? 'No serial ports found' : '');
-		const options = [new Option('Not selected', '')];
-		for (const port of message.ports) {
-			options.push(new Option(port.manufacturer ? `${port.path} (${port.manufacturer})` : port.path, port.path));
+	function createPortControls(prefix, label, refreshType, updateType, option) {
+		const connection = root.querySelector(`#${prefix}-connection`);
+		const refresh = root.querySelector(`#refresh-${prefix}-ports`);
+		const status = root.querySelector(`#${prefix}-settings-status`);
+		let current;
+		function renderPorts(message) {
+			current = message;
+			connection.disabled = !message.editable;
+			refresh.disabled = !message.folder || message.saving || message.loading;
+			status.textContent = message.error || (message.loading ? `Loading ${label} ports` : message.saving ? 'Saving'
+				: message.ports.length === 0 ? `No ${label} ports found` : '');
+			const ports = message.ports.map(option);
+			const options = [new Option('Not selected', ''), ...ports.map(port => new Option(port.label, port.value))];
+			if (message.connection && !ports.some(port => port.value === message.connection)) {
+				options.push(new Option(`${message.connection} (not detected)`, message.connection));
+			}
+			connection.replaceChildren(...options);
+			connection.value = message.connection;
 		}
-		if (message.connection && !message.ports.some(port => port.path === message.connection)) {
-			options.push(new Option(`${message.connection} (not detected)`, message.connection));
-		}
-		connection.replaceChildren(...options);
-		connection.value = message.connection;
+		refresh.addEventListener('click', () => {
+			if (!current?.folder || current.loading || current.saving) { return; }
+			renderPorts({ ...current, editable: false, loading: true, error: '' });
+			onChange({ type: refreshType });
+		});
+		connection.addEventListener('change', () => {
+			if (!current?.editable || !current.folder || connection.value === current.connection) { return; }
+			const value = connection.value;
+			const folder = current.folder;
+			renderPorts({ ...current, connection: value, editable: false, saving: true });
+			onChange({ type: updateType, folder, value });
+		});
+		return renderPorts;
 	}
 
 	function render(message) {
 		if (message?.type === 'serialSettings') { renderSerial(message); return; }
+		if (message?.type === 'midiSettings') { renderMidi(message); return; }
 		if (message?.type !== 'buildSettings') { return; }
 		snapshot = message;
 		fieldset.disabled = !message.editable;
@@ -42,19 +58,6 @@ export function createSettingsControls(root, onChange = () => {}) {
 		}
 	}
 
-
-	refresh.addEventListener('click', () => {
-		if (!serialSnapshot?.folder || serialSnapshot.loading || serialSnapshot.saving) { return; }
-		renderSerial({ ...serialSnapshot, editable: false, loading: true, error: '' });
-		onChange({ type: 'getSerialPorts' });
-	});
-	connection.addEventListener('change', () => {
-		if (!serialSnapshot?.editable || !serialSnapshot.folder || connection.value === serialSnapshot.connection) { return; }
-		const value = connection.value;
-		const folder = serialSnapshot.folder;
-		renderSerial({ ...serialSnapshot, connection: value, editable: false, saving: true });
-		onChange({ type: 'updateSerialConnection', folder, value });
-	});
 	for (const control of controls) {
 		control.addEventListener('change', () => {
 			if (!snapshot?.editable || !snapshot.folder) { return; }

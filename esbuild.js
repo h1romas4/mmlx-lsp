@@ -38,7 +38,7 @@ async function main() {
 		sourcesContent: false,
 		platform: 'node',
 		outfile: 'dist/extension.js',
-		external: ['vscode', '@serialport/bindings-cpp'],
+		external: ['vscode', '@serialport/bindings-cpp', '@julusian/midi'],
 		logLevel: 'silent',
 		plugins: [
 			/* add to the end of plugins array */

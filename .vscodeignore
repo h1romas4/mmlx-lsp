@@ -2,6 +2,9 @@
 .vscode-test/**
 out/**
 node_modules/**
+!node_modules/@julusian/midi/**
+!node_modules/pkg-prebuilds/**
+!node_modules/tslib/**
 !node_modules/@serialport/**
 !node_modules/node-gyp-build/**
 !node_modules/debug/**

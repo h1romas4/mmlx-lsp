@@ -61,14 +61,14 @@ input:disabled, select:disabled { opacity: .6; }
 .build-field input, .build-field select { width: 100%; }
 .build-field.checkbox input { width: 16px; height: 16px; margin: 0; accent-color: var(--vscode-panelTitle-activeBorder, #39a9c7); }
 .connection-settings { margin-top: 20px; }
-.serial-port-controls { display: flex; align-items: center; gap: 6px; min-width: 0; }
-.serial-port-controls select { flex: 1; width: 0; }
-#refresh-serial-ports { width: 26px; height: 26px; flex: 0 0 26px; display: grid; place-items: center; border: 1px solid var(--vscode-input-border, #ccc); border-radius: 2px; background: var(--vscode-input-background, #fff); color: var(--vscode-input-foreground, #292929); cursor: pointer; }
-#refresh-serial-ports::before { content: ''; width: 14px; height: 14px; background: currentColor; mask: url('refresh.svg') center / contain no-repeat; }
-#refresh-serial-ports:hover { background: var(--vscode-toolbar-hoverBackground, #eee); }
-#refresh-serial-ports:focus-visible { outline: 1px solid var(--vscode-focusBorder, #39a9c7); }
-#refresh-serial-ports:disabled { opacity: .6; cursor: default; }
-#serial-settings-status { margin: 0; color: var(--vscode-descriptionForeground, #666); overflow-wrap: anywhere; }
+.connection-port-controls { display: flex; align-items: center; gap: 6px; min-width: 0; }
+.connection-port-controls select { flex: 1; width: 0; }
+.refresh-ports { width: 26px; height: 26px; flex: 0 0 26px; display: grid; place-items: center; border: 1px solid var(--vscode-input-border, #ccc); border-radius: 2px; background: var(--vscode-input-background, #fff); color: var(--vscode-input-foreground, #292929); cursor: pointer; }
+.refresh-ports::before { content: ''; width: 14px; height: 14px; background: currentColor; mask: url('refresh.svg') center / contain no-repeat; }
+.refresh-ports:hover { background: var(--vscode-toolbar-hoverBackground, #eee); }
+.refresh-ports:focus-visible { outline: 1px solid var(--vscode-focusBorder, #39a9c7); }
+.refresh-ports:disabled { opacity: .6; cursor: default; }
+#serial-settings-status, #midi-settings-status { margin: 0; color: var(--vscode-descriptionForeground, #666); overflow-wrap: anywhere; }
 @media (max-width: 460px) {
 	.build-field { grid-template-columns: minmax(0, 1fr); gap: 4px; }
 	.build-field.checkbox { grid-template-columns: minmax(0, 1fr) auto; }

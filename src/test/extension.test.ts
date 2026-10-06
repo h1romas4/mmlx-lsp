@@ -5,7 +5,7 @@ import { Wasm } from '@vscode/wasm-wasi/v1';
 import { createUriConverters } from '@vscode/wasm-wasi-lsp';
 import type { LanguageClient } from 'vscode-languageclient/node';
 import { BuildTerminal, buildErrorLinkProvider } from '../tasks';
-import { VoiceViewProvider } from '../voiceView';
+import { listMidiInputPorts, VoiceViewProvider } from '../voiceView';
 
 function observeBuilds(uri: vscode.Uri) {
 	const active = new Set<vscode.TaskExecution>();
@@ -323,6 +323,89 @@ suite('mmlx extension', () => {
 		const ports = await autoDetect().list();
 		assert.ok(Array.isArray(ports));
 		assert.ok(ports.every(port => typeof port.path === 'string' && port.path.length > 0));
+	});
+
+	test('Node MIDI input port enumeration works in the extension host', async function () {
+		this.timeout(15000);
+		const ports = await listMidiInputPorts();
+		assert.ok(Array.isArray(ports));
+		assert.ok(ports.every(port => typeof port === 'string' && port.length > 0));
+	});
+
+	test('MIDI-IN settings list ports, save folder configuration and handle refresh failures', async function () {
+		this.timeout(20000);
+		const extension = vscode.extensions.all.find(extension => extension.packageJSON.name === 'mmlx-lsp');
+		assert.ok(extension);
+		const folder = vscode.workspace.workspaceFolders![0];
+		const configuration = vscode.workspace.getConfiguration('mmlx', folder.uri);
+		const setting = configuration.inspect<string>('midi.input');
+		const previous = vscode.workspace.workspaceFile ? setting?.workspaceFolderValue : setting?.workspaceValue;
+		const context = { extensionUri: extension.extensionUri, subscriptions: [] as vscode.Disposable[] };
+		const events = new vscode.EventEmitter<void>();
+		const messages = new vscode.EventEmitter<unknown>();
+		type MidiMessage = { type: string; folder: string; connection: string; editable: boolean;
+			loading: boolean; error: string; ports: string[] };
+		const updates = new vscode.EventEmitter<MidiMessage>();
+		let latest: MidiMessage | undefined;
+		let ports = ['Keyboard 10', 'Keyboard 2', 'Keyboard 2', ''];
+		let failure = false;
+		function waitFor(predicate: (message: MidiMessage) => boolean): Promise<MidiMessage> {
+			if (latest && predicate(latest)) { return Promise.resolve(latest); }
+			return new Promise((resolve, reject) => {
+				const subscription = updates.event(message => {
+					if (predicate(message)) { clearTimeout(timeout); subscription.dispose(); resolve(message); }
+				});
+				const timeout = setTimeout(() => { subscription.dispose(); reject(new Error('MIDI update timed out')); }, 4000);
+			});
+		}
+		const provider = new VoiceViewProvider(context as unknown as vscode.ExtensionContext, () => undefined, async () => [], async () => {
+			if (failure) { throw new Error('MIDI enumeration failed'); }
+			return ports;
+		});
+		const view = { visible: true, onDidChangeVisibility: events.event, onDidDispose: events.event,
+			webview: { cspSource: 'https://test.invalid', asWebviewUri: (uri: vscode.Uri) => uri,
+				onDidReceiveMessage: messages.event, postMessage: (message: MidiMessage) => {
+					if (message.type === 'midiSettings') { latest = message; updates.fire(message); }
+					return Promise.resolve(true);
+				} }
+		} as unknown as vscode.WebviewView;
+		try {
+			await provider.resolveWebviewView(view);
+			messages.fire({ type: 'ready' });
+			const listed = await waitFor(message => !message.loading && message.ports.length === 2);
+			assert.deepStrictEqual(listed.ports, ['Keyboard 2', 'Keyboard 10']);
+			messages.fire({ type: 'updateMidiInput', folder: folder.uri.toString(), value: 'Keyboard 2' });
+			await waitFor(message => message.editable && message.connection === 'Keyboard 2');
+			assert.strictEqual(vscode.workspace.getConfiguration('mmlx', folder.uri).get('midi.input'), 'Keyboard 2');
+			const text = new TextDecoder().decode(await vscode.workspace.fs.readFile(vscode.Uri.joinPath(folder.uri, '.vscode', 'settings.json')));
+			assert.ok(text.includes('"mmlx.midi.input"'));
+			for (const value of ['Unknown keyboard', 42]) {
+				messages.fire({ type: 'updateMidiInput', folder: folder.uri.toString(), value });
+				assert.strictEqual(latest?.error, 'Invalid MIDI input port.');
+			}
+			messages.fire({ type: 'updateMidiInput', folder: 'file:///wrong-folder', value: '' });
+			assert.strictEqual(vscode.workspace.getConfiguration('mmlx', folder.uri).get('midi.input'), 'Keyboard 2');
+			ports = [];
+			messages.fire({ type: 'getMidiInputPorts' });
+			const removed = await waitFor(message => !message.loading && message.ports.length === 0);
+			assert.strictEqual(removed.connection, 'Keyboard 2');
+			failure = true;
+			messages.fire({ type: 'getMidiInputPorts' });
+			await waitFor(message => !message.loading && message.error === 'MIDI enumeration failed');
+			failure = false;
+			ports = ['Keyboard 2'];
+			messages.fire({ type: 'getMidiInputPorts' });
+			await waitFor(message => !message.loading && !message.error && message.ports.length === 1);
+			messages.fire({ type: 'updateMidiInput', folder: folder.uri.toString(), value: '' });
+			await waitFor(message => message.editable && message.connection === '');
+			await configuration.update('midi.input', 'External keyboard', vscode.ConfigurationTarget.WorkspaceFolder);
+			await waitFor(message => message.connection === 'External keyboard');
+		} finally {
+			provider.dispose();
+			for (const subscription of context.subscriptions) { subscription.dispose(); }
+			await configuration.update('midi.input', previous, vscode.ConfigurationTarget.WorkspaceFolder);
+			events.dispose(); messages.dispose(); updates.dispose();
+		}
 	});
 
 	test('Connection settings list serial ports, save folder configuration and handle refresh failures', async function () {

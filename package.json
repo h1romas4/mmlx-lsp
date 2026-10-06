@@ -194,6 +194,12 @@
           "scope": "resource",
           "description": "Serial port path selected for NanoDrive8. Empty means no port selected. Selection does not open the port or transmit data."
         },
+        "mmlx.midi.input": {
+          "type": "string",
+          "default": "",
+          "scope": "resource",
+          "description": "MIDI input port name selected on the extension host. Empty means no port selected. Selection does not open the port or receive MIDI messages."
+        },
         "mmlx.build.maxTicks": {
           "type": "integer",
           "minimum": 1,
@@ -287,6 +293,7 @@
     "test": "vscode-test"
   },
   "dependencies": {
+    "@julusian/midi": "^3.8.1",
     "@serialport/bindings-cpp": "^13.0.1",
     "@vscode/wasm-wasi": "^1.0.1",
     "@vscode/wasm-wasi-lsp": "0.1.0-pre.8",

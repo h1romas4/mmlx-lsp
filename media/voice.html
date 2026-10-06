@@ -65,16 +65,24 @@
 			</section>
 			<section class="build-settings connection-settings" aria-labelledby="connection-settings-heading">
 				<h2 id="connection-settings-heading">Connection</h2>
-				<fieldset id="connection-settings-fields" disabled>
+				<fieldset id="connection-settings-fields">
 					<div class="build-field">
 						<label for="serial-connection">NanoDrive8</label>
-						<div class="serial-port-controls">
-							<select id="serial-connection"><option value="">Not selected</option></select>
-							<button id="refresh-serial-ports" type="button" title="Refresh serial ports" aria-label="Refresh serial ports"></button>
+						<div class="connection-port-controls">
+							<select id="serial-connection" disabled><option value="">Not selected</option></select>
+							<button id="refresh-serial-ports" class="refresh-ports" type="button" title="Refresh serial ports" aria-label="Refresh serial ports" disabled></button>
+						</div>
+					</div>
+					<div class="build-field">
+						<label for="midi-connection">MIDI-IN</label>
+						<div class="connection-port-controls">
+							<select id="midi-connection" disabled><option value="">Not selected</option></select>
+							<button id="refresh-midi-ports" class="refresh-ports" type="button" title="Refresh MIDI input ports" aria-label="Refresh MIDI input ports" disabled></button>
 						</div>
 					</div>
 				</fieldset>
 				<p id="serial-settings-status" role="status">Loading</p>
+				<p id="midi-settings-status" role="status">Loading</p>
 			</section>
 		</section>
 	</main>

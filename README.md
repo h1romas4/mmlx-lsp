@@ -56,7 +56,8 @@ to override; you do not need to include every entry.
     "mmlx.build.adpcmMode": "through",
     "mmlx.build.loopCount": 0,
     "mmlx.build.maxTicks": 100000,
-    "mmlx.serial.connection": ""
+    "mmlx.serial.connection": "",
+    "mmlx.midi.input": ""
 }
 ```
 
@@ -109,6 +110,11 @@ the native language server.
     such as `/dev/ttyUSB0` or `COM3`. The selection is saved to the workspace settings;
     it does not open the port or transmit data. In remote workspaces, the list shows
     ports on the remote extension host.
+- `mmlx.midi.input`: empty by default. Use **Settings > Connection > MIDI-IN**
+    in the experimental panel to select or refresh MIDI input ports. The selected
+    port name is saved to the workspace settings; it does not open the port or
+    receive MIDI messages. In remote workspaces, the list shows ports on the
+    remote extension host. Linux enumeration requires ALSA MIDI to be available.
 
 After changing the dialect or language, run **mmlx: Restart Language Server** from the
 command palette. Diagnostic messages are not translated.
@@ -117,7 +123,7 @@ command palette. Diagnostic messages are not translated.
 
 Run **mmlx: Show mmlx (experimental) Panel** to open the dedicated bottom panel.
 In **FM Voice**, place the cursor in an `@` definition to edit parameters, algorithms, and envelopes directly in the source.
-**Settings** saves MDX/VGM build options and the NanoDrive8 port selection to `.vscode/settings.json`.
+**Settings** saves MDX/VGM build options, the NanoDrive8 port selection, and the MIDI-IN selection to `.vscode/settings.json`.
 
 Envelope graphs are illustrative. Audio playback and NanoDrive8 communication are not yet implemented.
 
@@ -193,6 +199,4 @@ not code-signed or notarized.
 
 ## License
 
-BSD-3-Clause. See [LICENSE](LICENSE).
-
-Third-party dependencies and assets retain their respective licenses.
+BSD-3-Clause
