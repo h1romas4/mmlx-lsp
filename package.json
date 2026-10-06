@@ -3,7 +3,7 @@
   "publisher": "h1romas4",
   "displayName": "mmlx-lsp",
   "description": "MML language support powered by mmlx and WebAssembly.",
-  "version": "0.2.0",
+  "version": "0.3.0",
   "engines": {
     "vscode": "^1.100.0"
   },

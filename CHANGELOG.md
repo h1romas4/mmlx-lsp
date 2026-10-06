@@ -6,6 +6,12 @@ All notable changes to the "mmlx-lsp" extension will be documented in this file.
 
 - [ ] Reduce memory usage when building VGM files.
 
+## [0.3.0] - 2026-10-06
+
+- Experimental `mmlx (experimental)` panel with FM Voice, Playback, and Settings tabs.
+- Cursor-linked FM voice editing with YM2151 algorithm diagrams, draggable envelopes, and undoable source updates.
+- Workspace build settings and NanoDrive8 serial-port selection. Audio playback and hardware communication are not yet implemented.
+
 ## [0.2.0] - 2026-10-05
 
 - VS Code build tasks and commands for MML to MDX and MML/MDX to VGM.
