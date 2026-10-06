@@ -228,6 +228,12 @@
         "editor.suggest.showStatusBar": true
       }
     },
+    "semanticTokenTypes": [
+      {
+        "id": "mmlxNote",
+        "description": "MML notes. Uses the theme's normal editor foreground by default."
+      }
+    ],
     "semanticTokenScopes": [
       {
         "language": "mmlx",
@@ -235,8 +241,8 @@
           "keyword": [
             "keyword.control.mmlx"
           ],
-          "variable": [
-            "variable.other.readwrite.mmlx"
+          "mmlxNote": [
+            "meta.note.mmlx"
           ],
           "number": [
             "constant.numeric.mmlx"

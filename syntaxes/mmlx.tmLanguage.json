@@ -12,7 +12,7 @@
     },
     { "name": "keyword.control.mmlx", "match": "@(?:t|q|v|(?=\\d))|MP(?:ON|OF)?|MA(?:ON|OF)?|MH(?:ON|OF)?|MD|[tolqvpykwDSWLF!]" },
     { "name": "constant.language.mmlx", "match": "r" },
-    { "name": "variable.other.readwrite.mmlx", "match": "[a-gn][+-]?" },
+    { "name": "meta.note.mmlx", "match": "[a-gn][+-]?" },
     { "name": "constant.numeric.mmlx", "match": "-?\\d+" },
     { "name": "keyword.operator.mmlx", "match": "[\\[\\]<>_&()/^~%.,{}=+-]" }
   ]

@@ -681,7 +681,11 @@ suite('mmlx extension', () => {
 		const legend = await vscode.commands.executeCommand<vscode.SemanticTokensLegend>(
 			'vscode.provideDocumentSemanticTokensLegend', document.uri);
 		assert.ok(legend);
-		assert.strictEqual(legend.tokenTypes[1], 'variable');
+		assert.strictEqual(legend.tokenTypes[1], 'mmlxNote');
+		const noteType = extension.packageJSON.contributes.semanticTokenTypes.find((type: { id: string }) => type.id === 'mmlxNote');
+		assert.ok(noteType);
+		assert.strictEqual(noteType.superType, undefined);
+		assert.deepStrictEqual(extension.packageJSON.contributes.semanticTokenScopes[0].scopes.mmlxNote, ['meta.note.mmlx']);
 		const tokens = await vscode.commands.executeCommand<vscode.SemanticTokens>(
 			'vscode.provideDocumentSemanticTokens', document.uri);
 		assert.ok(tokens);
