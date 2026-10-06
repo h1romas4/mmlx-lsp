@@ -190,3 +190,9 @@ not code-signed or notarized.
 
 - [mmlx](https://crates.io/crates/mmlx)
 - [soundlog](https://crates.io/crates/soundlog)
+
+## License
+
+BSD-3-Clause. See [LICENSE](LICENSE).
+
+Third-party dependencies and assets retain their respective licenses.
