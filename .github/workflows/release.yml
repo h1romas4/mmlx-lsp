@@ -80,7 +80,7 @@ jobs:
           mkdir -p release
           options=()
           if [[ "$VERSION" == *-* ]]; then options+=(--pre-release); fi
-          npx --no-install vsce package --skip-license "${options[@]}" --out "release/mmlx-lsp-${VERSION}.vsix"
+          npx --no-install vsce package "${options[@]}" --out "release/mmlx-lsp-${VERSION}.vsix"
       - uses: actions/upload-artifact@v4
         with:
           name: vsix
@@ -155,6 +155,7 @@ jobs:
           cp tree-sitter/mdx/queries/highlights.scm "$staging/runtime/queries/mmlx-mdx/"
           cp helix/languages.release.toml "$staging/languages.toml"
           cp helix/README.md "$staging/README.md"
+          cp LICENSE "$staging/LICENSE"
           tar -czf "release/$name.tar.gz" -C release/stage "$name"
       - name: Package Windows binaries and Helix resources
         if: runner.os == 'Windows'
@@ -170,6 +171,7 @@ jobs:
           Copy-Item tree-sitter/mdx/queries/highlights.scm "$staging/runtime/queries/mmlx-mdx/"
           Copy-Item helix/languages.release.toml "$staging/languages.toml"
           Copy-Item helix/README.md "$staging/README.md"
+          Copy-Item LICENSE "$staging/LICENSE"
           Compress-Archive -Path $staging -DestinationPath "release/$name.zip"
       - uses: actions/upload-artifact@v4
         with:
