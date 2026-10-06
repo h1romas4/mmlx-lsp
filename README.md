@@ -125,6 +125,8 @@ Run **mmlx: Show mmlx (experimental) Panel** to open the dedicated bottom panel.
 In **FM Voice**, place the cursor in an `@` definition to edit parameters, algorithms, and envelopes directly in the source.
 **Settings** saves MDX/VGM build options, the NanoDrive8 port selection, and the MIDI-IN selection to `.vscode/settings.json`.
 
+<img src="https://raw.githubusercontent.com/h1romas4/mmlx-lsp/main/assets/docs/mmlx-004.png" alt="FM Voice panel with YM2151 algorithms and operator envelopes" width="500">
+
 Envelope graphs are illustrative. Audio playback and NanoDrive8 communication are not yet implemented.
 
 ## Current Limitations
