@@ -16,7 +16,7 @@ pub fn legend() -> SemanticTokensLegend {
     SemanticTokensLegend {
         token_types: vec![
             SemanticTokenType::KEYWORD,
-            SemanticTokenType::FUNCTION,
+            SemanticTokenType::VARIABLE,
             SemanticTokenType::NUMBER,
             SemanticTokenType::STRING,
             SemanticTokenType::COMMENT,
@@ -231,6 +231,10 @@ mod tests {
 
     #[test]
     fn separates_notes_rests_commands_and_numbers() {
+        assert_eq!(
+            legend().token_types[NOTE as usize],
+            SemanticTokenType::VARIABLE
+        );
         assert_eq!(
             decoded("A t120 c4 r8"),
             vec![

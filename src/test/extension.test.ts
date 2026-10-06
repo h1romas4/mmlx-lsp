@@ -220,7 +220,7 @@ suite('mmlx extension', () => {
 		const legend = await vscode.commands.executeCommand<vscode.SemanticTokensLegend>(
 			'vscode.provideDocumentSemanticTokensLegend', document.uri);
 		assert.ok(legend);
-		assert.ok(legend.tokenTypes.includes('function'));
+		assert.strictEqual(legend.tokenTypes[1], 'variable');
 		const tokens = await vscode.commands.executeCommand<vscode.SemanticTokens>(
 			'vscode.provideDocumentSemanticTokens', document.uri);
 		assert.ok(tokens);

@@ -160,8 +160,8 @@
           "keyword": [
             "keyword.control.mmlx"
           ],
-          "function": [
-            "entity.name.function.mmlx"
+          "variable": [
+            "variable.other.readwrite.mmlx"
           ],
           "number": [
             "constant.numeric.mmlx"
