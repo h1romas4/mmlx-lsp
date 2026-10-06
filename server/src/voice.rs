@@ -67,6 +67,10 @@ pub fn at_position(source: &str, position: Position) -> Option<Value> {
         "feedback": parameters[45], "operatorMask": parameters[46],
         "operators": operators,
         "position": position_at(source, voice.span.start()),
+        "range": Range::new(
+            position_at(source, voice.span.start()),
+            position_at(source, voice.span.start() + voice.span.text(source)?.trim_end().len()),
+        ),
         "parameterRanges": parameter_ranges,
     }))
 }
@@ -114,6 +118,15 @@ mod tests {
     fn editable_ranges_select_only_numbers_in_utf16_source() {
         let source = source().replace("@7 = {", "/* 日本 🎵 */ @7 = {");
         let voice = at_position(&source, position(&source, source.find("@7").unwrap())).unwrap();
+        let definition: Range = serde_json::from_value(voice["range"].clone()).unwrap();
+        assert_eq!(
+            definition.start,
+            position(&source, source.find("@7").unwrap())
+        );
+        assert_eq!(
+            definition.end,
+            position(&source, source.find('}').unwrap() + 1)
+        );
         let ranges: Vec<Range> = serde_json::from_value(voice["parameterRanges"].clone()).unwrap();
         assert_eq!(ranges.len(), 47);
         for range in &ranges {

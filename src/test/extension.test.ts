@@ -490,10 +490,13 @@ suite('mmlx extension', () => {
 				const timeout = setTimeout(() => { subscription.dispose(); reject(new Error('Voice update timed out')); }, 4000);
 			});
 		}
+		let voiceRequests = 0;
+		let voiceUpdates = 0;
 		const client = {
 			isRunning: () => true,
 			code2ProtocolConverter: { asTextDocumentPositionParams: (_document: vscode.TextDocument, position: vscode.Position) => ({ position }) },
 			sendRequest: async (_method: string, params: { position: vscode.Position }) => {
+				voiceRequests++;
 				const text = document.getText();
 				const offset = document.offsetAt(new vscode.Position(params.position.line, params.position.character));
 				if (offset < text.indexOf('@7') || offset > text.indexOf('}')) { return null; }
@@ -503,6 +506,7 @@ suite('mmlx extension', () => {
 				const fields = ['ar', 'd1r', 'd2r', 'rr', 'd1l', 'tl', 'ks', 'mul', 'dt1', 'dt2', 'ame'];
 				return { number: 7, algorithm: values[44], feedback: values[45], operatorMask: values[46],
 					position: document.positionAt(text.indexOf('@7')),
+					range: { start: document.positionAt(text.indexOf('@7')), end: document.positionAt(text.indexOf('}') + 1) },
 					parameterRanges: matches.map(match => ({ start: document.positionAt(start + match.index),
 						end: document.positionAt(start + match.index + match[0].length) })),
 					operators: Array.from({ length: 4 }, (_, operator) =>
@@ -513,7 +517,7 @@ suite('mmlx extension', () => {
 		const view = { visible: true, onDidChangeVisibility: events.event, onDidDispose: events.event,
 			webview: { cspSource: 'https://test.invalid', asWebviewUri: (uri: vscode.Uri) => uri,
 				onDidReceiveMessage: messages.event, postMessage: (message: PanelMessage) => {
-					if (message.type === 'voice') { latest = message; updates.fire(message); }
+					if (message.type === 'voice') { voiceUpdates++; latest = message; updates.fire(message); }
 					return Promise.resolve(true);
 				} }
 		} as unknown as vscode.WebviewView;
@@ -521,6 +525,17 @@ suite('mmlx extension', () => {
 			await provider.resolveWebviewView(view);
 			const baseline = await waitFor(message => message.editable);
 			const baselineVersion = document.version;
+			const baselineRequests = voiceRequests;
+			const baselineUpdates = voiceUpdates;
+			for (const offset of [source.indexOf('12,'), source.indexOf('5,3,15'), source.indexOf('}')]) {
+				const selected = document.positionAt(offset);
+				editor.selection = new vscode.Selection(selected, selected);
+				await new Promise(resolve => setTimeout(resolve, 180));
+				assert.strictEqual(voiceRequests, baselineRequests, 'Same-voice movement must not request a reload');
+				assert.strictEqual(voiceUpdates, baselineUpdates, 'Same-voice movement must not redraw or disable controls');
+				assert.strictEqual(latest?.editToken, baseline.editToken);
+				assert.ok(latest?.editable);
+			}
 			for (const changes of [[], null, [null], [{ index: 0, value: 20 }, { index: 5, value: 128 }],
 				[{ index: 0, value: 20 }, { index: 0, value: 21 }]]) {
 				messages.fire({ type: 'editVoice', token: baseline.editToken, changes });

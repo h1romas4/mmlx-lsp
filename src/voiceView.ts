@@ -13,6 +13,7 @@ interface VoiceDefinition {
 	operatorMask: number;
 	operators: Record<string, number>[];
 	position: { line: number; character: number };
+	range?: { start: { line: number; character: number }; end: { line: number; character: number } };
 	parameterRanges: { start: { line: number; character: number }; end: { line: number; character: number } }[];
 }
 
@@ -214,6 +215,15 @@ export class VoiceViewProvider implements WebviewViewProvider {
 	private follow(editor: TextEditor | undefined): void {
 		if (editor?.document.languageId !== 'mmlx') { return; }
 		this.editor = editor;
+		const target = this.editTarget;
+		const range = target?.voice.range;
+		if (target && range && !this.editing && !this.snapshot.retained && !this.snapshot.error
+			&& target.document === editor.document && target.version === editor.document.version
+			&& this.getClient()?.isRunning()
+			&& editor.selection.active.isAfterOrEqual(new Position(range.start.line, range.start.character))
+			&& editor.selection.active.isBefore(new Position(range.end.line, range.end.character))) {
+			return;
+		}
 		this.schedule();
 	}
 
