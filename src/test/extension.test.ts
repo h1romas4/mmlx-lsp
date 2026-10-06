@@ -2,7 +2,10 @@ import * as assert from 'assert';
 import * as path from 'node:path';
 import * as vscode from 'vscode';
 import { Wasm } from '@vscode/wasm-wasi/v1';
+import { createUriConverters } from '@vscode/wasm-wasi-lsp';
+import type { LanguageClient } from 'vscode-languageclient/node';
 import { BuildTerminal, buildErrorLinkProvider } from '../tasks';
+import { VoiceViewProvider } from '../voiceView';
 
 function observeBuilds(uri: vscode.Uri) {
 	const active = new Set<vscode.TaskExecution>();
@@ -150,6 +153,464 @@ function waitForDiagnostics(uri: vscode.Uri, count: number): Promise<void> {
 suite('mmlx extension', () => {
 	test('registers the MML language', async () => {
 		assert.ok((await vscode.languages.getLanguages()).includes('mmlx'));
+	});
+
+	test('opens the FM voice panel without modifying the selected definition', async function () {
+		this.timeout(30000);
+		const extension = vscode.extensions.all.find(extension => extension.packageJSON.name === 'mmlx-lsp');
+		assert.ok(extension);
+		await extension.activate();
+		assert.ok((await vscode.commands.getCommands()).includes('mmlx.showVoicePanel'));
+		assert.ok(extension.packageJSON.contributes.views.mmlx.some((view: { id: string; type: string }) =>
+			view.id === 'mmlx.voice' && view.type === 'webview'));
+		assert.strictEqual(extension.packageJSON.contributes.viewsContainers.panel[0].title, 'mmlx (experimental)');
+		assert.strictEqual(extension.packageJSON.contributes.views.mmlx[0].name, 'mmlx (experimental)');
+		const source = '@7 = {\n' + '31,12,4,8,6,20,1,2,3,1,0,\n'.repeat(4) + '5,3,15\n}\nA @7 c4\n';
+		const document = await vscode.workspace.openTextDocument({ language: 'mmlx', content: source });
+		const editor = await vscode.window.showTextDocument(document);
+		const position = new vscode.Position(2, 4);
+		editor.selection = new vscode.Selection(position, position);
+		await waitForDiagnostics(document.uri, 0);
+		const version = document.version;
+		try {
+			await vscode.commands.executeCommand('mmlx.showVoicePanel');
+			assert.strictEqual(document.getText(), source);
+			assert.strictEqual(document.version, version);
+			assert.ok(editor.selection.active.isEqual(position));
+		} finally {
+			await vscode.commands.executeCommand('workbench.action.closePanel');
+		}
+	});
+
+	test('FM voice algorithm table matches YM2151 connections and carriers', async () => {
+		const extension = vscode.extensions.all.find(extension => extension.packageJSON.name === 'mmlx-lsp');
+		assert.ok(extension);
+		const module = await import(vscode.Uri.joinPath(extension.extensionUri, 'media', 'voiceControls.js').toString());
+		assert.deepStrictEqual(module.algorithmConnections.map((connection: { edges: number[][] }) => connection.edges), [
+			[[0, 1], [1, 2], [2, 3]], [[0, 2], [1, 2], [2, 3]],
+			[[0, 3], [1, 2], [2, 3]], [[0, 1], [1, 3], [2, 3]],
+			[[0, 1], [2, 3]], [[0, 1], [0, 2], [0, 3]], [[0, 1]], []
+		]);
+		assert.deepStrictEqual(module.algorithmConnections.map((connection: { carriers: number[] }) => connection.carriers),
+			[[3], [3], [3], [3], [1, 3], [1, 2, 3], [1, 2, 3], [0, 1, 2, 3]]);
+	});
+
+	test('FM voice envelope dragging maps and clamps all envelope parameters', async () => {
+		const extension = vscode.extensions.all.find(extension => extension.packageJSON.name === 'mmlx-lsp');
+		assert.ok(extension);
+		const module = await import(vscode.Uri.joinPath(extension.extensionUri, 'media', 'voiceControls.js').toString());
+		const original = { ar: 16, tl: 10, rr: 8, d1r: 12, d1l: 3, d2r: 8 };
+		const base = module.envelopeHandlePositions(original);
+		for (let ar = 0; ar <= 31; ar++) {
+			const point = module.envelopeHandlePositions({ ...original, ar }).attack;
+			assert.strictEqual(module.dragEnvelope(original, 'attack', point[0] - base.attack[0], 0).ar, ar);
+		}
+		for (let tl = 0; tl <= 127; tl++) {
+			assert.strictEqual(module.dragEnvelope(original, 'attack', 0, (tl - original.tl) * 0.75 / 96 * 100).tl, tl);
+		}
+		for (let rr = 0; rr <= 15; rr++) {
+			const point = module.envelopeHandlePositions({ ...original, rr }).release;
+			assert.strictEqual(module.dragEnvelope(original, 'release', point[0] - base.release[0], 0).rr, rr);
+		}
+		for (let d1r = 0; d1r <= 31; d1r++) {
+			const point = module.envelopeHandlePositions({ ...original, d1r }).decay;
+			assert.strictEqual(module.dragEnvelope(original, 'decay', point[0] - base.decay[0], 0).d1r, d1r);
+		}
+		for (let d1l = 0; d1l <= 15; d1l++) {
+			const level = d1l === 15 ? 93 : d1l * 3;
+			assert.strictEqual(module.dragEnvelope(original, 'decay', 0, (level - original.d1l * 3) / 96 * 100).d1l, d1l);
+		}
+		for (let d2r = 0; d2r <= 31; d2r++) {
+			const point = module.envelopeHandlePositions({ ...original, d2r }).keyoff;
+			assert.strictEqual(module.dragEnvelope(original, 'keyoff', 0, point[1] - base.keyoff[1]).d2r, d2r);
+		}
+		for (const kind of ['attack', 'decay', 'keyoff', 'release']) {
+			assert.deepStrictEqual(module.dragEnvelope(original, kind, 0, 0), original);
+		}
+		assert.deepStrictEqual(module.dragEnvelope({ ...original, d1r: 0 }, 'keyoff', 0, 10), { ...original, d1r: 0 });
+		assert.strictEqual(module.dragEnvelope(original, 'decay', -1000000, -1000000).d1l, 0);
+		assert.strictEqual(module.dragEnvelope(original, 'decay', -1000000, 1000000).d1l, 15);
+		assert.strictEqual(module.dragEnvelope(original, 'keyoff', 0, -1000000).d2r, 0);
+		assert.strictEqual(module.dragEnvelope(original, 'keyoff', 0, 1000000).d2r, 31);
+		assert.deepStrictEqual(module.dragEnvelope({ ...original, ar: 0 }, 'attack', 0, 0), { ...original, ar: 0 });
+		assert.deepStrictEqual(module.dragEnvelope(original, 'attack', -1000000, -1000000), { ...original, ar: 31, tl: 0 });
+		assert.deepStrictEqual(module.dragEnvelope(original, 'attack', 1000000, 1000000), { ...original, ar: 0, tl: 127 });
+	});
+
+	test('FM voice algorithm connections use only orthogonal paths', async () => {
+		const extension = vscode.extensions.all.find(extension => extension.packageJSON.name === 'mmlx-lsp');
+		assert.ok(extension);
+		const module = await import(vscode.Uri.joinPath(extension.extensionUri, 'media', 'voiceControls.js').toString());
+		assert.strictEqual(module.connectionPath([24, 52], [64, 52]), 'M 36 52 H 52');
+		assert.strictEqual(module.connectionPath([24, 28], [84, 52]), 'M 36 28 H 54 V 52 H 72');
+		assert.strictEqual(module.connectionPath([104, 76], [180, 52], 6), 'M 116 76 H 145 V 52 H 174');
+		const con2 = module.algorithmConnections[2];
+		assert.strictEqual(module.connectionPath(con2.positions[0], con2.positions[3], 12, con2.bendX),
+			'M 36 28 H 114 V 52 H 132');
+		assert.strictEqual(module.connectionPath(con2.positions[2], con2.positions[3], 12, con2.bendX),
+			'M 96 76 H 114 V 52 H 132');
+		for (const connection of module.algorithmConnections) {
+			const paths = connection.edges.map(([start, end]: number[]) =>
+				module.connectionPath(connection.positions[start], connection.positions[end], 12, connection.bendX));
+			paths.push(...connection.carriers.map((operator: number) =>
+				module.connectionPath(connection.positions[operator], [180, 52], 6)));
+			for (const path of paths) {
+				assert.deepStrictEqual([...path.matchAll(/[A-Za-z]/g)].map(match => match[0]),
+					path.includes(' V ') ? ['M', 'H', 'V', 'H'] : ['M', 'H']);
+				assert.ok(!/NaN|Infinity/.test(path));
+			}
+		}
+	});
+
+	test('FM voice requests convert workspace file URIs before sending', async function () {
+		this.timeout(10000);
+		const extension = vscode.extensions.all.find(extension => extension.packageJSON.name === 'mmlx-lsp');
+		assert.ok(extension);
+		const folder = vscode.workspace.workspaceFolders?.[0];
+		assert.ok(folder);
+		const document = await vscode.workspace.openTextDocument(vscode.Uri.joinPath(folder.uri, 'example.mml'));
+		const editor = await vscode.window.showTextDocument(document);
+		editor.selection = new vscode.Selection(4, 8, 4, 8);
+		const context = { extensionUri: extension.extensionUri, subscriptions: [] as vscode.Disposable[] };
+		const events = new vscode.EventEmitter<void>();
+		const messages = new vscode.EventEmitter<unknown>();
+		let deliver: (value: { voice: { number: number } }) => void = () => undefined;
+		const updated = new Promise<{ voice: { number: number } }>(resolve => { deliver = resolve; });
+		const client = {
+			isRunning: () => true,
+			code2ProtocolConverter: {
+				asTextDocumentPositionParams: (document: vscode.TextDocument, position: vscode.Position) => ({
+					textDocument: { uri: createUriConverters()!.code2Protocol(document.uri) },
+					position: { line: position.line, character: position.character }
+				})
+			},
+			sendRequest: async (method: string, params: { textDocument: { uri: string }; position: vscode.Position }) => {
+				assert.strictEqual(method, 'mmlx/voiceAtPosition');
+				assert.strictEqual(params.textDocument.uri, 'file:///workspace/example.mml');
+				assert.deepStrictEqual(params.position, { line: 4, character: 8 });
+				return { number: 1 };
+			}
+		} as unknown as LanguageClient;
+		const provider = new VoiceViewProvider(context as unknown as vscode.ExtensionContext, () => client);
+		const view = {
+			visible: true,
+			onDidChangeVisibility: events.event,
+			onDidDispose: events.event,
+			webview: {
+				cspSource: 'https://test.invalid',
+				asWebviewUri: (uri: vscode.Uri) => uri,
+				onDidReceiveMessage: messages.event,
+				postMessage: (message: { voice: { number: number } | null }) => {
+					if (message.voice) { deliver({ voice: message.voice }); }
+					return Promise.resolve(true);
+				}
+			}
+		} as unknown as vscode.WebviewView;
+		try {
+			await provider.resolveWebviewView(view);
+			assert.strictEqual((await updated).voice.number, 1);
+		} finally {
+			provider.dispose();
+			for (const subscription of context.subscriptions) { subscription.dispose(); }
+			events.dispose();
+			messages.dispose();
+		}
+	});
+
+	test('Node serial port enumeration works in the extension host', async function () {
+		this.timeout(15000);
+		const { autoDetect } = await import('@serialport/bindings-cpp');
+		const ports = await autoDetect().list();
+		assert.ok(Array.isArray(ports));
+		assert.ok(ports.every(port => typeof port.path === 'string' && port.path.length > 0));
+	});
+
+	test('Connection settings list serial ports, save folder configuration and handle refresh failures', async function () {
+		this.timeout(20000);
+		const extension = vscode.extensions.all.find(extension => extension.packageJSON.name === 'mmlx-lsp');
+		assert.ok(extension);
+		const folder = vscode.workspace.workspaceFolders![0];
+		const configuration = vscode.workspace.getConfiguration('mmlx', folder.uri);
+		const setting = configuration.inspect<string>('serial.connection');
+		const previous = vscode.workspace.workspaceFile ? setting?.workspaceFolderValue : setting?.workspaceValue;
+		const context = { extensionUri: extension.extensionUri, subscriptions: [] as vscode.Disposable[] };
+		const events = new vscode.EventEmitter<void>();
+		const messages = new vscode.EventEmitter<unknown>();
+		type SerialMessage = { type: string; folder: string; connection: string; editable: boolean;
+			loading: boolean; error: string; ports: { path: string; manufacturer?: string }[] };
+		const updates = new vscode.EventEmitter<SerialMessage>();
+		let latest: SerialMessage | undefined;
+		let ports = [{ path: '/dev/ttyUSB10', manufacturer: 'NanoDrive8' }, { path: '/dev/ttyUSB2', manufacturer: 'USB' },
+			{ path: '/dev/ttyUSB2', manufacturer: 'USB' }];
+		let failure = false;
+		function waitFor(predicate: (message: SerialMessage) => boolean): Promise<SerialMessage> {
+			if (latest && predicate(latest)) { return Promise.resolve(latest); }
+			return new Promise((resolve, reject) => {
+				const subscription = updates.event(message => {
+					if (predicate(message)) { clearTimeout(timeout); subscription.dispose(); resolve(message); }
+				});
+				const timeout = setTimeout(() => { subscription.dispose(); reject(new Error('Serial update timed out')); }, 4000);
+			});
+		}
+		const provider = new VoiceViewProvider(context as unknown as vscode.ExtensionContext, () => undefined, async () => {
+			if (failure) { throw new Error('Enumeration failed'); }
+			return ports;
+		});
+		const view = { visible: true, onDidChangeVisibility: events.event, onDidDispose: events.event,
+			webview: { cspSource: 'https://test.invalid', asWebviewUri: (uri: vscode.Uri) => uri,
+				onDidReceiveMessage: messages.event, postMessage: (message: SerialMessage) => {
+					if (message.type === 'serialSettings') { latest = message; updates.fire(message); }
+					return Promise.resolve(true);
+				} }
+		} as unknown as vscode.WebviewView;
+		try {
+			await provider.resolveWebviewView(view);
+			messages.fire({ type: 'ready' });
+			const listed = await waitFor(message => !message.loading && message.ports.length === 2);
+			assert.deepStrictEqual(listed.ports.map(port => port.path), ['/dev/ttyUSB2', '/dev/ttyUSB10']);
+			assert.strictEqual(listed.ports[1].manufacturer, 'NanoDrive8');
+			messages.fire({ type: 'updateSerialConnection', folder: folder.uri.toString(), value: '/dev/ttyUSB2' });
+			await waitFor(message => message.editable && message.connection === '/dev/ttyUSB2');
+			assert.strictEqual(vscode.workspace.getConfiguration('mmlx', folder.uri).get('serial.connection'), '/dev/ttyUSB2');
+			const text = new TextDecoder().decode(await vscode.workspace.fs.readFile(vscode.Uri.joinPath(folder.uri, '.vscode', 'settings.json')));
+			assert.ok(text.includes('"mmlx.serial.connection"'));
+			for (const value of ['/dev/unknown', 42]) {
+				messages.fire({ type: 'updateSerialConnection', folder: folder.uri.toString(), value });
+				assert.strictEqual(latest?.error, 'Invalid serial port.');
+			}
+			messages.fire({ type: 'updateSerialConnection', folder: 'file:///wrong-folder', value: '' });
+			assert.strictEqual(vscode.workspace.getConfiguration('mmlx', folder.uri).get('serial.connection'), '/dev/ttyUSB2');
+			ports = [];
+			messages.fire({ type: 'getSerialPorts' });
+			const removed = await waitFor(message => !message.loading && message.ports.length === 0);
+			assert.strictEqual(removed.connection, '/dev/ttyUSB2');
+			failure = true;
+			messages.fire({ type: 'getSerialPorts' });
+			await waitFor(message => !message.loading && message.error === 'Enumeration failed');
+			messages.fire({ type: 'updateSerialConnection', folder: folder.uri.toString(), value: '' });
+			await waitFor(message => message.editable && message.connection === '');
+			await configuration.update('serial.connection', '/dev/external', vscode.ConfigurationTarget.WorkspaceFolder);
+			await waitFor(message => message.connection === '/dev/external');
+		} finally {
+			provider.dispose();
+			for (const subscription of context.subscriptions) { subscription.dispose(); }
+			await configuration.update('serial.connection', previous, vscode.ConfigurationTarget.WorkspaceFolder);
+			events.dispose(); messages.dispose(); updates.dispose();
+		}
+	});
+
+	test('Build settings panel saves folder configuration and rejects invalid or stale requests', async function () {
+		this.timeout(20000);
+		const extension = vscode.extensions.all.find(extension => extension.packageJSON.name === 'mmlx-lsp');
+		assert.ok(extension);
+		const folder = vscode.workspace.workspaceFolders?.[0];
+		assert.ok(folder);
+		const configuration = vscode.workspace.getConfiguration('mmlx', folder.uri);
+		const keys = ['format', 'onSave', 'adpcmMode', 'loopCount', 'maxTicks', 'pdx', 'outputDirectory'];
+		const previous = keys.map(key => {
+			const setting = configuration.inspect(`build.${key}`);
+			return vscode.workspace.workspaceFile ? setting?.workspaceFolderValue : setting?.workspaceValue;
+		});
+		const context = { extensionUri: extension.extensionUri, subscriptions: [] as vscode.Disposable[] };
+		const events = new vscode.EventEmitter<void>();
+		const messages = new vscode.EventEmitter<unknown>();
+		type SettingsMessage = { type: string; folder: string; editable: boolean; saving: boolean;
+			error: string; values: Record<string, unknown> };
+		const updates = new vscode.EventEmitter<SettingsMessage>();
+		let latest: SettingsMessage | undefined;
+		function waitFor(predicate: (message: SettingsMessage) => boolean): Promise<SettingsMessage> {
+			if (latest && predicate(latest)) { return Promise.resolve(latest); }
+			return new Promise((resolve, reject) => {
+				const subscription = updates.event(message => {
+					if (predicate(message)) { clearTimeout(timeout); subscription.dispose(); resolve(message); }
+				});
+				const timeout = setTimeout(() => { subscription.dispose(); reject(new Error('Settings update timed out')); }, 4000);
+			});
+		}
+		const provider = new VoiceViewProvider(context as unknown as vscode.ExtensionContext, () => undefined);
+		const view = { visible: true, onDidChangeVisibility: events.event, onDidDispose: events.event,
+			webview: { cspSource: 'https://test.invalid', asWebviewUri: (uri: vscode.Uri) => uri,
+				onDidReceiveMessage: messages.event, postMessage: (message: SettingsMessage) => {
+					if (message.type === 'buildSettings') { latest = message; updates.fire(message); }
+					return Promise.resolve(true);
+				} }
+		} as unknown as vscode.WebviewView;
+		try {
+			await provider.resolveWebviewView(view);
+			await waitFor(message => message.editable && message.folder === folder.uri.toString());
+			for (const [key, value] of [['format', 'vgm'], ['onSave', false], ['adpcmMode', 'lpf'], ['loopCount', 3],
+				['maxTicks', 123456], ['pdx', 'samples/test.pdx'], ['outputDirectory', 'generated']] as const) {
+				messages.fire({ type: 'updateBuildSetting', folder: folder.uri.toString(), key, value });
+				await waitFor(message => message.editable && !message.saving && message.values[key] === value);
+				assert.strictEqual(vscode.workspace.getConfiguration('mmlx', folder.uri).get(`build.${key}`), value);
+			}
+			const text = new TextDecoder().decode(await vscode.workspace.fs.readFile(vscode.Uri.joinPath(folder.uri, '.vscode', 'settings.json')));
+			assert.ok(text.includes('"mmlx.build.format"'));
+			assert.ok(text.includes('"mmlx.build.maxTicks"'));
+			for (const [key, value] of [['format', 'invalid'], ['loopCount', -1], ['maxTicks', 0], ['outputDirectory', '']] as const) {
+				messages.fire({ type: 'updateBuildSetting', folder: folder.uri.toString(), key, value });
+				assert.ok(latest?.error);
+			}
+			messages.fire({ type: 'updateBuildSetting', folder: 'file:///wrong-folder', key: 'format', value: 'mdx' });
+			assert.strictEqual(vscode.workspace.getConfiguration('mmlx', folder.uri).get('build.format'), 'vgm');
+			await configuration.update('build.format', 'mdx', vscode.ConfigurationTarget.WorkspaceFolder);
+			await waitFor(message => message.values.format === 'mdx');
+		} finally {
+			provider.dispose();
+			for (const subscription of context.subscriptions) { subscription.dispose(); }
+			for (const [index, key] of keys.entries()) {
+				await configuration.update(`build.${key}`, previous[index], vscode.ConfigurationTarget.WorkspaceFolder);
+			}
+			events.dispose(); messages.dispose(); updates.dispose();
+		}
+	});
+
+	test('FM voice edits preserve source and support undo while rejecting stale and invalid changes', async function () {
+		this.timeout(20000);
+		const extension = vscode.extensions.all.find(extension => extension.packageJSON.name === 'mmlx-lsp');
+		assert.ok(extension);
+		const source = '/* 日本 🎵 */ @7 = {\n' + '31, 12,  4,  8,  6,  20, 1,  2, 3, 1, 0,\n'.repeat(4) + '5,3,15\n}\nA @7 c4\n';
+		const document = await vscode.workspace.openTextDocument({ language: 'mmlx', content: source });
+		const editor = await vscode.window.showTextDocument(document);
+		const position = document.positionAt(source.indexOf('@7'));
+		editor.selection = new vscode.Selection(position, position);
+		const context = { extensionUri: extension.extensionUri, subscriptions: [] as vscode.Disposable[] };
+		const events = new vscode.EventEmitter<void>();
+		const messages = new vscode.EventEmitter<unknown>();
+		type PanelMessage = { type: string; editable: boolean; editToken: number | null; retained: boolean;
+			voice: { algorithm: number; operators: Record<string, number>[] } };
+		const updates = new vscode.EventEmitter<PanelMessage>();
+		let latest: PanelMessage | undefined;
+		function waitFor(predicate: (message: PanelMessage) => boolean): Promise<PanelMessage> {
+			if (latest && predicate(latest)) { return Promise.resolve(latest); }
+			return new Promise((resolve, reject) => {
+				const subscription = updates.event(message => {
+					if (predicate(message)) { clearTimeout(timeout); subscription.dispose(); resolve(message); }
+				});
+				const timeout = setTimeout(() => { subscription.dispose(); reject(new Error('Voice update timed out')); }, 4000);
+			});
+		}
+		const client = {
+			isRunning: () => true,
+			code2ProtocolConverter: { asTextDocumentPositionParams: (_document: vscode.TextDocument, position: vscode.Position) => ({ position }) },
+			sendRequest: async (_method: string, params: { position: vscode.Position }) => {
+				const text = document.getText();
+				const offset = document.offsetAt(new vscode.Position(params.position.line, params.position.character));
+				if (offset < text.indexOf('@7') || offset > text.indexOf('}')) { return null; }
+				const start = text.indexOf('{') + 1;
+				const matches = [...text.slice(start, text.indexOf('}')).matchAll(/\d+/g)];
+				const values = matches.map(match => Number(match[0]));
+				const fields = ['ar', 'd1r', 'd2r', 'rr', 'd1l', 'tl', 'ks', 'mul', 'dt1', 'dt2', 'ame'];
+				return { number: 7, algorithm: values[44], feedback: values[45], operatorMask: values[46],
+					position: document.positionAt(text.indexOf('@7')),
+					parameterRanges: matches.map(match => ({ start: document.positionAt(start + match.index),
+						end: document.positionAt(start + match.index + match[0].length) })),
+					operators: Array.from({ length: 4 }, (_, operator) =>
+						Object.fromEntries(fields.map((field, index) => [field, values[operator * 11 + index]]))) };
+			}
+		} as unknown as LanguageClient;
+		const provider = new VoiceViewProvider(context as unknown as vscode.ExtensionContext, () => client);
+		const view = { visible: true, onDidChangeVisibility: events.event, onDidDispose: events.event,
+			webview: { cspSource: 'https://test.invalid', asWebviewUri: (uri: vscode.Uri) => uri,
+				onDidReceiveMessage: messages.event, postMessage: (message: PanelMessage) => {
+					if (message.type === 'voice') { latest = message; updates.fire(message); }
+					return Promise.resolve(true);
+				} }
+		} as unknown as vscode.WebviewView;
+		try {
+			await provider.resolveWebviewView(view);
+			const baseline = await waitFor(message => message.editable);
+			const baselineVersion = document.version;
+			for (const changes of [[], null, [null], [{ index: 0, value: 20 }, { index: 5, value: 128 }],
+				[{ index: 0, value: 20 }, { index: 0, value: 21 }]]) {
+				messages.fire({ type: 'editVoice', token: baseline.editToken, changes });
+			}
+			assert.strictEqual(document.version, baselineVersion);
+			messages.fire({ type: 'editVoice', token: baseline.editToken, changes: [{ index: 0, value: 5 }, { index: 5, value: 127 }] });
+			await waitFor(message => message.editable && message.voice.operators[0].ar === 5 && message.voice.operators[0].tl === 127);
+			const grouped = source.replace('31, 12', ' 5, 12').replace('  20', ' 127');
+			assert.strictEqual(document.getText(), grouped);
+			assert.deepStrictEqual(document.getText().split('\n').map(line => [...line.matchAll(/,/g)].map(match => match.index)),
+				source.split('\n').map(line => [...line.matchAll(/,/g)].map(match => match.index)));
+			await vscode.commands.executeCommand('undo');
+			await waitFor(message => message.editable && message.voice.operators[0].ar === 31 && message.voice.operators[0].tl === 20);
+			assert.strictEqual(document.getText(), source);
+			await vscode.commands.executeCommand('redo');
+			await waitFor(message => message.editable && message.voice.operators[0].ar === 5 && message.voice.operators[0].tl === 127);
+			assert.strictEqual(document.getText(), grouped);
+			await vscode.commands.executeCommand('undo');
+			await waitFor(message => message.editable && message.voice.operators[0].ar === 31 && message.voice.operators[0].tl === 20);
+			const initial = await waitFor(message => message.editable);
+			messages.fire({ type: 'editVoice', token: initial.editToken, index: 5, value: 99 });
+			messages.fire({ type: 'editVoice', token: initial.editToken, index: 44, value: 6 });
+			const edited = await waitFor(message => message.editable && message.voice.operators[0].tl === 99);
+			const expected = source.replace('  20', '  99');
+			assert.strictEqual(document.getText(), expected);
+			const version = document.version;
+			for (const request of [
+				{ token: initial.editToken, index: 44, value: 6 },
+				{ token: edited.editToken, index: 5, value: 128 },
+				{ token: edited.editToken, index: 44, value: 8 },
+				{ token: edited.editToken, index: 45, value: 8 },
+				{ token: edited.editToken, index: 46, value: 16 },
+				{ token: edited.editToken, index: -1, value: 0 },
+				{ token: edited.editToken, index: 47, value: 0 },
+				{ token: edited.editToken, index: 5, value: -1 },
+				{ token: edited.editToken, index: 5, value: 1.5 }
+			]) { messages.fire({ type: 'editVoice', ...request }); }
+			assert.strictEqual(document.version, version);
+			await vscode.commands.executeCommand('undo');
+			await waitFor(message => message.editable && message.voice.operators[0].tl === 20);
+			assert.strictEqual(document.getText(), source);
+			await vscode.commands.executeCommand('redo');
+			const redone = await waitFor(message => message.editable && message.voice.operators[0].tl === 99);
+			assert.strictEqual(document.getText(), expected);
+			const prefix = '/* external edit */\n';
+			const external = new vscode.WorkspaceEdit();
+			external.insert(document.uri, new vscode.Position(0, 0), prefix);
+			assert.ok(await vscode.workspace.applyEdit(external));
+			messages.fire({ type: 'editVoice', token: redone.editToken, index: 44, value: 7 });
+			const refreshed = await waitFor(message => message.editable && message.editToken !== redone.editToken);
+			assert.strictEqual(document.getText(), prefix + expected);
+			messages.fire({ type: 'editVoice', token: refreshed.editToken, index: 44, value: 6 });
+			const changed = await waitFor(message => message.editable && message.voice.algorithm === 6);
+			assert.strictEqual(document.getText(), prefix + expected.replace('5,3,15', '6,3,15'));
+			const outside = document.positionAt(document.getText().indexOf('A @7'));
+			editor.selection = new vscode.Selection(outside, outside);
+			await waitFor(message => message.retained && !message.editable);
+			messages.fire({ type: 'editVoice', token: changed.editToken, index: 44, value: 7 });
+			assert.strictEqual(document.getText(), prefix + expected.replace('5,3,15', '6,3,15'));
+			const compact = source.replace(/, +/g, ',').replaceAll('\n31,', '\n\t31,')
+				.replace('@7 = {\n', '@7 = {\n/* operators */\n').replaceAll('\n', '\r\n');
+			const reset = new vscode.WorkspaceEdit();
+			reset.set(document.uri, [vscode.TextEdit.replace(new vscode.Range(document.positionAt(0),
+				document.positionAt(document.getText().length)), compact), vscode.TextEdit.setEndOfLine(vscode.EndOfLine.CRLF)]);
+			assert.ok(await vscode.workspace.applyEdit(reset));
+			const selected = document.positionAt(document.getText().indexOf('@7'));
+			editor.selection = new vscode.Selection(selected, selected);
+			const compactVoice = await waitFor(message => message.editable && message.voice.operators[0].tl === 20);
+			messages.fire({ type: 'editVoice', token: compactVoice.editToken, changes: [{ index: 0, value: 5 }, { index: 5, value: 127 }] });
+			const alignedVoice = await waitFor(message => message.editable && message.voice.operators[0].tl === 127);
+			const aligned = compact.replace('31,12,4,8,6,20,1,2,3,1,0,', ' 5,12, 4, 8, 6,127,1, 2,3,1,0,')
+				.replaceAll('31,12,4,8,6,20,1,2,3,1,0,', '31,12, 4, 8, 6, 20,1, 2,3,1,0,');
+			assert.strictEqual(document.getText(), aligned);
+			messages.fire({ type: 'editVoice', token: alignedVoice.editToken, changes: [{ index: 0, value: 31 }, { index: 5, value: 0 }] });
+			await waitFor(message => message.editable && message.voice.operators[0].tl === 0);
+			assert.strictEqual(document.getText(), aligned.replace(' 5,12', '31,12').replace('6,127', '6,  0'));
+			assert.deepStrictEqual(document.getText().split('\r\n').map(line => [...line.matchAll(/,/g)].map(match => match.index)),
+				aligned.split('\r\n').map(line => [...line.matchAll(/,/g)].map(match => match.index)));
+			await vscode.commands.executeCommand('undo');
+			await waitFor(message => message.editable && message.voice.operators[0].tl === 127);
+			assert.strictEqual(document.getText(), aligned);
+			await vscode.commands.executeCommand('undo');
+			await waitFor(message => message.editable && message.voice.operators[0].tl === 20);
+			assert.strictEqual(document.getText(), compact);
+		} finally {
+			provider.dispose();
+			for (const subscription of context.subscriptions) { subscription.dispose(); }
+			events.dispose(); messages.dispose(); updates.dispose();
+			await vscode.commands.executeCommand('workbench.action.revertAndCloseActiveEditor');
+		}
 	});
 
 	test('initializes MDX diagnostics and completion with an explicit dialect', async function () {
@@ -720,6 +1181,46 @@ suite('mmlx extension', () => {
 			} finally {
 				await configuration.update('build.format', previousFormat, vscode.ConfigurationTarget.Workspace);
 				await configuration.update('build.outputDirectory', previousDirectory, vscode.ConfigurationTarget.Workspace);
+			}
+		});
+
+		test('uses configured VGM build options and lets task options override them', async function () {
+			this.timeout(60000);
+			const input = vscode.Uri.joinPath(directory, 'configured.mml');
+			const output = vscode.Uri.joinPath(directory, 'configured.vgm');
+			const pdx = vscode.Uri.joinPath(directory, 'drums.pdx');
+			await vscode.workspace.fs.writeFile(input, new TextEncoder().encode('A r4 L r4'));
+			await vscode.workspace.fs.writeFile(pdx, new Uint8Array(768));
+			const configuration = vscode.workspace.getConfiguration('mmlx', input);
+			const values = { pdx: 'configured-missing.pdx', adpcmMode: 'lpf', loopCount: 3, maxTicks: 1 };
+			const previous = Object.fromEntries(Object.keys(values).map(key =>
+				[key, configuration.inspect(`build.${key}`)?.workspaceValue]));
+			try {
+				for (const [key, value] of Object.entries(values)) {
+					await configuration.update(`build.${key}`, value, vscode.ConfigurationTarget.Workspace);
+				}
+				const definition = { type: 'mmlx' as const, input: input.fsPath, output: output.fsPath, format: 'vgm' as const };
+				const missing = await runBuildTerminal(definition);
+				assert.strictEqual(missing.code, 1);
+				assert.ok(missing.output.includes('configured-missing.pdx'));
+				const limited = await runBuildTerminal({ ...definition, pdx: pdx.fsPath });
+				assert.strictEqual(limited.code, 1);
+				assert.match(limited.output, /tick/i);
+				const configured = await runBuildTerminal({ ...definition, pdx: pdx.fsPath, maxTicks: 100000 });
+				assert.strictEqual(configured.code, 0);
+				assert.ok(configured.output.includes('VGM [3 playthrough(s)]'));
+				const configuredBytes = Buffer.from(await vscode.workspace.fs.readFile(output));
+				assert.strictEqual(configuredBytes.readUInt32LE(0x1c), 0);
+				const explicit = await runBuildTerminal({ ...definition, pdx: pdx.fsPath,
+					maxTicks: 100000, loopCount: 1, adpcmMode: 'through' });
+				assert.strictEqual(explicit.code, 0);
+				assert.ok(explicit.output.includes('VGM [1 playthrough(s)]'));
+				const explicitBytes = Buffer.from(await vscode.workspace.fs.readFile(output));
+				assert.ok(configuredBytes.readUInt32LE(0x18) > explicitBytes.readUInt32LE(0x18));
+			} finally {
+				for (const [key, value] of Object.entries(previous)) {
+					await configuration.update(`build.${key}`, value, vscode.ConfigurationTarget.Workspace);
+				}
 			}
 		});
 

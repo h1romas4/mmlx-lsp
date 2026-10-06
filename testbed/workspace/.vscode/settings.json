@@ -3,5 +3,5 @@
   "files.associations": {
     "*.mml": "mmlx"
   },
-  "mmlx.build.onSave": true
+  "mmlx.build.onSave": true,
 }

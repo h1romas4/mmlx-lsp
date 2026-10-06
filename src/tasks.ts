@@ -208,6 +208,9 @@ export class BuildTerminal implements Pseudoterminal {
 			this.diagnostics.delete(input);
 			const configuration = workspace.getConfiguration('mmlx', input);
 			const format = definition.format ?? configuration.get<'both' | 'mdx' | 'vgm'>('build.format', 'both');
+			const pdxPath = definition.pdx ?? configuration.get<string>('build.pdx', '');
+			const configuredLoopCount = configuration.get<number>('build.loopCount', 0);
+			const loopCount = definition.loopCount ?? (configuredLoopCount === 0 ? undefined : configuredLoopCount);
 			if (format !== 'both' && format !== 'mdx' && format !== 'vgm') {
 				throw new Error('Output format must be both, mdx, or vgm.');
 			}
@@ -244,10 +247,10 @@ export class BuildTerminal implements Pseudoterminal {
 				format: formats[0],
 				source: extension === '.mml' ? (await workspace.openTextDocument(input)).getText() : undefined,
 				bytes: extension === '.mdx' ? Array.from(await workspace.fs.readFile(input)) : undefined,
-				pdx: definition.pdx ? Array.from(await workspace.fs.readFile(resolveUri(definition.pdx, this.folder))) : undefined,
-				adpcmMode: definition.adpcmMode,
-				loopCount: definition.loopCount,
-				maxTicks: definition.maxTicks
+				pdx: pdxPath ? Array.from(await workspace.fs.readFile(resolveUri(pdxPath, this.folder))) : undefined,
+				adpcmMode: definition.adpcmMode ?? configuration.get<'through' | 'resample' | 'lpf'>('build.adpcmMode', 'through'),
+				loopCount,
+				maxTicks: definition.maxTicks ?? configuration.get<number>('build.maxTicks', 100000)
 			};
 			const wasmUri = Uri.joinPath(this.extensionUri,
 				'server', 'target', 'wasm32-wasip1-threads', 'release', 'mmlx-build.wasm');
@@ -257,10 +260,10 @@ export class BuildTerminal implements Pseudoterminal {
 			for (const output of outputs) {
 				this.status(output.format === 'mdx' ? 'Emitting' : 'Converting',
 					output.format === 'mdx' ? 'MDX'
-						: `VGM [${definition.loopCount === undefined ? 'native loop' : `${definition.loopCount} playthrough(s)`}]`, '36');
+						: `VGM [${loopCount === undefined ? 'native loop' : `${loopCount} playthrough(s)`}]`, '36');
 				request.format = output.format;
 				let response = await this.execute(module, request);
-				if (!response.ok && response.pdxName && !definition.pdx) {
+				if (!response.ok && response.pdxName && !pdxPath) {
 					const pdx = await findPdx(input, response.pdxName);
 					request.pdx = Array.from(await workspace.fs.readFile(pdx));
 					this.status('Loading', `${this.displayPath(pdx)} [PDX]`, '36');

@@ -1,4 +1,5 @@
 const esbuild = require("esbuild");
+const { copyFileSync } = require('node:fs');
 
 const production = process.argv.includes('--production');
 const watch = process.argv.includes('--watch');
@@ -24,6 +25,8 @@ const esbuildProblemMatcherPlugin = {
 };
 
 async function main() {
+	copyFileSync(require.resolve('lucide-static/icons/refresh-cw.svg'), 'media/refresh.svg');
+	copyFileSync(require.resolve('lucide-static/LICENSE'), 'media/lucide-LICENSE');
 	const ctx = await esbuild.context({
 		entryPoints: [
 			'src/extension.ts'
@@ -35,7 +38,7 @@ async function main() {
 		sourcesContent: false,
 		platform: 'node',
 		outfile: 'dist/extension.js',
-		external: ['vscode'],
+		external: ['vscode', '@serialport/bindings-cpp'],
 		logLevel: 'silent',
 		plugins: [
 			/* add to the end of plugins array */

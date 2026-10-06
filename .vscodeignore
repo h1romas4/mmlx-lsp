@@ -2,6 +2,10 @@
 .vscode-test/**
 out/**
 node_modules/**
+!node_modules/@serialport/**
+!node_modules/node-gyp-build/**
+!node_modules/debug/**
+!node_modules/ms/**
 src/**
 .gitignore
 .yarnrc

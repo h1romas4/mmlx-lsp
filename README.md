@@ -11,6 +11,7 @@ Currently supports the MDX (MXDRV) dialect and `.mml` files.
 - **Parameter hints** while entering command arguments.
 - **Japanese and English** command descriptions and parameter hints.
 - **Built-in VS Code build tasks** for MML to MDX and MML/MDX to VGM.
+- **FM voice panel prototype** with cursor-linked operator envelopes and two-way parameter editing.
 
 <img src="https://raw.githubusercontent.com/h1romas4/mmlx-lsp/main/assets/docs/mmlx-001.png" alt="VS Code command parameter hints" width="500">
 
@@ -31,6 +32,72 @@ If an existing setting or another extension overrides this association, select
 Use completion to insert commands and voice definitions. Parameter hints show
 the active argument as you type. To read a command's full description, select
 it in the completion list and choose **Show More**.
+
+## mmlx (experimental) Panel
+
+Run **mmlx: Show mmlx (experimental) Panel** to open the dedicated bottom panel.
+The **FM Voice**, **Playback**, and **Settings** tabs have separate display modules; Playback
+currently shows a placeholder message until audio support is added. Its **Output**
+selector offers **Emulation** and **NanoDrive8**; selecting an option only stores
+the choice and does not play audio or connect to hardware. The selected tab and
+output choice are retained when voice data updates and when the Webview is recreated.
+
+**Settings > Build** edits the default MDX/VGM output format, output directory,
+build-on-save option, PDX file, ADPCM mode, loop count, and maximum ticks.
+Changes are saved to the selected workspace folder's `.vscode/settings.json`,
+creating the file when needed. The folder follows the active editor, or the last
+voice editor and then the first workspace folder when no editor is active.
+The displayed path identifies the target folder. Existing settings-file edits
+are reflected in the panel; inputs are disabled while saving or without a workspace
+folder. Build settings apply to the next build without restarting the language server.
+
+The settings-file path appears above **Build**. **Settings > Connection** offers
+a **NanoDrive8** serial-port dropdown populated by the Node extension host using
+SerialPort's native bindings. The refresh icon re-enumerates ports; detected
+manufacturer names are included, and a saved port that disappears remains marked
+as not detected. Selecting a port saves its path as `mmlx.serial.connection` in
+the same workspace-folder settings file. **Not selected** clears the setting.
+Selection does not open a port, transmit data, or enable playback. In remote
+workspaces, the list belongs to the remote extension host, not the browser or
+local desktop.
+
+In **FM Voice**, move the cursor into an `@` voice definition to display its four operator envelopes,
+parameters, algorithm (`CON`), feedback (`FL`), and operator mask (`OP`).
+An algorithm table shows all eight YM2151 connections and highlights the current
+`CON`. Click the disclosure triangle beside **Algorithms** to collapse or expand
+the table; its state is retained across updates and Webview recreation.
+Operator colors match the envelopes; filled nodes are carriers, outlined
+nodes are modulators, and dashed loops indicate OP 1 feedback. Inactive operators
+and disabled feedback are dimmed.
+The last selected voice remains visible when the cursor leaves the definition
+or the panel receives focus. `Retained` marks the previous snapshot when the
+current cursor or incomplete/invalid source does not yield a voice.
+
+Edit numeric parameters, select `CON`, or click an algorithm diagram in the panel
+to update the corresponding numbers in the source. Diagrams also support Enter
+and Space when focused. Numeric edits commit on Enter or when focus leaves the
+input. Comments and line breaks are preserved; changes support normal Undo/Redo.
+Operator values are right-aligned using shared column widths with enough room
+for each parameter's maximum value. Existing wider spacing is retained; compact
+definitions are aligned on the first operator edit so later digit changes do not
+shift the columns. Alignment is included in the same undoable edit.
+Inputs are disabled for retained snapshots, during updates, and until a fresh
+definition has been obtained after source changes or Webview recreation.
+
+Drag the attack handle horizontally for `AR` and vertically for `TL`, the decay
+handle horizontally for `D1R` and vertically for `D1L`, the key-off handle vertically
+for `D2R`, or the release handle horizontally for `RR`. Values and graphs preview during the drag;
+releasing commits the changed values together as one undoable source edit.
+Escape cancels the preview, and incoming source updates cancel an active drag.
+Focused handles also support arrow keys. All parameters remain available as numeric inputs.
+The key-off handle is disabled when `AR` or `D1R` is zero, or its held level is
+below the graph's display range. Vertical decay editing is inactive when `D1R` is zero.
+
+Envelope graphs use a shared level scale (-96 to 0 dB) and relative-time scale, with a
+fixed key-off point. Their rate-to-time mapping is illustrative, not a YM2151
+simulation: pitch, key scaling, and actual envelope timings are not modeled.
+Audio preview is not yet implemented. The `ymfm-sys` integration is reserved for
+a later iteration.
 
 ## Build MDX/VGM in VS Code
 
@@ -79,10 +146,12 @@ relative paths are resolved from the task's workspace folder.
 | --- | --- | --- |
 | `format` | `mmlx.build.format` (`both`) | Output formats. MDX input generates VGM only when set to `both`. |
 | `output` | Configured directory with the input name and output extension | Output file path. Overrides `mmlx.build.outputDirectory`. For both formats, it is a base path; a `.mdx` or `.vgm` suffix is replaced with each output extension. |
-| `pdx` | Referenced PDX beside the input | PDX file path for VGM conversion. Lookup accepts `.pdx` extensions and case-insensitive filenames. |
-| `adpcmMode` | `through` | VGM ADPCM processing: `through`, `resample`, or `lpf`. |
-| `loopCount` | Native VGM loop points | Positive finite loop count for VGM conversion. |
-| `maxTicks` | `100000` | Positive playback tick limit for VGM conversion. |
+| `pdx` | `mmlx.build.pdx`, or referenced PDX beside the input when empty | PDX file path for VGM conversion. Lookup accepts `.pdx` extensions and case-insensitive filenames. |
+| `adpcmMode` | `mmlx.build.adpcmMode` (`through`) | VGM ADPCM processing: `through`, `resample`, or `lpf`. |
+| `loopCount` | `mmlx.build.loopCount` (`0`: native VGM loop points) | Positive finite loop count for VGM conversion. |
+| `maxTicks` | `mmlx.build.maxTicks` (`100000`) | Positive playback tick limit for VGM conversion. |
+
+Explicit task properties override the corresponding build settings.
 
 VGM conversion defaults to native loop-point detection, equivalent to
 `soundlog mdx convert --native-loop`. Detected loops set `loop_offset` and
@@ -97,7 +166,8 @@ Helix continues to use the native language server.
 
 ## Settings
 
-Set these options in VS Code settings or your settings JSON:
+Set these options in VS Code settings or your settings JSON. The panel's
+**Settings > Build** controls save build options to `.vscode/settings.json`:
 
 ```json
 {
@@ -105,7 +175,12 @@ Set these options in VS Code settings or your settings JSON:
     "mmlx.language": "auto",
     "mmlx.build.format": "both",
     "mmlx.build.onSave": false,
-    "mmlx.build.outputDirectory": "build"
+    "mmlx.build.outputDirectory": "build",
+    "mmlx.build.pdx": "",
+    "mmlx.build.adpcmMode": "through",
+    "mmlx.build.loopCount": 0,
+    "mmlx.build.maxTicks": 100000,
+    "mmlx.serial.connection": ""
 }
 ```
 
@@ -118,6 +193,14 @@ Set these options in VS Code settings or your settings JSON:
     files automatically. Changes apply without restarting the language server.
 - `mmlx.build.outputDirectory`: `build` is the default. Use another relative
     directory, such as `out`, or an absolute path. Changes apply to the next build.
+- `mmlx.build.pdx`: empty by default, enabling automatic PDX lookup beside the
+    input. Set a relative workspace path or an absolute PDX path to override lookup.
+- `mmlx.build.adpcmMode`: `through` is the default; `resample` and `lpf` are also supported.
+- `mmlx.build.loopCount`: `0` preserves native VGM loop points; positive values
+    produce finite playback without a loop point.
+- `mmlx.build.maxTicks`: `100000` is the default positive playback tick limit.
+- `mmlx.serial.connection`: empty by default. Use **Settings > Connection > NanoDrive8**
+    to select an available serial port, such as `/dev/ttyUSB0` or `COM3`.
 
 After changing the dialect or language, run **mmlx: Restart Language Server** from the
 command palette. Diagnostic messages are not translated.

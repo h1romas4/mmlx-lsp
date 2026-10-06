@@ -2,6 +2,7 @@ mod completion;
 mod dialect;
 mod i18n;
 mod semantic;
+mod voice;
 
 rust_i18n::i18n!("locales", fallback = "ja");
 
@@ -13,7 +14,8 @@ use lsp_server::{Connection, ErrorCode, Message, Notification, Request, Response
 use lsp_types::{
     CompletionParams, Diagnostic, DiagnosticSeverity, DidChangeTextDocumentParams,
     DidCloseTextDocumentParams, DidOpenTextDocumentParams, InitializeParams, NumberOrString,
-    Position, PublishDiagnosticsParams, Range, SemanticTokensParams, SignatureHelpParams, Url,
+    Position, PublishDiagnosticsParams, Range, SemanticTokensParams, SignatureHelpParams,
+    TextDocumentPositionParams, Url,
 };
 use mmlx::diagnostic::Severity;
 use mmlx::frontend::SourceFile;
@@ -107,6 +109,22 @@ fn handle_request(
     language: i18n::Language,
     dialect: Dialect,
 ) -> Response {
+    if request.method == "mmlx/voiceAtPosition" {
+        return match serde_json::from_value::<TextDocumentPositionParams>(request.params) {
+            Ok(params) => {
+                let source = documents
+                    .get(&params.text_document.uri)
+                    .map(String::as_str)
+                    .unwrap_or("");
+                Response::new_ok(request.id, voice::at_position(source, params.position))
+            }
+            Err(error) => Response::new_err(
+                request.id,
+                ErrorCode::InvalidParams as i32,
+                error.to_string(),
+            ),
+        };
+    }
     if request.method == "textDocument/signatureHelp" {
         return match serde_json::from_value::<SignatureHelpParams>(request.params) {
             Ok(params) => {
@@ -358,6 +376,36 @@ mod tests {
             i18n::Language::Japanese,
             Dialect::Mdx,
         )
+    }
+
+    #[test]
+    fn voice_request_validates_positions_and_returns_null_for_unknown_documents() {
+        let documents = HashMap::new();
+        let response = handle_request(
+            Request::new(
+                1.into(),
+                "mmlx/voiceAtPosition".into(),
+                serde_json::json!({ "textDocument": { "uri": "file:///voice.mml" },
+                "position": { "line": 0, "character": 0 } }),
+            ),
+            &documents,
+            false,
+        );
+        assert!(response.error.is_none());
+        assert_eq!(response.result, Some(serde_json::Value::Null));
+        let response = handle_request(
+            Request::new(
+                2.into(),
+                "mmlx/voiceAtPosition".into(),
+                serde_json::json!({}),
+            ),
+            &documents,
+            false,
+        );
+        assert_eq!(
+            response.error.unwrap().code,
+            ErrorCode::InvalidParams as i32
+        );
     }
 
     #[test]

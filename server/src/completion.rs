@@ -482,7 +482,7 @@ fn argument_position(source: &str, command: &str, count: usize) -> (usize, Optio
     }
 }
 
-fn byte_offset(source: &str, position: Position) -> Option<usize> {
+pub(crate) fn byte_offset(source: &str, position: Position) -> Option<usize> {
     let mut line_start = 0;
     for _ in 0..position.line {
         line_start += source.get(line_start..)?.find('\n')? + 1;

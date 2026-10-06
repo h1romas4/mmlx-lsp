@@ -80,7 +80,7 @@ jobs:
           mkdir -p release
           options=()
           if [[ "$VERSION" == *-* ]]; then options+=(--pre-release); fi
-          npx --no-install vsce package --no-dependencies --skip-license "${options[@]}" --out "release/mmlx-lsp-${VERSION}.vsix"
+          npx --no-install vsce package --skip-license "${options[@]}" --out "release/mmlx-lsp-${VERSION}.vsix"
       - uses: actions/upload-artifact@v4
         with:
           name: vsix
