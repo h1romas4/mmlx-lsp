@@ -438,6 +438,7 @@ dependencies = [
  "lsp-types",
  "mmlx",
  "rust-i18n",
+ "serde",
  "serde-saphyr",
  "serde_json",
  "soundlog",

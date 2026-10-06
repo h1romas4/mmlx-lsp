@@ -1,7 +1,8 @@
-use std::io::{self, BufRead};
+use std::io::{self, BufRead, Write};
 
 use mmlx::frontend::SourceFile;
 use mmlx::mdx::frontend::{self, MdxLocation};
+use serde::Deserialize;
 use serde_json::{Value, json};
 use soundlog::mdx::convert::{
     AdpcmMode, MdxPlaybackCheckError, MdxToVgmOptions, to_vgm_document_with_diagnostics,
@@ -11,6 +12,21 @@ use soundlog::meta::Gd3;
 
 fn failure(message: impl ToString) -> Value {
     json!({ "ok": false, "message": message.to_string() })
+}
+
+#[derive(serde::Serialize)]
+struct BuildSuccess<'bytes> {
+    bytes: &'bytes [u8],
+    ok: bool,
+}
+
+fn write_response(mut output: impl Write, result: &Result<Vec<u8>, Value>) -> io::Result<()> {
+    match result {
+        Ok(bytes) => serde_json::to_writer(&mut output, &BuildSuccess { bytes, ok: true }),
+        Err(error) => serde_json::to_writer(&mut output, error),
+    }
+    .map_err(io::Error::other)?;
+    writeln!(output)
 }
 
 fn diagnostic(source: &str, error: mmlx::diagnostic::Diagnostic) -> Value {
@@ -54,7 +70,7 @@ fn package(bytes: Vec<u8>, request: &Value) -> Result<MdxPackage, Value> {
     let pdx = if request["pdx"].is_null() {
         None
     } else {
-        Some(serde_json::from_value::<Vec<u8>>(request["pdx"].clone()).map_err(failure)?)
+        Some(Vec::<u8>::deserialize(&request["pdx"]).map_err(failure)?)
     };
     let package = MdxPackage::parse_owned(bytes, pdx).map_err(failure)?;
     if package.pdx.is_none()
@@ -126,8 +142,7 @@ fn build(request: &Value) -> Result<Vec<u8>, Value> {
             })
         }
         "mdx" if format == "vgm" => {
-            let bytes =
-                serde_json::from_value::<Vec<u8>>(request["bytes"].clone()).map_err(failure)?;
+            let bytes = Vec::<u8>::deserialize(&request["bytes"]).map_err(failure)?;
             let package = package(bytes, request)?;
             vgm(&package, &options(request)?).map_err(failure)
         }
@@ -144,12 +159,11 @@ fn main() {
         .map_err(failure)
         .and_then(|_| serde_json::from_str::<Value>(&input).map_err(failure))
         .and_then(|request| build(&request));
-    match result {
-        Ok(bytes) => println!("{}", json!({ "ok": true, "bytes": bytes })),
-        Err(error) => {
-            println!("{error}");
-            std::process::exit(1);
-        }
+    let mut output = io::BufWriter::new(io::stdout().lock());
+    write_response(&mut output, &result).expect("compiler response must be writable");
+    output.flush().expect("compiler response must be flushed");
+    if result.is_err() {
+        std::process::exit(1);
     }
 }
 
@@ -157,6 +171,30 @@ fn main() {
 mod tests {
     use super::*;
     use soundlog::mdx::document::MdxDocument;
+
+    #[test]
+    fn writes_success_response_without_expanding_bytes_to_values() {
+        for bytes in [vec![], (0..=u8::MAX).collect()] {
+            let expected = format!("{}\n", json!({ "ok": true, "bytes": bytes }));
+            let mut output = Vec::new();
+            write_response(&mut output, &Ok(bytes)).unwrap();
+            assert_eq!(output, expected.as_bytes());
+        }
+    }
+
+    #[test]
+    fn writes_error_response_with_existing_diagnostic_fields() {
+        let error = json!({
+            "ok": false,
+            "message": "invalid source",
+            "range": [[0, 2], [0, 4]],
+            "pdxName": "drums",
+        });
+        let expected = format!("{error}\n");
+        let mut output = Vec::new();
+        write_response(&mut output, &Err(error)).unwrap();
+        assert_eq!(output, expected.as_bytes());
+    }
 
     #[test]
     fn compiles_mml_to_mdx() {
@@ -182,13 +220,30 @@ mod tests {
     }
 
     #[test]
+    fn rejects_invalid_json_bytes_and_pdx() {
+        for bytes in [json!([-1]), json!([256]), json!(["0"]), Value::Null] {
+            let request = json!({ "inputKind": "mdx", "bytes": bytes, "format": "vgm" });
+            assert!(build(&request).is_err());
+            let request = json!({
+                "source": "#pcmfile \"drums\"\nA r4",
+                "format": "vgm",
+                "pdx": bytes,
+            });
+            assert!(build(&request).is_err());
+        }
+    }
+
+    #[test]
     fn native_loop_header_matches_cli_conversion() {
         for source in ["A r4", "A r4 L r4"] {
             let mdx = build(&json!({ "source": source })).unwrap();
             let package = MdxPackage::parse(&mdx, None).unwrap();
             let mut request = json!({ "inputKind": "mdx", "bytes": mdx, "format": "vgm" });
             let automatic = build(&request).unwrap();
-            assert_eq!(automatic, vgm(&package, &MdxToVgmOptions::default()).unwrap());
+            assert_eq!(
+                automatic,
+                vgm(&package, &MdxToVgmOptions::default()).unwrap()
+            );
             let loop_offset = u32::from_le_bytes(automatic[0x1c..0x20].try_into().unwrap());
             let loop_samples = u32::from_le_bytes(automatic[0x20..0x24].try_into().unwrap());
             assert_eq!(loop_offset > 0, source.contains('L'));

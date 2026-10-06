@@ -4,7 +4,10 @@ All notable changes to the "mmlx-lsp" extension will be documented in this file.
 
 ## [Unreleased]
 
-- [ ] Reduce memory usage when building VGM files.
+## [0.4.0] - Unreleased
+
+- Reduce VGM build memory usage by serializing binary responses directly without creating intermediate JSON value arrays.
+- Avoid cloning JSON byte arrays when reading MDX and PDX inputs.
 
 ## [0.3.0] - 2026-10-06
 
