@@ -8,6 +8,7 @@ All notable changes to the "mmlx-lsp" extension will be documented in this file.
 
 - Reduce VGM build memory usage by serializing binary responses directly without creating intermediate JSON value arrays.
 - Avoid cloning JSON byte arrays when reading MDX and PDX inputs.
+- Transfer compiler output as a small JSON header followed by binary bytes, avoiding large JSON strings and numeric arrays in the extension host.
 
 ## [0.3.0] - 2026-10-06
 

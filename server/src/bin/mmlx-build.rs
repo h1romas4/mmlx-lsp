@@ -15,18 +15,29 @@ fn failure(message: impl ToString) -> Value {
 }
 
 #[derive(serde::Serialize)]
-struct BuildSuccess<'bytes> {
-    bytes: &'bytes [u8],
+#[serde(rename_all = "camelCase")]
+struct BuildSuccess {
+    byte_length: usize,
     ok: bool,
 }
 
 fn write_response(mut output: impl Write, result: &Result<Vec<u8>, Value>) -> io::Result<()> {
     match result {
-        Ok(bytes) => serde_json::to_writer(&mut output, &BuildSuccess { bytes, ok: true }),
+        Ok(bytes) => serde_json::to_writer(
+            &mut output,
+            &BuildSuccess {
+                byte_length: bytes.len(),
+                ok: true,
+            },
+        ),
         Err(error) => serde_json::to_writer(&mut output, error),
     }
     .map_err(io::Error::other)?;
-    writeln!(output)
+    writeln!(output)?;
+    if let Ok(bytes) = result {
+        output.write_all(bytes)?;
+    }
+    Ok(())
 }
 
 fn diagnostic(source: &str, error: mmlx::diagnostic::Diagnostic) -> Value {
@@ -173,12 +184,14 @@ mod tests {
     use soundlog::mdx::document::MdxDocument;
 
     #[test]
-    fn writes_success_response_without_expanding_bytes_to_values() {
+    fn writes_success_header_followed_by_unmodified_binary_bytes() {
         for bytes in [vec![], (0..=u8::MAX).collect()] {
-            let expected = format!("{}\n", json!({ "ok": true, "bytes": bytes }));
             let mut output = Vec::new();
-            write_response(&mut output, &Ok(bytes)).unwrap();
-            assert_eq!(output, expected.as_bytes());
+            write_response(&mut output, &Ok(bytes.clone())).unwrap();
+            let boundary = output.iter().position(|byte| *byte == b'\n').unwrap();
+            let header: Value = serde_json::from_slice(&output[..boundary]).unwrap();
+            assert_eq!(header, json!({ "ok": true, "byteLength": bytes.len() }));
+            assert_eq!(&output[boundary + 1..], bytes);
         }
     }
 

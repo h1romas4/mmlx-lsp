@@ -7,6 +7,7 @@ import {
 	TerminalLinkProvider
 } from 'vscode';
 import { Wasm, WasmProcess } from '@vscode/wasm-wasi/v1';
+import { BuildResponseDecoder, type BuildResponse } from './buildProtocol';
 
 interface BuildDefinition extends TaskDefinition {
 	type: 'mmlx';
@@ -34,13 +35,6 @@ interface BuildErrorLink extends TerminalLink {
 }
 
 const buildErrors = new Map<string, BuildErrorLink>();
-
-type BuildResponse = { ok: true; bytes: number[] } | {
-	ok: false;
-	message: string;
-	pdxName?: string;
-	range?: [[number, number], [number, number]] | null;
-};
 
 class BuildFailure extends Error {
 	constructor(readonly response: Extract<BuildResponse, { ok: false }>) {
@@ -160,11 +154,19 @@ export class BuildTerminal implements Pseudoterminal {
 				stdio: { in: { kind: 'pipeIn' }, out: { kind: 'pipeOut' }, err: { kind: 'pipeOut' } }
 			});
 		this.process = process;
-		let output = '';
-		const decoder = new TextDecoder();
+		const decoder = new BuildResponseDecoder();
+		let outputError: Error | undefined;
 		const stderrDecoder = new TextDecoder();
 		const subscriptions = [
-			process.stdout!.onData(data => { output += decoder.decode(data, { stream: true }); }),
+			process.stdout!.onData(data => {
+				if (outputError) { return; }
+				try {
+					decoder.push(data);
+				} catch (error) {
+					outputError = error instanceof Error ? error : new Error(String(error));
+					void process.terminate().catch(() => undefined);
+				}
+			}),
 			process.stderr!.onData(data => {
 				this.writeEmitter.fire(stderrDecoder.decode(data, { stream: true }).replace(/\r?\n/g, '\r\n'));
 			})
@@ -176,19 +178,11 @@ export class BuildTerminal implements Pseudoterminal {
 				process.stdin!.write(`${JSON.stringify(request)}\n`)
 			]);
 			this.checkCanceled();
-			output += decoder.decode();
-			const response = JSON.parse(output) as BuildResponse;
-			if (response.ok === false && typeof response.message === 'string') {
-				return response;
-			}
-			if (code !== 0 || response.ok !== true || !Array.isArray(response.bytes)
-				|| !response.bytes.every(byte => Number.isInteger(byte) && byte >= 0 && byte <= 255)) {
-				throw new Error(`Invalid compiler response (exit code ${code}).`);
-			}
-			return response;
+			if (outputError) { throw outputError; }
+			return decoder.finish(code);
 		} catch (error) {
 			await process.terminate().catch(() => undefined);
-			throw error;
+			throw outputError ?? error;
 		} finally {
 			for (const subscription of subscriptions) {
 				subscription.dispose();
@@ -256,7 +250,7 @@ export class BuildTerminal implements Pseudoterminal {
 				'server', 'target', 'wasm32-wasip1-threads', 'release', 'mmlx-build.wasm');
 			const bytes = await workspace.fs.readFile(wasmUri);
 			const module = await WebAssembly.compile(new Uint8Array(bytes).buffer);
-			const results: { uri: Uri; bytes: number[] }[] = [];
+			const results: { uri: Uri; bytes: Uint8Array }[] = [];
 			for (const output of outputs) {
 				this.status(output.format === 'mdx' ? 'Emitting' : 'Converting',
 					output.format === 'mdx' ? 'MDX'
@@ -278,7 +272,7 @@ export class BuildTerminal implements Pseudoterminal {
 				this.checkCanceled();
 				await workspace.fs.createDirectory(Uri.joinPath(result.uri, '..'));
 				this.checkCanceled();
-				await workspace.fs.writeFile(result.uri, Uint8Array.from(result.bytes));
+				await workspace.fs.writeFile(result.uri, result.bytes);
 				const size = result.bytes.length < 1024 ? `${result.bytes.length} B`
 					: result.bytes.length < 1024 * 1024 ? `${(result.bytes.length / 1024).toFixed(1)} KiB`
 						: `${(result.bytes.length / (1024 * 1024)).toFixed(1)} MiB`;

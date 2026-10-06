@@ -1265,6 +1265,21 @@ suite('mmlx extension', () => {
 			assert.strictEqual(finite.readUInt32LE(0x20), 0);
 		});
 
+		test('streams binary output larger than pipe chunks with the bundled WASM', async function () {
+			this.timeout(60000);
+			const input = vscode.Uri.joinPath(directory, 'large.mml');
+			const output = vscode.Uri.joinPath(directory, 'large.vgm');
+			const source = '#title "Large transfer"\nA t120 o4 ' + 'c64 r64 '.repeat(8192);
+			await vscode.workspace.fs.writeFile(input, new TextEncoder().encode(source));
+			const result = await runBuildTerminal({ type: 'mmlx', input: input.fsPath,
+				output: output.fsPath, format: 'vgm' });
+			assert.strictEqual(result.code, 0, result.output);
+			const bytes = Buffer.from(await vscode.workspace.fs.readFile(output));
+			assert.ok(bytes.length > 64 * 1024);
+			assert.strictEqual(bytes.subarray(0, 4).toString(), 'Vgm ');
+			assert.strictEqual(bytes.readUInt32LE(0x04) + 4, bytes.length);
+		});
+
 		test('configures relative and absolute output directories with task output taking precedence', async function () {
 			this.timeout(60000);
 			const folder = vscode.workspace.workspaceFolders![0];
