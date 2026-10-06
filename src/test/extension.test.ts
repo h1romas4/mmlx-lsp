@@ -316,6 +316,7 @@ suite('mmlx extension', () => {
 			'       2,  7, 15',
 			'}',
 		];
+		assert.strictEqual(voice.insertText.value, expected.join('\n').replace('@1', '@${1:1}') + '$0');
 		assert.deepStrictEqual(document.getText().split('\n').map(line => line.trimStart()),
 			expected.map(line => line.trimStart()));
 		assert.strictEqual(document.getText(editor.selection), '1');

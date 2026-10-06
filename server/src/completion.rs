@@ -71,13 +71,13 @@ const COMMANDS: &[Command] = &[
 ];
 
 const VOICE_DEFINITION_BODY: &str = r#" = {
-     /* AR  D1R D2R RR D1L TL  KS MUL DT1 DT2 AME */
-         28, 4,  0,  5, 1,  37, 2, 1,  7,  0,  0,
-         22, 9,  1,  2, 1,  47, 2, 12, 0,  0,  0,
-         29, 4,  3,  6, 1,  37, 1, 3,  3,  0,  0,
-         15, 7,  0,  5, 10,  0, 2, 1,  0,  0,  1,
-     /* CON FL OP */
-         2,  7, 15
+    /* AR  D1R D2R RR D1L TL  KS MUL DT1 DT2 AME */
+       28, 4,  0,  5, 1,  37, 2, 1,  7,  0,  0,
+       22, 9,  1,  2, 1,  47, 2, 12, 0,  0,  0,
+       29, 4,  3,  6, 1,  37, 1, 3,  3,  0,  0,
+       15, 7,  0,  5, 10,  0, 2, 1,  0,  0,  1,
+    /* CON FL OP */
+       2,  7, 15
 }"#;
 
 pub fn items(
@@ -557,6 +557,13 @@ mod tests {
 
     #[test]
     fn voice_definition_completion_preserves_values_and_voice_numbers() {
+        let lines: Vec<_> = VOICE_DEFINITION_BODY.lines().collect();
+        assert_eq!(lines[1].find("AR"), Some(7));
+        for line in &lines[2..6] {
+            assert_eq!(line.len() - line.trim_start().len(), 7);
+        }
+        assert_eq!(lines[6].find("CON"), Some(7));
+        assert_eq!(lines[7].len() - lines[7].trim_start().len(), 7);
         for (source, position, number, start, end) in [
             ("@", Position::new(0, 1), "1", 0, 1),
             ("@12", Position::new(0, 3), "12", 0, 3),
