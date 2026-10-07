@@ -19,6 +19,10 @@ export function createEmulationAudio(onRequest, onFailure, onEnded = () => {}) {
 			const current = generation;
 			const audio = new AudioContext({ latencyHint: 'interactive' });
 			context = audio;
+			if (audio.state === 'suspended' && !navigator.userActivation.hasBeenActive) {
+				disconnect();
+				throw new Error('Audio output requires a click in the mmlx panel.');
+			}
 			await audio.resume();
 			await audio.audioWorklet.addModule(new URL('./emulationWorklet.js', import.meta.url));
 			if (current !== generation) { throw new Error('Audio connection canceled.'); }

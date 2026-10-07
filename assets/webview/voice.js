@@ -95,7 +95,7 @@ async function playbackAction(action) {
 		if (action === 'play' || action === 'playFromCursor') {
 			const id = ++playbackId;
 			const document = playbackState?.document;
-			playbackState = { ...playbackState, playing: false, paused: false, loading: true, position: 0, finished: false, error: '' };
+			playbackState = { ...playbackState, playing: false, paused: false, loading: true, startAction: action, position: 0, finished: false, error: '' };
 			playbackControls.render(playbackState);
 			const sampleRate = await playbackAudio.connect();
 			if (operation !== playbackOperation) { return; }

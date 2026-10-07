@@ -2,6 +2,10 @@
 
 All notable changes to the "mmlx-lsp" extension will be documented in this file.
 
+## [0.8.0] - 2026-10-08
+
+- Improve the Playback and connection settings UI with clearer status displays, compact playback controls, and reduced flicker.
+
 ## [0.7.0] - 2026-10-08
 
 - Add initial Playback support for MML using ymfm-based YM2151 emulation.

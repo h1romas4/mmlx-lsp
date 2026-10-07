@@ -20,13 +20,13 @@ export function createSettingsControls(root, onChange = () => {}) {
 			connection.disabled = !message.editable || !!message.connected || !!message.connecting;
 			refresh.disabled = !message.folder || message.saving || message.loading || !!message.connecting;
 			if (connect) {
-				connect.disabled = !!message.connecting || (!message.connected && !message.canConnect);
-				connect.title = message.connected ? 'Disconnect MIDI input' : 'Connect MIDI input';
+				connect.disabled = prefix !== 'midi' || !!message.connecting || (!message.connected && !message.canConnect);
+				connect.title = prefix === 'midi' ? (message.connected ? 'Disconnect MIDI input' : 'Connect MIDI input')
+					: 'Connect NanoDrive8 (not yet supported)';
 				connect.setAttribute('aria-label', connect.title);
-				connect.setAttribute('aria-pressed', String(!!message.connected));
+				connect.setAttribute('aria-pressed', String(prefix === 'midi' && !!message.connected));
 			}
-			status.textContent = message.error || (message.connecting ? `Connecting ${label}`
-				: message.loading ? `Loading ${label} ports` : message.saving ? 'Saving'
+			status.textContent = message.error || (message.loading ? `Loading ${label} ports` : message.saving ? 'Saving'
 				: message.connected ? (prefix === 'midi' ? '' : `Connected: ${message.connection}`)
 				: message.ports.length === 0 ? `No ${label} ports found` : '');
 			const ports = message.ports.map(option);
@@ -43,7 +43,7 @@ export function createSettingsControls(root, onChange = () => {}) {
 			onChange({ type: refreshType });
 		});
 		connect?.addEventListener('click', () => {
-			if (!current?.folder || current.connecting || (!current.connected && !current.canConnect)) { return; }
+			if (prefix !== 'midi' || !current?.folder || current.connecting || (!current.connected && !current.canConnect)) { return; }
 			onChange({ type: 'setMidiInputConnection', folder: current.folder, connected: !current.connected });
 		});
 		connection.addEventListener('change', () => {

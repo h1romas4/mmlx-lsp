@@ -209,6 +209,18 @@ suite('mmlx extension', () => {
 					for (const contextId of contexts) {
 						const probe = await command('Runtime.evaluate', { expression: 'typeof window.__mmlxConnectAudio', contextId, returnByValue: true });
 						if ((probe.result as { value?: unknown })?.value === 'function') {
+							const blocked = await command('Runtime.evaluate', {
+								expression: 'Promise.race([window.__mmlxProbeBlockedAudio(), new Promise(resolve => setTimeout(() => resolve({ timeout: true }), 700))])',
+								contextId, userGesture: false, awaitPromise: true, returnByValue: true
+							});
+							assert.deepStrictEqual((blocked.result as { value?: unknown })?.value,
+								{ blocked: true, error: 'Error: Audio output requires a click in the mmlx panel.' });
+							for (const userGesture of [true, false]) {
+								const enabled = await command('Runtime.evaluate', {
+									expression: 'window.__mmlxProbeBlockedAudio()', contextId, userGesture, awaitPromise: true, returnByValue: true
+								});
+								assert.deepStrictEqual((enabled.result as { value?: unknown })?.value, { blocked: false });
+							}
 							await command('Runtime.evaluate', { expression: 'window.__mmlxConnectAudio()', contextId, userGesture: true });
 							return;
 						}
@@ -261,6 +273,10 @@ suite('mmlx extension', () => {
 			};
 			const audio = createEmulationAudio(blocks => { requestedBlocks += blocks; api.postMessage({ type: 'render', blocks }); },
 				error => api.postMessage({ type: 'failure', error }));
+			window.__mmlxProbeBlockedAudio = async () => {
+				try { await audio.connect(); audio.disconnect(); return { blocked: false }; }
+				catch (error) { return { blocked: true, error: String(error) }; }
+			};
 			window.addEventListener('message', event => {
 				if (event.data.type === 'pcm') {
 					pcmBlocks++; audio.pcm(event.data.pcm);
@@ -413,6 +429,93 @@ suite('mmlx extension', () => {
 			messages.dispose(); visibility.dispose(); disposed.dispose(); changed.dispose();
 		}
 	});
+	test('Playback controls preserve their display during startup and delay the loading indicator', async function () {
+		this.timeout(5000);
+		const extension = vscode.extensions.all.find(extension => extension.packageJSON.name === 'mmlx-lsp');
+		assert.ok(extension);
+		const { createPlaybackControls } = await import(path.join(extension.extensionUri.fsPath, 'assets', 'webview', 'playbackControls.js'));
+		function createElement() {
+			const attributes = new Map<string, string>();
+			const classes = new Set<string>();
+			return {
+				value: '', textContent: '', title: '', disabled: false, hidden: false, attributes,
+				classList: {
+					toggle(name: string, enabled: boolean) { if (enabled) { classes.add(name); } else { classes.delete(name); } },
+					contains(name: string) { return classes.has(name); }
+				},
+				setAttribute(name: string, value: string) { attributes.set(name, value); },
+				addEventListener() { return; }
+			};
+		}
+		const elements = new Map<string, ReturnType<typeof createElement>>();
+		const root = Object.assign(createElement(), {
+			querySelector(selector: string) {
+				let element = elements.get(selector);
+				if (!element) { element = createElement(); elements.set(selector, element); }
+				return element;
+			}
+		});
+		const controls = createPlaybackControls(root);
+		controls.setMode('emulation');
+		const play = root.querySelector('#playback-play');
+		const cursor = root.querySelector('#playback-cursor');
+		const time = root.querySelector('#playback-time');
+		const status = root.querySelector('[role="status"]');
+		const playing = { available: true, source: 'example.mml', playing: true, position: 42 };
+		try {
+			controls.render(playing);
+			assert.strictEqual(status.attributes.get('data-state'), 'playing');
+			controls.render({ ...playing, playing: false, paused: true });
+			assert.strictEqual(status.textContent, 'Paused');
+			assert.strictEqual(status.attributes.get('data-state'), 'paused');
+			assert.strictEqual(play.title, 'Resume');
+			assert.strictEqual(time.textContent, '0:42');
+			controls.render(playing);
+			controls.render({ ...playing, playing: false, loading: true, startAction: 'playFromCursor', position: 0 });
+			controls.render({ ...playing, playing: false, loading: true, position: 90 });
+			assert.strictEqual(root.attributes.get('aria-busy'), 'true');
+			assert.strictEqual(play.title, 'Pause');
+			assert.strictEqual(time.textContent, '0:42');
+			assert.strictEqual(status.textContent, 'Playing');
+			assert.strictEqual(cursor.classList.contains('is-loading'), false);
+			await new Promise(resolve => setTimeout(resolve, 180));
+			assert.strictEqual(cursor.classList.contains('is-loading'), true);
+			assert.strictEqual(play.classList.contains('is-loading'), false);
+			assert.strictEqual(status.textContent, 'Preparing');
+			assert.strictEqual(status.attributes.get('data-state'), 'preparing');
+			controls.render({ ...playing, position: 80 });
+			assert.strictEqual(cursor.classList.contains('is-loading'), false);
+			assert.strictEqual(root.attributes.get('aria-busy'), 'false');
+			const stopped = { ...playing, playing: false, position: 0 };
+			controls.render(stopped);
+			controls.render({ ...stopped, loading: true, startAction: 'play' });
+			assert.strictEqual(status.textContent, 'Stopped');
+			controls.render({ ...playing, position: 0 });
+			await new Promise(resolve => setTimeout(resolve, 180));
+			assert.strictEqual(play.classList.contains('is-loading'), false);
+			assert.strictEqual(status.textContent, 'Playing');
+			controls.render({ ...playing, loading: true, startAction: 'playFromCursor' });
+			controls.render(stopped);
+			await new Promise(resolve => setTimeout(resolve, 180));
+			assert.strictEqual(cursor.classList.contains('is-loading'), false);
+			assert.strictEqual(status.textContent, 'Stopped');
+			controls.render(playing);
+			controls.render({ ...playing, finished: true });
+			assert.strictEqual(root.classList.contains('is-finishing'), true);
+			assert.strictEqual(play.title, 'Pause');
+			assert.strictEqual(play.disabled, true);
+			assert.strictEqual(cursor.disabled, false);
+			assert.strictEqual(time.textContent, '0:42');
+			controls.render({ ...stopped, position: 42 });
+			assert.strictEqual(root.classList.contains('is-finishing'), false);
+			assert.strictEqual(play.title, 'Play');
+			assert.strictEqual(play.disabled, false);
+			assert.strictEqual(cursor.disabled, false);
+			assert.strictEqual(time.textContent, '0:42');
+			assert.strictEqual(status.attributes.get('data-state'), 'stopped');
+		} finally { controls.render(null); }
+	});
+
 	test('Playback WASI compiles large MML and streams FM audio with position and completion', async function () {
 		this.timeout(20000);
 		const extension = vscode.extensions.all.find(extension => extension.packageJSON.name === 'mmlx-lsp');
@@ -1195,6 +1298,7 @@ suite('mmlx extension', () => {
 			await provider.resolveWebviewView(view);
 			messages.fire({ type: 'ready' });
 			const listed = await waitFor(message => !message.loading && message.ports.length === 2);
+			assert.match(view.webview.html, /<button id="connect-serial" class="output-connection"[^>]*aria-pressed="false" disabled><\/button>/);
 			assert.deepStrictEqual(listed.ports.map(port => port.path), ['/dev/ttyUSB2', '/dev/ttyUSB10']);
 			assert.strictEqual(listed.ports[1].manufacturer, 'NanoDrive8');
 			messages.fire({ type: 'updateSerialConnection', folder: folder.uri.toString(), value: '/dev/ttyUSB2' });

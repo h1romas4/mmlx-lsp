@@ -11,25 +11,61 @@ export function createPlaybackControls(root, onModeChange = () => {}, onAction =
 	const error = root.querySelector('#playback-error');
 	let snapshot;
 	let looped = false;
+	let loadingTimer;
+	let loadingVisible = false;
+	let startingAction = 'play';
+	function setText(element, value) {
+		if (element.textContent !== value) { element.textContent = value; }
+	}
 	function render(state) {
 		snapshot = state;
+		const loading = state?.loading === true;
+		if (loading) {
+			if (state.startAction) { startingAction = state.startAction; }
+			if (!loadingTimer && !loadingVisible) {
+				loadingTimer = setTimeout(() => {
+					loadingTimer = undefined;
+					loadingVisible = true;
+					render(snapshot);
+				}, 150);
+			}
+		} else {
+			clearTimeout(loadingTimer);
+			loadingTimer = undefined;
+			loadingVisible = false;
+		}
+		root.setAttribute('aria-busy', String(loading));
+		root.classList.toggle('is-pending', loading);
+		root.classList.toggle('is-finishing', state?.playing === true && state?.finished === true);
+		play.classList.toggle('is-loading', loadingVisible && startingAction === 'play');
+		cursor.classList.toggle('is-loading', loadingVisible && startingAction === 'playFromCursor');
 		const available = state?.available && mode.value === 'emulation';
 		const busy = state?.playing || state?.paused || state?.loading;
-		source.textContent = state?.source || 'No MML selected';
-		status.textContent = state?.loading ? 'Compiling' : state?.playing ? 'Playing' : state?.paused ? 'Paused' : available ? 'Stopped' : 'Unavailable';
-		play.disabled = !available || state?.loading || (state?.playing && state?.finished);
-		cursor.disabled = !available || state?.loading;
-		play.title = state?.playing ? 'Pause' : state?.paused ? 'Resume' : 'Play';
-		play.setAttribute('aria-label', play.title);
-		play.classList.toggle('is-playing', state?.playing === true);
+		setText(source, state?.source || 'No MML selected');
+		if (!loading || loadingVisible) {
+			const message = loadingVisible ? 'Preparing' : state?.playing ? 'Playing' : state?.paused ? 'Paused' : available ? 'Stopped' : 'Unavailable';
+			if (status.textContent !== message) {
+				setText(status, message);
+				status.setAttribute('data-state', message.toLowerCase());
+			}
+		}
+		play.disabled = !available || loading || (state?.playing === true && state?.finished === true);
+		cursor.disabled = !available || loading;
+		if (!loading) {
+			const title = state?.playing ? 'Pause' : state?.paused ? 'Resume' : 'Play';
+			if (play.title !== title) { play.title = title; play.setAttribute('aria-label', title); }
+			play.classList.toggle('is-playing', state?.playing === true);
+		}
 		stop.disabled = !available || !busy;
 		loop.disabled = !available || busy;
 		loop.setAttribute('aria-pressed', String(looped));
 		mode.disabled = !state?.available || busy;
 		volume.disabled = !available;
-		const seconds = Math.max(0, Math.floor(state?.position || 0));
-		time.textContent = `${Math.floor(seconds / 60)}:${String(seconds % 60).padStart(2, '0')}`;
-		error.textContent = state?.error || '';
+		if (!loading) {
+			const seconds = Math.max(0, Math.floor(state?.position || 0));
+			setText(time, `${Math.floor(seconds / 60)}:${String(seconds % 60).padStart(2, '0')}`);
+		}
+		setText(error, state?.error || '');
 		error.hidden = !state?.error;
 	}
 	mode.addEventListener('change', () => { onModeChange(mode.value); render(snapshot); });
