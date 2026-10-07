@@ -14,6 +14,8 @@ body {
 	font-size: var(--vscode-font-size, 13px);
 }
 [hidden] { display: none !important; }
+.control-tabs, button, h1, h2, label, dt, .algorithm-heading, .algorithm-diagram, .operator svg { user-select: none; }
+input, select { user-select: text; }
 .control-tabs { display: flex; gap: 20px; border-bottom: 1px solid var(--vscode-panel-border, #ddd); margin-bottom: 14px; }
 .control-tabs button {
 	background: transparent;
