@@ -2,6 +2,10 @@
 
 All notable changes to the "mmlx-lsp" extension will be documented in this file.
 
+## [0.7.0] - 2026-10-08
+
+- Add initial Playback support for MML using ymfm-based YM2151 emulation.
+
 ## [0.6.1] - 2026-10-08
 
 - Fix saving the Get Started example so VS Code prompts for a save location instead of targeting the filesystem root.

@@ -7,6 +7,18 @@ import { createEmulationAudio } from './emulationAudio.js';
 
 const vscode = acquireVsCodeApi();
 let outputId = 0;
+let playbackId = 0;
+let playbackOperation = 0;
+let playbackState = null;
+const playbackAudio = createEmulationAudio(
+	blocks => vscode.postMessage({ type: 'playbackRender', id: playbackId, blocks }),
+	error => {
+		playbackOperation++; playbackAudio.disconnect();
+		vscode.postMessage({ type: 'playbackAction', action: 'stop', id: playbackId, error });
+		playbackState = { ...playbackState, playing: false, paused: false, loading: false, error };
+		playbackControls.render(playbackState);
+	},
+	() => vscode.postMessage({ type: 'playbackAction', action: 'ended', id: playbackId }));
 const emulationAudio = createEmulationAudio(
 	blocks => vscode.postMessage({ type: 'emulationRender', id: outputId, blocks }),
 	error => {
@@ -19,6 +31,8 @@ const voiceControls = createVoiceControls(document.getElementById('voice-control
 const playbackControls = createPlaybackControls(document.getElementById('playback-controls'), mode => {
 	playbackMode = mode;
 	saveState();
+}, action => { void playbackAction(action); }, volume => {
+	playbackAudio.setVolume(volume); saveState();
 });
 const settingsControls = createSettingsControls(document.getElementById('settings-controls'), message => vscode.postMessage(message));
 const keyboardControls = createKeyboardControls(document.getElementById('keyboard'), mode => {
@@ -26,9 +40,6 @@ const keyboardControls = createKeyboardControls(document.getElementById('keyboar
 	saveState();
 }, note => vscode.postMessage({ type: 'emulationNote', id: outputId, ...note }));
 const outputConnections = {
-	playback: createOutputConnection(document.querySelector('.playback-options'), request => {
-		vscode.postMessage({ type: 'setOutputConnection', target: 'playback', ...request });
-	}),
 	keyboard: createOutputConnection(document.querySelector('.keyboard-output'), async request => {
 		if (!request.connected) {
 			keyboardControls.setConnected(false); emulationAudio.disconnect();
@@ -68,7 +79,39 @@ keyboard.open = saved?.keyboardOpen !== false;
 keyboard.addEventListener('toggle', () => saveState());
 
 function saveState() {
-	vscode.setState({ ...snapshot, activeTab, algorithmsOpen: algorithms.open, playbackMode, keyboardOpen: keyboard.open, keyboardMode });
+	vscode.setState({ ...snapshot, activeTab, algorithmsOpen: algorithms.open, playbackMode,
+		playbackLooped: playbackControls.looped, playbackVolume: playbackControls.volume * 100, keyboardOpen: keyboard.open, keyboardMode });
+}
+
+async function playbackAction(action) {
+	if (action === 'stop') {
+		playbackOperation++; playbackAudio.disconnect();
+		vscode.postMessage({ type: 'playbackAction', action, id: playbackId });
+		playbackState = { ...playbackState, playing: false, paused: false, loading: false, position: 0, error: '' };
+		playbackControls.render(playbackState); return;
+	}
+	const operation = ++playbackOperation;
+	try {
+		if (action === 'play' || action === 'playFromCursor') {
+			const id = ++playbackId;
+			const document = playbackState?.document;
+			playbackState = { ...playbackState, playing: false, paused: false, loading: true, position: 0, finished: false, error: '' };
+			playbackControls.render(playbackState);
+			const sampleRate = await playbackAudio.connect();
+			if (operation !== playbackOperation) { return; }
+			vscode.postMessage({ type: 'playbackAction', action, id, document, sampleRate, looped: playbackControls.looped });
+		} else {
+			if (action === 'pause') { await playbackAudio.pause(); }
+			else if (action === 'resume') { await playbackAudio.resume(); }
+			if (operation === playbackOperation) { vscode.postMessage({ type: 'playbackAction', action, id: playbackId }); }
+		}
+	} catch (error) {
+		if (operation !== playbackOperation) { return; }
+		playbackAudio.disconnect();
+		vscode.postMessage({ type: 'playbackAction', action: 'stop', id: playbackId, error: String(error) });
+		playbackState = { ...playbackState, playing: false, paused: false, loading: false, error: String(error) };
+		playbackControls.render(playbackState);
+	}
 }
 
 function selectTab(name, focus = false) {
@@ -103,10 +146,18 @@ window.addEventListener('message', event => {
 		voiceControls.render(message);
 		saveState();
 	} else if (message?.type === 'playback') {
+		const changed = message.document !== playbackState?.document;
+		if (!changed && message.id !== playbackId) { return; }
+		if (changed || !message.available) { playbackOperation++; playbackAudio.disconnect(); }
+		playbackState = message;
 		playbackControls.render(message);
+		if (message.playing) { playbackAudio.start(); if (message.finished) { playbackAudio.finish(); } }
+		else if (!message.paused && !message.loading) { playbackAudio.disconnect(); }
+	} else if (message?.type === 'playbackPcm' && message.id === playbackId) {
+		playbackAudio.pcm(message.pcm);
 	} else if (message?.type === 'midiNotes') {
 		keyboardControls.setMidiNotes(message.notes);
-	} else if (message?.type === 'outputConnection' && ['playback', 'keyboard'].includes(message.target)
+	} else if (message?.type === 'outputConnection' && message.target === 'keyboard'
 		&& typeof message.connected === 'boolean') {
 		if (message.target === 'keyboard') {
 			if (message.id !== outputId) { return; }
@@ -114,7 +165,7 @@ window.addEventListener('message', event => {
 			if (message.connected) { emulationAudio.start(); }
 			else if (!message.connecting) { keyboardControls.releaseAll(); emulationAudio.disconnect(); }
 		}
-		outputConnections[message.target].setState(message);
+		outputConnections.keyboard.setState(message);
 	} else if (message?.type === 'emulationPcm' && message.id === outputId) {
 		emulationAudio.pcm(message.pcm);
 	} else if (message?.type === 'buildSettings' || message?.type === 'serialSettings' || message?.type === 'midiSettings') {
@@ -122,12 +173,13 @@ window.addEventListener('message', event => {
 		if (message.type === 'midiSettings') { keyboardControls.setMidiState(message); }
 	}
 });
-window.addEventListener('pagehide', () => emulationAudio.disconnect());
+window.addEventListener('pagehide', () => { emulationAudio.disconnect(); playbackAudio.disconnect(); });
 voiceControls.render(snapshot);
 playbackControls.setMode(playbackMode);
+playbackControls.setOptions(saved?.playbackLooped, saved?.playbackVolume ?? 100);
+playbackAudio.setVolume(playbackControls.volume);
 playbackControls.render(null);
 keyboardControls.setMode(keyboardMode);
-outputConnections.playback.setConnected(false);
 outputConnections.keyboard.setConnected(false);
 selectTab(activeTab);
 vscode.postMessage({ type: 'ready' });

@@ -3,6 +3,7 @@ import { Uri, workspace, type Disposable } from 'vscode';
 import { EmulationFrameDecoder } from './emulationProtocol';
 
 export interface EmulationState { connected: boolean; connecting: boolean; error: string }
+export interface PlaybackProgress { position: number; finished: boolean }
 
 export class EmulationSession {
 	private process?: WasmProcess;
@@ -18,14 +19,18 @@ export class EmulationSession {
 
 	constructor(private readonly extensionUri: Uri, private readonly wasm: Wasm,
 		private readonly onState: (state: EmulationState) => void,
-		private readonly onPcm: (pcm: ArrayBuffer) => void) {}
+		private readonly onPcm: (pcm: ArrayBuffer) => void,
+		private readonly onPlayback: (progress: PlaybackProgress) => void = () => {}) {}
 
-	async connect(sampleRate: number, voice: unknown = null): Promise<void> {
+	async connect(sampleRate: number, voice: unknown = null, playback?: { source: string; looped: boolean; cursor?: number }): Promise<void> {
 		this.stop();
 		const generation = this.generation;
 		this.onState({ connected: false, connecting: true, error: '' });
 		try {
 			if (!Number.isInteger(sampleRate) || sampleRate < 8000 || sampleRate > 192000) { throw new Error('Invalid audio sample rate.'); }
+			if (playback && new TextEncoder().encode(JSON.stringify({ type: 'playback', ...playback })).length >= 2 * 1024 * 1024) {
+				throw new Error('MML is too large for playback (maximum command size: 2 MiB).');
+			}
 			this.module ??= Promise.resolve(workspace.fs.readFile(Uri.joinPath(this.extensionUri,
 				'server', 'target', 'wasm32-wasip1-threads', 'release', 'mmlx-emulator.wasm')))
 				.then(bytes => WebAssembly.compile(new Uint8Array(bytes).buffer));
@@ -48,7 +53,15 @@ export class EmulationSession {
 				if (generation !== this.generation) { return; }
 				if (kind === 1) {
 					if (ready || new DataView(bytes.buffer).getUint32(0, true) !== sampleRate) { throw new Error('Invalid emulator initialization.'); }
-					ready = true; clearTimeout(timer); resolveReady();
+					ready = true;
+					if (!playback) { clearTimeout(timer); resolveReady(); }
+				} else if (kind === 3) {
+					const position = new DataView(bytes.buffer).getFloat64(0, true);
+					if (!ready || !playback || !Number.isFinite(position) || position < 0 || bytes[8] > 1) {
+						throw new Error('Invalid playback state.');
+					}
+					this.onPlayback({ position, finished: bytes[8] === 1 });
+					clearTimeout(timer); resolveReady();
 				} else {
 					if (!this.connected || this.renders <= 0) { throw new Error('Unexpected emulator audio.'); }
 					this.renders--; this.onPcm(bytes.buffer as ArrayBuffer);
@@ -69,7 +82,8 @@ export class EmulationSession {
 				fail(new Error(stderr.trim() || `Emulator exited (${code}).`));
 			}, fail);
 			this.command({ type: 'init', sampleRate });
-			this.setVoice(voice);
+			if (playback) { this.command({ type: 'playback', ...playback }); }
+			else { this.setVoice(voice); }
 			await initialized;
 			if (generation !== this.generation) { return; }
 			this.cancelReady = undefined;

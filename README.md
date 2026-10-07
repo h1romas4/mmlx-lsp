@@ -126,13 +126,20 @@ command palette. Diagnostic messages are not translated.
 - **Settings** for MDX/VGM builds, NanoDrive8 port selection, and MIDI-IN selection, saved to `.vscode/settings.json`.
 - **MIDI-IN** connection and note reception, with pressed-key feedback in the FM Voice keyboard.
 - **YM2151 emulation** with up to eight simultaneous notes from the keyboard or MIDI-IN.
+- **Playback** of the current MML through MDX, soundlog's lazy callback stream, and ymfm, with play/pause, stop, volume, elapsed time, and optional MML loop points.
 
 Connect **Emulation** under **FM Voice > Keyboard > Output** to audition the voice with up to eight notes and MIDI-IN velocity.
 Connections stay active while the panel is hidden; only on-screen keyboard notes are released.
 The title shows `[Connected]`, and the badge counts active connections. Disconnect manually to stop emulation.
 Disposing the view closes connections; reloading does not restore them.
 
-Playback-tab audio and NanoDrive8 communication are not yet implemented.
+Playback is enabled while an MML editor is active and uses its current contents, including unsaved edits.
+**Play from cursor** starts at the command under the editor cursor, or the next command on the same line.
+All tracks and the YM2151 advance silently to that time, preserving tempo, voices, envelopes, and synchronization.
+Repeated commands start at their first occurrence. Positions without a playable command report an error.
+Starting far into a song can take time while the emulator advances silently.
+Changing the active document stops playback; FM voice audition and MIDI-IN remain independent.
+OKI ADPCM playback is not yet supported; PCM tracks are silent. NanoDrive8 communication is not yet implemented.
 
 ## Current Limitations
 

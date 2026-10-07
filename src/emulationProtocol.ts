@@ -14,7 +14,8 @@ export class EmulationFrameDecoder {
 				offset += count; this.headerOffset += count;
 				if (this.headerOffset < 5) { continue; }
 				const length = new DataView(this.header.buffer).getUint32(1, true);
-				if (!((this.header[0] === 1 && length === 4) || (this.header[0] === 2 && length === 4096))) {
+				if (!((this.header[0] === 1 && length === 4) || (this.header[0] === 2 && length === 4096)
+					|| (this.header[0] === 3 && length === 9))) {
 					throw new Error('Invalid emulator frame.');
 				}
 				this.payload = new Uint8Array(length);

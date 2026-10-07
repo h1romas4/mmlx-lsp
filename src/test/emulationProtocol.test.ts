@@ -16,6 +16,22 @@ suite('Emulation frame protocol', () => {
 		const decoder = new EmulationFrameDecoder((_kind, bytes) => { result = bytes; });
 		decoder.push(buffer); buffer.fill(0); assert.strictEqual(result[1], 73);
 	});
+	test('decodes split playback progress frames', () => {
+		const frame = new Uint8Array(14);
+		frame[0] = 3;
+		const view = new DataView(frame.buffer);
+		view.setUint32(1, 9, true); view.setFloat64(5, 1.25, true); frame[13] = 1;
+		for (let split = 0; split <= frame.length; split++) {
+			let received = false;
+			const decoder = new EmulationFrameDecoder((kind, bytes) => {
+				assert.strictEqual(kind, 3);
+				assert.strictEqual(new DataView(bytes.buffer).getFloat64(0, true), 1.25);
+				assert.strictEqual(bytes[8], 1); received = true;
+			});
+			decoder.push(frame.subarray(0, split)); decoder.push(frame.subarray(split)); decoder.finish();
+			assert.ok(received);
+		}
+	});
 	test('rejects unbounded, unexpected and truncated frames', () => {
 		for (const bytes of [[3, 4, 0, 0, 0], [2, 255, 255, 255, 255], [1, 0, 0, 0, 0]]) {
 			assert.throws(() => new EmulationFrameDecoder(() => {}).push(new Uint8Array(bytes)));

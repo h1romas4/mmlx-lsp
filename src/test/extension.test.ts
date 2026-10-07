@@ -10,7 +10,9 @@ import type { LanguageClient } from 'vscode-languageclient/node';
 import { BuildTerminal, buildErrorLinkProvider } from '../tasks';
 import { listMidiInputPorts, VoiceViewProvider } from '../voiceView';
 import { MidiInputConnection } from '../midiInput';
-import { EmulationSession, type EmulationState } from '../emulation';
+import { EmulationSession, type EmulationState, type PlaybackProgress } from '../emulation';
+
+const playbackSource = '@1 = {\n' + '31,0,0,15,0,32,0,1,0,0,0,\n'.repeat(4) + '7,0,15\n}\nA t120 @1 o4 l8 cdef\n';
 
 function observeBuilds(uri: vscode.Uri) {
 	const active = new Set<vscode.TaskExecution>();
@@ -411,6 +413,139 @@ suite('mmlx extension', () => {
 			messages.dispose(); visibility.dispose(); disposed.dispose(); changed.dispose();
 		}
 	});
+	test('Playback WASI compiles large MML and streams FM audio with position and completion', async function () {
+		this.timeout(20000);
+		const extension = vscode.extensions.all.find(extension => extension.packageJSON.name === 'mmlx-lsp');
+		assert.ok(extension);
+		const changed = new vscode.EventEmitter<void>();
+		let state: EmulationState | undefined;
+		let progress: PlaybackProgress = { position: 0, finished: false };
+		let blocks = 0;
+		let energy = 0;
+		const positions: number[] = [];
+		const session = new EmulationSession(extension.extensionUri, await Wasm.load(), value => { state = value; },
+			pcm => { blocks++; energy += new Float32Array(pcm).reduce((total, sample) => total + Math.abs(sample), 0); changed.fire(); },
+			value => { progress = value; positions.push(value.position); changed.fire(); });
+		async function render(): Promise<void> {
+			const target = blocks + 4;
+			const received = new Promise<void>((resolve, reject) => {
+				const subscription = changed.event(() => {
+					if (blocks === target) { clearTimeout(timer); subscription.dispose(); resolve(); }
+				});
+				const timer = setTimeout(() => { subscription.dispose(); reject(new Error(`Playback audio timed out: ${state?.error}`)); }, 4000);
+			});
+			session.request(4); await received;
+		}
+		try {
+			const source = playbackSource + '; padded MML\n'.repeat(1500);
+			assert.ok(source.length > 16384);
+			await session.connect(48000, null, { source, looped: false });
+			assert.ok(state?.connected, state?.error ?? 'Playback did not initialize');
+			assert.strictEqual(blocks, 0);
+			assert.strictEqual(progress.position, 0);
+			for (let index = 0; index < 50 && !progress.finished; index++) { await render(); }
+			assert.ok(progress.finished);
+			assert.ok(energy > 1);
+			assert.ok(progress.position > 0.9 && progress.position < 1.1);
+			assert.ok(positions.every((position, index) => index === 0 || position >= positions[index - 1]));
+			const cursorSource = '; 日本語\n' + playbackSource;
+			const cursor = new TextEncoder().encode(cursorSource.slice(0, cursorSource.indexOf('cdef') + 2)).length;
+			const beforeCursor = blocks;
+			await session.connect(48000, null, { source: cursorSource, looped: false, cursor });
+			assert.ok(state?.connected, state?.error ?? 'Cursor playback did not initialize');
+			assert.ok(progress.position > 0.49 && progress.position < 0.51);
+			assert.strictEqual(blocks, beforeCursor);
+			await render();
+			await session.connect(44100, null, { source: 'A [c4', looped: false });
+			assert.strictEqual(state?.connected, false);
+			assert.match(state?.error ?? '', /MML/);
+			await session.connect(44100, null, { source: playbackSource, looped: false });
+			assert.ok(state?.connected, state?.error);
+			await render();
+		} finally { session.dispose(); changed.dispose(); }
+	});
+
+	test('Playback panel follows MML, pauses, resumes, stops and cancels on editor changes', async function () {
+		this.timeout(20000);
+		const extension = vscode.extensions.all.find(extension => extension.packageJSON.name === 'mmlx-lsp');
+		assert.ok(extension);
+		const document = await vscode.workspace.openTextDocument({ language: 'mmlx', content: playbackSource });
+		await vscode.window.showTextDocument(document);
+		const context = { extensionUri: extension.extensionUri, subscriptions: [] as vscode.Disposable[] };
+		const events = new vscode.EventEmitter<void>();
+		const messages = new vscode.EventEmitter<unknown>();
+		const changed = new vscode.EventEmitter<void>();
+		let state: Record<string, unknown> = {};
+		let blocks = 0;
+		const provider = new VoiceViewProvider(context as unknown as vscode.ExtensionContext, () => undefined,
+			async () => [], async () => [], async () => { throw new Error('MIDI is not used'); }, await Wasm.load());
+		const view = { visible: true, onDidChangeVisibility: events.event, onDidDispose: events.event,
+			webview: { cspSource: 'https://test.invalid', asWebviewUri: (uri: vscode.Uri) => uri,
+				onDidReceiveMessage: messages.event, options: {}, html: '',
+				postMessage: async (message: Record<string, unknown>) => {
+					if (message.type === 'playback') { state = message; }
+					if (message.type === 'playbackPcm') { assert.ok(message.pcm instanceof ArrayBuffer); blocks++; }
+					changed.fire(); return true;
+				} } } as unknown as vscode.WebviewView;
+		function until(predicate: () => boolean): Promise<void> {
+			if (predicate()) { return Promise.resolve(); }
+			return new Promise((resolve, reject) => {
+				const subscription = changed.event(() => { if (predicate()) { clearTimeout(timer); subscription.dispose(); resolve(); } });
+				const timer = setTimeout(() => { subscription.dispose(); reject(new Error(`Playback panel timed out: ${JSON.stringify(state)}`)); }, 5000);
+			});
+		}
+		try {
+			await provider.resolveWebviewView(view);
+			assert.strictEqual(state.available, true);
+			assert.ok(view.webview.html.includes('OKI ADPCM is not supported yet'));
+			messages.fire({ type: 'playbackAction', action: 'play', id: 1, document: document.uri.toString(), sampleRate: 48000 });
+			await until(() => state.playing === true);
+			assert.ok(view.badge?.tooltip.includes('Playback'));
+			messages.fire({ type: 'playbackRender', id: 1, blocks: 4 });
+			await until(() => blocks === 4);
+			messages.fire({ type: 'playbackAction', action: 'pause', id: 1 });
+			assert.strictEqual(state.paused, true); assert.strictEqual(state.playing, false);
+			messages.fire({ type: 'playbackAction', action: 'resume', id: 1 });
+			assert.strictEqual(state.playing, true); assert.strictEqual(state.paused, false);
+			messages.fire({ type: 'playbackRender', id: 1, blocks: 4 });
+			await until(() => blocks === 8);
+			const plain = await vscode.workspace.openTextDocument({ language: 'plaintext', content: 'Not MML' });
+			await vscode.window.showTextDocument(plain);
+			await until(() => state.available === false);
+			assert.strictEqual(state.playing, false); assert.strictEqual(state.position, 0);
+			await vscode.window.showTextDocument(document);
+			await until(() => state.available === true);
+			messages.fire({ type: 'playbackAction', action: 'play', id: 2, document: document.uri.toString(), sampleRate: 48000 });
+			await until(() => state.playing === true);
+			messages.fire({ type: 'playbackAction', action: 'stop', id: 2 });
+			assert.strictEqual(state.playing, false); assert.strictEqual(state.position, 0);
+			const editor = await vscode.window.showTextDocument(document);
+			const cursor = document.positionAt(document.getText().indexOf('cdef') + 2);
+			editor.selection = new vscode.Selection(cursor, cursor);
+			messages.fire({ type: 'playbackAction', action: 'playFromCursor', id: 3, document: document.uri.toString(), sampleRate: 48000 });
+			await until(() => state.playing === true && state.id === 3);
+			assert.ok(Number(state.position) > 0.49 && Number(state.position) < 0.51);
+			assert.strictEqual(blocks, 8);
+			messages.fire({ type: 'playbackRender', id: 3, blocks: 4 });
+			await until(() => blocks === 12);
+			messages.fire({ type: 'playbackAction', action: 'stop', id: 3 });
+			editor.selection = new vscode.Selection(0, 0, 0, 0);
+			messages.fire({ type: 'playbackAction', action: 'playFromCursor', id: 4, document: document.uri.toString(), sampleRate: 48000 });
+			await until(() => state.loading === false && state.id === 4 && !!state.error);
+			assert.match(String(state.error), /No playable command/);
+			messages.fire({ type: 'playbackAction', action: 'play', id: 5, document: document.uri.toString(), sampleRate: 48000 });
+			messages.fire({ type: 'playbackAction', action: 'stop', id: 5 });
+			assert.strictEqual(state.loading, false); assert.strictEqual(state.playing, false);
+			messages.fire({ type: 'playbackAction', action: 'stop', id: 5, error: 'Audio output was suspended.' });
+			assert.strictEqual(state.error, 'Audio output was suspended.');
+			assert.strictEqual(document.getText(), playbackSource);
+		} finally {
+			provider.dispose();
+			for (const disposable of context.subscriptions) { disposable.dispose(); }
+			events.dispose(); messages.dispose(); changed.dispose();
+		}
+	});
+
 	test('YM2151 WASI produces polyphonic stereo PCM, releases notes and reconnects', async function () {
 		this.timeout(20000);
 		const extension = vscode.extensions.all.find(extension => extension.packageJSON.name === 'mmlx-lsp');
@@ -510,7 +645,8 @@ suite('mmlx extension', () => {
 		assert.strictEqual(button.disabled, true);
 		const template = new TextDecoder().decode(await vscode.workspace.fs.readFile(vscode.Uri.joinPath(extension.extensionUri, 'assets', 'webview', 'voice.html')));
 		assert.strictEqual((template.match(/<option value="emulation">Emulation \(ymfm\)<\/option>/g) ?? []).length, 2);
-		assert.match(template, /<button\b[^>]*id="playback-connection"[^>]*\sdisabled[^>]*>/);
+		assert.match(template, /<button\b[^>]*id="playback-play"[^>]*\sdisabled[^>]*>/);
+		assert.match(template, /<button\b[^>]*id="playback-stop"[^>]*\sdisabled[^>]*>/);
 		const unavailableMode = Object.assign(new EventTarget(), { value: 'emulation', disabled: false });
 		const unavailableButton = Object.assign(new EventTarget(), { disabled: true, title: '', setAttribute: () => {} });
 		const unavailable = createOutputConnection({ querySelector: (selector: string) => selector === 'select' ? unavailableMode : unavailableButton },

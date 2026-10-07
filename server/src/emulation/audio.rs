@@ -24,7 +24,14 @@ impl Audio {
     }
 
     pub fn render(&mut self, chip: &mut Ym2151) -> Result<Vec<u8>, String> {
-        let input = chip.generate(self.resampler.input_frames_next());
+        self.render_with(|frames| Ok(chip.generate(frames)))
+    }
+
+    pub fn render_with(
+        &mut self,
+        generate: impl FnOnce(usize) -> Result<Vec<Vec<f32>>, String>,
+    ) -> Result<Vec<u8>, String> {
+        let input = generate(self.resampler.input_frames_next())?;
         let pcm = self
             .resampler
             .process(&input, None)

@@ -82,6 +82,11 @@ export class VoiceViewProvider implements WebviewViewProvider {
 	private readonly midiInput: MidiInputConnection;
 	private readonly emulation?: EmulationSession;
 	private emulationConnected = false;
+	private readonly playback?: EmulationSession;
+	private playbackDocument?: TextDocument;
+	private playbackConnected = false;
+	private playbackId = 0;
+	private playbackState = { playing: false, paused: false, loading: false, position: 0, finished: false, error: '' };
 	private outputId = 0;
 	private midiFolder = '';
 	private editTarget: { document: TextDocument; version: number; token: number; voice: VoiceDefinition } | undefined;
@@ -100,6 +105,23 @@ export class VoiceViewProvider implements WebviewViewProvider {
 				void this.view?.webview.postMessage({ type: 'outputConnection', target: 'keyboard', id: this.outputId, ...state });
 			},
 			pcm => { void this.view?.webview.postMessage({ type: 'emulationPcm', id: this.outputId, pcm }); }) : undefined;
+		this.playback = wasm ? new EmulationSession(context.extensionUri, wasm,
+			state => {
+				this.playbackConnected = state.connected;
+				this.playbackState.loading = state.connecting;
+				this.playbackState.playing = state.connected;
+				this.playbackState.paused = false;
+				this.playbackState.error = state.error;
+				this.updateConnectionMarker();
+				this.sendPlayback();
+			},
+			pcm => { void this.view?.webview.postMessage({ type: 'playbackPcm', id: this.playbackId, pcm }); },
+			progress => {
+				const changed = Math.floor(progress.position * 10) !== Math.floor(this.playbackState.position * 10)
+					|| progress.finished !== this.playbackState.finished;
+				Object.assign(this.playbackState, progress);
+				if (changed) { this.sendPlayback(); }
+			}) : undefined;
 		this.midiInput = new MidiInputConnection(() => this.sendMidiSettings(), createInput,
 			notes => { void this.view?.webview.postMessage({ type: 'midiNotes', notes }); },
 			event => this.emulation?.note({ ...event, source: 1 }));
@@ -115,6 +137,7 @@ export class VoiceViewProvider implements WebviewViewProvider {
 				if (event.document.uri.toString() === this.editor?.document.uri.toString()) { this.schedule(); }
 			}),
 			workspace.onDidCloseTextDocument(document => {
+				if (document === this.playbackDocument) { this.playbackDocument = undefined; this.stopPlayback(); }
 				if (document.uri.toString() === this.editor?.document.uri.toString()) {
 					this.editor = undefined;
 					this.sequence++;
@@ -136,6 +159,7 @@ export class VoiceViewProvider implements WebviewViewProvider {
 			view.webview.onDidReceiveMessage(message => {
 				if (message?.type === 'ready') {
 					this.emulation?.disconnect();
+					this.stopPlayback();
 					this.send(); this.schedule(); this.sendBuildSettings();
 					void this.view?.webview.postMessage({ type: 'midiNotes', notes: this.midiInput.notes });
 					void this.refreshSerialPorts(); void this.refreshMidiInputPorts();
@@ -150,6 +174,9 @@ export class VoiceViewProvider implements WebviewViewProvider {
 				else if (message?.type === 'updateMidiInput') { void this.updateMidiInput(message); }
 				else if (message?.type === 'setMidiInputConnection') { void this.setMidiInputConnection(message); }
 				else if (message?.type === 'setOutputConnection') { void this.setOutputConnection(message); }
+				else if (message?.type === 'playbackAction') { void this.playbackAction(message); }
+				else if (message?.type === 'playbackRender' && message.id === this.playbackId
+					&& (this.playbackState.playing || this.playbackState.paused) && !this.playbackState.finished) { this.playback?.request(message.blocks); }
 				else if (message?.type === 'emulationRender' && message.id === this.outputId) { this.emulation?.request(message.blocks); }
 				else if (message?.type === 'emulationNote' && message.id === this.outputId) {
 					if (['noteOn', 'noteOff'].includes(message.event) && Number.isInteger(message.note)
@@ -164,7 +191,7 @@ export class VoiceViewProvider implements WebviewViewProvider {
 				else { this.emulation?.note({ type: 'allOff', source: 0 }); }
 			}),
 			view.onDidDispose(() => {
-				if (this.view === view) { this.view = undefined; this.emulation?.disconnect(); this.sequence++; this.midiInput.disconnect(); }
+				if (this.view === view) { this.view = undefined; this.emulation?.disconnect(); this.stopPlayback(); this.sequence++; this.midiInput.disconnect(); }
 			})
 		);
 		const template = new TextDecoder().decode(await workspace.fs.readFile(Uri.joinPath(media, 'voice.html')));
@@ -204,6 +231,52 @@ export class VoiceViewProvider implements WebviewViewProvider {
 			return;
 		}
 		await this.emulation.connect(message.sampleRate as number, this.snapshot.voice);
+	}
+
+	private sendPlayback(): void {
+		const document = this.playbackDocument;
+		void this.view?.webview.postMessage({ type: 'playback', id: this.playbackId,
+			available: !!document && !document.isClosed && workspace.isTrusted && !!this.playback,
+			document: document?.uri.toString() ?? '', source: document ? basename(document.fileName) : '',
+			...this.playbackState });
+	}
+
+	private stopPlayback(reset = true, error = ''): void {
+		this.playbackState.playing = false;
+		this.playbackState.paused = false;
+		this.playbackState.loading = false;
+		this.playbackState.finished = false;
+		this.playbackState.error = error;
+		if (reset) { this.playbackState.position = 0; }
+		this.playback?.disconnect(error);
+		this.sendPlayback();
+	}
+
+	private async playbackAction(message: { action?: unknown; id?: unknown; document?: unknown; sampleRate?: unknown; looped?: unknown; error?: unknown }): Promise<void> {
+		if (!Number.isSafeInteger(message.id)) { return; }
+		if (message.action === 'play' || message.action === 'playFromCursor') {
+			const document = this.playbackDocument;
+			if (!document || document.isClosed || message.document !== document.uri.toString() || !workspace.isTrusted || !this.playback) {
+				this.sendPlayback(); return;
+			}
+			const editor = this.editor;
+			if (message.action === 'playFromCursor' && editor?.document !== document) { this.sendPlayback(); return; }
+			const source = document.getText();
+			const cursor = message.action === 'playFromCursor' && editor
+				? new TextEncoder().encode(source.slice(0, document.offsetAt(editor.selection.active))).length : undefined;
+			this.playbackId = message.id as number;
+			this.playbackState = { playing: false, paused: false, loading: true, position: 0, finished: false, error: '' };
+			await this.playback.connect(message.sampleRate as number, null, { source, looped: message.looped === true, cursor });
+		} else if (message.id === this.playbackId) {
+			if (message.action === 'stop' || message.action === 'ended') {
+				this.stopPlayback(message.action === 'stop', typeof message.error === 'string' ? message.error.slice(0, 4096) : '');
+			}
+			else if (message.action === 'pause' && this.playbackState.playing && !this.playbackState.finished) {
+				this.playbackState.playing = false; this.playbackState.paused = true; this.sendPlayback();
+			} else if (message.action === 'resume' && this.playbackState.paused && this.playbackConnected) {
+				this.playbackState.paused = false; this.playbackState.playing = true; this.sendPlayback();
+			}
+		}
 	}
 
 	private buildSettingsFolder() {
@@ -307,6 +380,7 @@ export class VoiceViewProvider implements WebviewViewProvider {
 		if (!this.view) { return; }
 		const connections = [];
 		if (this.emulationConnected) { connections.push('YM2151 (ymfm)'); }
+		if (this.playbackConnected) { connections.push('Playback (ymfm)'); }
 		if (this.midiInput.state.connected) { connections.push('MIDI-IN'); }
 		this.view.title = connections.length ? 'mmlx [Connected]' : 'mmlx';
 		this.view.badge = connections.length ? { value: connections.length, tooltip: `Connected: ${connections.join(', ')}` } : undefined;
@@ -392,6 +466,11 @@ export class VoiceViewProvider implements WebviewViewProvider {
 	}
 
 	private follow(editor: TextEditor | undefined): void {
+		const document = editor?.document.languageId === 'mmlx' ? editor.document : undefined;
+		if (document !== this.playbackDocument) {
+			this.playbackDocument = document;
+			this.stopPlayback();
+		} else { this.sendPlayback(); }
 		if (editor?.document.languageId !== 'mmlx') { return; }
 		this.editor = editor;
 		const target = this.editTarget;
@@ -511,9 +590,10 @@ export class VoiceViewProvider implements WebviewViewProvider {
 	}
 
 	dispose(): void {
-		this.emulation?.dispose();
-		this.midiInput.disconnect();
 		this.view = undefined;
+		this.emulation?.dispose();
+		this.playback?.dispose();
+		this.midiInput.disconnect();
 		clearTimeout(this.timer);
 		this.sequence++;
 		this.editTarget = undefined;

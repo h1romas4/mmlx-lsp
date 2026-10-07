@@ -1,4 +1,5 @@
 mod audio;
+pub mod playback;
 pub mod polyphony;
 pub mod protocol;
 pub mod voice;

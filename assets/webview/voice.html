@@ -11,7 +11,7 @@
 	<div class="control-tabs" role="tablist" aria-label="mmlx controls">
 		<button id="start-tab" role="tab" aria-selected="true" aria-controls="start-controls" type="button">Get Started</button>
 		<button id="voice-tab" role="tab" aria-selected="false" aria-controls="voice-controls" tabindex="-1" type="button">FM Voice</button>
-		<button id="playback-tab" role="tab" aria-selected="false" aria-controls="playback-controls" tabindex="-1" type="button">Playback</button>
+		<button id="playback-tab" role="tab" aria-selected="false" aria-controls="playback-controls" tabindex="-1" type="button">Playback <span role="img" aria-label="Under construction">&#x1F6A7;</span></button>
 		<button id="settings-tab" role="tab" aria-selected="false" aria-controls="settings-controls" tabindex="-1" type="button">Settings</button>
 	</div>
 	<main>
@@ -53,16 +53,25 @@
 			</details>
 		</section>
 		<section id="playback-controls" role="tabpanel" aria-labelledby="playback-tab" hidden>
-			<header>
-				<h1 id="playback-message" class="empty" role="status">Playback is not ready yet. The music is still dreaming.</h1>
+			<header class="playback-header">
+				<div class="playback-identity"><h1 id="playback-source">No MML selected</h1></div>
 				<div class="summary playback-options output-controls">
 					<label>Output <select id="playback-mode" aria-label="Playback output">
 						<option value="emulation">Emulation (ymfm)</option>
-						<option value="nanodrive8">NanoDrive8</option>
+						<option value="nanodrive8" disabled>NanoDrive8</option>
 					</select></label>
-					<button id="playback-connection" class="output-connection" type="button" title="Connect" aria-label="Connect" aria-pressed="false" disabled></button>
 				</div>
 			</header>
+			<div class="playback-transport" role="group" aria-label="Playback transport">
+				<button id="playback-play" class="transport-button transport-play" type="button" title="Play" aria-label="Play" disabled></button>
+				<button id="playback-cursor" class="transport-button transport-play transport-cursor" type="button" title="Play from cursor" aria-label="Play from cursor" disabled></button>
+				<button id="playback-stop" class="transport-button transport-stop" type="button" title="Stop" aria-label="Stop" disabled></button>
+				<button id="playback-loop" class="transport-button transport-loop" type="button" title="Follow MML loop points" aria-label="Follow MML loop points" aria-pressed="false" disabled></button>
+				<div class="playback-clock"><span id="playback-time">0:00</span><span id="playback-message" role="status">Unavailable</span></div>
+				<label class="playback-volume" title="Volume"><span aria-hidden="true"></span><input id="playback-volume" type="range" min="0" max="100" step="1" value="100" aria-label="Playback volume" disabled></label>
+			</div>
+			<p class="playback-note">OKI ADPCM is not supported yet. FM (YM2151) only.</p>
+			<p id="playback-error" role="alert" hidden></p>
 		</section>
 		<section id="settings-controls" role="tabpanel" aria-labelledby="settings-tab" hidden>
 			<header><h1>Settings</h1><span id="build-settings-status" role="status">Loading</span></header>
