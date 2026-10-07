@@ -121,6 +121,7 @@ command palette. Diagnostic messages are not translated.
 ## mmlx Panel
 
 - **Dedicated bottom panel** opened with **mmlx: Show mmlx Panel**.
+- **Get Started** opens an editable example `.mml` in a new, unsaved editor.
 - **FM Voice editing** for parameters, algorithms, and envelopes directly in the source by placing the cursor in an `@` definition.
 - **Settings** for MDX/VGM builds, NanoDrive8 port selection, and MIDI-IN selection, saved to `.vscode/settings.json`.
 - **MIDI-IN** connection and note reception, with pressed-key feedback in the FM Voice keyboard.

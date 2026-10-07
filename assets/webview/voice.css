@@ -16,7 +16,7 @@ body {
 [hidden] { display: none !important; }
 .control-tabs, button, h1, h2, label, dt, .algorithm-heading, .algorithm-diagram, .operator svg { user-select: none; }
 input, select { user-select: text; }
-.control-tabs { display: flex; gap: 20px; border-bottom: 1px solid var(--vscode-panel-border, #ddd); margin-bottom: 14px; }
+.control-tabs { display: flex; flex-wrap: wrap; gap: 0 20px; border-bottom: 1px solid var(--vscode-panel-border, #ddd); margin-bottom: 14px; }
 .control-tabs button {
 	background: transparent;
 	border: 0;
@@ -29,6 +29,12 @@ input, select { user-select: text; }
 .control-tabs button[aria-selected="true"] { color: var(--vscode-editor-foreground, #292929); border-bottom-color: var(--vscode-panelTitle-activeBorder, #39a9c7); }
 .control-tabs button:focus-visible { outline: 1px solid var(--vscode-focusBorder, #39a9c7); outline-offset: 3px; }
 main > section { min-width: 0; }
+#start-controls { padding: 12px 0; }
+.start-identity img { flex: 0 0 64px; object-fit: contain; }
+.start-identity h1 { overflow-wrap: anywhere; }
+.start-action { max-width: 100%; padding: 8px 12px; border: 1px solid var(--vscode-button-border, transparent); border-radius: 2px; background: var(--vscode-button-background, #0078d4); color: var(--vscode-button-foreground, #fff); font: inherit; cursor: pointer; }
+.start-action:hover { background: var(--vscode-button-hoverBackground, #006cbe); }
+.start-action:focus-visible { outline: 1px solid var(--vscode-focusBorder, #39a9c7); outline-offset: 2px; }
 header { display: flex; align-items: center; flex-wrap: wrap; gap: 12px 24px; padding-bottom: 12px; }
 #voice-controls > header { min-height: 38px; }
 .identity { display: flex; align-items: baseline; flex-wrap: wrap; gap: 12px; min-width: 0; }

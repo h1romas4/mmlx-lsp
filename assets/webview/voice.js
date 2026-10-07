@@ -52,11 +52,12 @@ const outputConnections = {
 		}
 	})
 };
-const tabs = ['voice', 'playback', 'settings'];
+document.getElementById('open-starter').addEventListener('click', () => vscode.postMessage({ type: 'openStarter' }));
+const tabs = ['start', 'voice', 'playback', 'settings'];
 const saved = vscode.getState();
 let snapshot = saved?.type === 'voice' ? { ...saved, editable: false, editToken: null, editing: false }
 	: { type: 'voice', voice: null, source: '', retained: false, error: false };
-let activeTab = tabs.includes(saved?.activeTab) ? saved.activeTab : 'voice';
+let activeTab = tabs.includes(saved?.activeTab) ? saved.activeTab : 'start';
 let playbackMode = saved?.playbackMode === 'nanodrive8' ? 'nanodrive8' : 'emulation';
 let keyboardMode = saved?.keyboardMode === 'nanodrive8' ? 'nanodrive8' : 'emulation';
 const algorithms = document.getElementById('algorithms');

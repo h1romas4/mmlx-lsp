@@ -83,6 +83,7 @@ export class VoiceViewProvider implements WebviewViewProvider {
 	private readonly emulation?: EmulationSession;
 	private emulationConnected = false;
 	private outputId = 0;
+	private starterNumber = 0;
 	private midiFolder = '';
 	private editTarget: { document: TextDocument; version: number; token: number; voice: VoiceDefinition } | undefined;
 	private snapshot: { voice: VoiceDefinition | null; source: string; retained: boolean; error: boolean } = {
@@ -130,7 +131,8 @@ export class VoiceViewProvider implements WebviewViewProvider {
 		this.view = view;
 		this.updateConnectionMarker();
 		const media = Uri.joinPath(this.context.extensionUri, 'assets', 'webview');
-		view.webview.options = { enableScripts: true, localResourceRoots: [media] };
+		const icons = Uri.joinPath(this.context.extensionUri, 'assets', 'icon');
+		view.webview.options = { enableScripts: true, localResourceRoots: [media, icons] };
 		this.context.subscriptions.push(
 			view.webview.onDidReceiveMessage(message => {
 				if (message?.type === 'ready') {
@@ -139,6 +141,7 @@ export class VoiceViewProvider implements WebviewViewProvider {
 					void this.view?.webview.postMessage({ type: 'midiNotes', notes: this.midiInput.notes });
 					void this.refreshSerialPorts(); void this.refreshMidiInputPorts();
 				}
+				else if (message?.type === 'openStarter') { void this.openStarter(); }
 				else if (message?.type === 'editVoice') { void this.edit(message); }
 				else if (message?.type === 'updateBuildSetting') { void this.updateBuildSetting(message); }
 				else if (message?.type === 'getBuildSettings') { this.sendBuildSettings(); }
@@ -170,11 +173,30 @@ export class VoiceViewProvider implements WebviewViewProvider {
 		view.webview.html = template
 			.replaceAll('{{cspSource}}', view.webview.cspSource)
 			.replaceAll('{{nonce}}', nonce)
+			.replaceAll('{{iconUri}}', view.webview.asWebviewUri(Uri.joinPath(icons, 'mmlx.png')).toString())
 			.replaceAll('{{styleUri}}', view.webview.asWebviewUri(Uri.joinPath(media, 'voice.css')).toString())
 			.replaceAll('{{scriptUri}}', view.webview.asWebviewUri(Uri.joinPath(media, 'voice.js')).toString());
 		this.follow(window.activeTextEditor);
 		this.sendBuildSettings();
 		this.sendConnectionSettings();
+	}
+
+	private async openStarter(): Promise<void> {
+		try {
+			const content = new TextDecoder().decode(await workspace.fs.readFile(Uri.joinPath(this.context.extensionUri, 'assets', 'webview', 'example.mml')));
+			let uri: Uri;
+			do {
+				this.starterNumber++;
+				uri = Uri.from({ scheme: 'untitled', path: this.starterNumber === 1 ? '/example.mml' : `/example-${this.starterNumber}.mml` });
+			} while (workspace.textDocuments.some(document => !document.isClosed && document.uri.toString() === uri.toString()));
+			const document = await workspace.openTextDocument(uri);
+			const edit = new WorkspaceEdit();
+			edit.insert(document.uri, new Position(0, 0), content);
+			if (!await workspace.applyEdit(edit)) { throw new Error('Could not insert example MML.'); }
+			await window.showTextDocument(document, { preview: false });
+		} catch (error) {
+			void window.showErrorMessage(`Could not open example MML: ${error instanceof Error ? error.message : String(error)}`);
+		}
 	}
 
 	private async setOutputConnection(message: { target: unknown; mode: unknown; connected: unknown; sampleRate?: unknown; id?: unknown }): Promise<void> {

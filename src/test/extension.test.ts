@@ -531,7 +531,7 @@ suite('mmlx extension', () => {
 		assert.ok(extension);
 		const media = vscode.Uri.joinPath(extension.extensionUri, 'assets', 'webview');
 		const panel = vscode.window.createWebviewPanel('mmlx.keyboardStateTest', 'mmlx Keyboard State Test', vscode.ViewColumn.Beside,
-			{ enableScripts: true, localResourceRoots: [media] });
+			{ enableScripts: true, localResourceRoots: [media, vscode.Uri.joinPath(extension.extensionUri, 'assets', 'icon')] });
 		let resolveResult!: () => void;
 		let rejectResult!: (error: Error) => void;
 		const result = new Promise<void>((resolve, reject) => { resolveResult = resolve; rejectResult = reject; });
@@ -551,10 +551,25 @@ suite('mmlx extension', () => {
 		};
 		const send = data => window.dispatchEvent(new MessageEvent('message', { data }));
 		const check = (condition, text) => { if (!condition) { throw new Error(text); } };
+		let startProbed = false;
 		function runProbe() {
-			const key = document.querySelector('#keyboard [data-midi-note="60"]');
-			if (!key) { requestAnimationFrame(runProbe); return; }
 			try {
+				if (!startProbed) {
+					if (!document.querySelector('#start-controls img').complete) { requestAnimationFrame(runProbe); return; }
+					const startTab = document.getElementById('start-tab');
+					check(document.querySelector('[role="tab"]').id === 'start-tab', 'Get Started must be the leftmost tab');
+					check(startTab.getAttribute('aria-selected') === 'true' && !document.getElementById('start-controls').hidden, 'Get Started must be selected initially');
+					check(document.querySelector('#start-controls h1').textContent === 'mmlx-lsp', 'Extension title must appear');
+					const icon = document.querySelector('#start-controls img');
+					check(icon.complete && icon.naturalWidth > 0, 'Extension icon must load');
+					document.getElementById('open-starter').click();
+					check(messages.filter(message => message.type === 'openStarter').length === 1, 'Example button must request a new MML document');
+					startTab.dispatchEvent(new KeyboardEvent('keydown', { key: 'ArrowRight' }));
+					check(document.getElementById('voice-tab').getAttribute('aria-selected') === 'true' && document.getElementById('start-controls').hidden, 'ArrowRight must switch to FM Voice');
+					startProbed = true;
+				}
+				const key = document.querySelector('#keyboard [data-midi-note="60"]');
+				if (!key) { requestAnimationFrame(runProbe); return; }
 				const keyboard = document.getElementById('keyboard');
 				const badge = document.getElementById('keyboard-midi-status');
 				check(keyboard.classList.contains('is-disconnected') && key.getAttribute('aria-disabled') === 'true', 'Keys must start disconnected');
@@ -586,12 +601,62 @@ suite('mmlx extension', () => {
 		window.addEventListener('message', event => { if (event.data.type === 'keyboardProbe') { runProbe(); } });
 		</script>`;
 		panel.webview.html = template.replaceAll('{{cspSource}}', panel.webview.cspSource).replaceAll('{{nonce}}', nonce)
+			.replaceAll('{{iconUri}}', panel.webview.asWebviewUri(vscode.Uri.joinPath(extension.extensionUri, 'assets', 'icon', 'mmlx.png')).toString())
 			.replaceAll('{{styleUri}}', panel.webview.asWebviewUri(vscode.Uri.joinPath(media, 'voice.css')).toString())
 			.replaceAll('{{scriptUri}}', panel.webview.asWebviewUri(vscode.Uri.joinPath(media, 'voice.js')).toString())
 			.replace('<script type="module"', `${probe}<script type="module"`);
 		const timer = setTimeout(() => rejectResult(new Error('Keyboard UI probe timed out')), 8000);
 		try { await result; }
 		finally { clearTimeout(timer); listener.dispose(); panel.dispose(); }
+	});
+
+	test('Get Started opens an editable untitled MML example without modifying existing documents', async function () {
+		this.timeout(15000);
+		const extension = vscode.extensions.all.find(extension => extension.packageJSON.name === 'mmlx-lsp');
+		assert.ok(extension);
+		await extension.activate();
+		const original = await vscode.workspace.openTextDocument({ language: 'mmlx', content: 'A t120 c4\n' });
+		await vscode.window.showTextDocument(original);
+		const context = { extensionUri: extension.extensionUri, subscriptions: [] as vscode.Disposable[] };
+		const events = new vscode.EventEmitter<void>();
+		const messages = new vscode.EventEmitter<unknown>();
+		const provider = new VoiceViewProvider(context as unknown as vscode.ExtensionContext, () => undefined, async () => [], async () => []);
+		const view = { visible: true, onDidChangeVisibility: events.event, onDidDispose: events.event,
+			webview: { cspSource: 'https://test.invalid', asWebviewUri: (uri: vscode.Uri) => uri,
+				onDidReceiveMessage: messages.event, postMessage: async () => true, options: {}, html: '' } } as unknown as vscode.WebviewView;
+		let subscription: vscode.Disposable | undefined;
+		let timer: ReturnType<typeof setTimeout> | undefined;
+		try {
+			await provider.resolveWebviewView(view);
+			const openExample = () => new Promise<vscode.TextDocument>((resolve, reject) => {
+				clearTimeout(timer); subscription?.dispose();
+				subscription = vscode.window.onDidChangeActiveTextEditor(editor => {
+					if (editor?.document.isUntitled && editor.document.uri.path.endsWith('.mml')) { resolve(editor.document); }
+				});
+				timer = setTimeout(() => reject(new Error('Example MML did not open')), 8000);
+				messages.fire({ type: 'openStarter' });
+			});
+			const document = await openExample();
+			assert.strictEqual(document.uri.path, '/example.mml');
+			assert.strictEqual(document.languageId, 'mmlx');
+			assert.ok(document.isUntitled && document.isDirty);
+			const expected = new TextDecoder().decode(await vscode.workspace.fs.readFile(vscode.Uri.joinPath(extension.extensionUri, 'assets', 'webview', 'example.mml')));
+			assert.strictEqual(document.getText(), expected);
+			assert.strictEqual(original.getText(), 'A t120 c4\n');
+			await waitForDiagnostics(document.uri, 0);
+			await editSource(document, expected + '\n; My edits\n');
+			const second = await openExample();
+			assert.strictEqual(second.uri.path, '/example-2.mml');
+			assert.strictEqual(second.getText(), expected);
+			assert.strictEqual(document.getText(), expected + '\n; My edits\n');
+			await vscode.commands.executeCommand('workbench.action.revertAndCloseActiveEditor');
+			await vscode.window.showTextDocument(document);
+			await vscode.commands.executeCommand('workbench.action.revertAndCloseActiveEditor');
+		} finally {
+			clearTimeout(timer); subscription?.dispose(); provider.dispose();
+			for (const disposable of context.subscriptions) { disposable.dispose(); }
+			events.dispose(); messages.dispose();
+		}
 	});
 
 	test('opens the FM voice panel without modifying the selected definition', async function () {
