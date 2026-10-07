@@ -11,7 +11,7 @@ const emulationAudio = createEmulationAudio(
 	blocks => vscode.postMessage({ type: 'emulationRender', id: outputId, blocks }),
 	error => {
 		emulationAudio.disconnect();
-		keyboardControls.releaseAll();
+		keyboardControls.setConnected(false);
 		outputConnections.keyboard.setState({ connected: false, connecting: false, error });
 		vscode.postMessage({ type: 'setOutputConnection', target: 'keyboard', id: outputId, mode: 'emulation', connected: false });
 	});
@@ -31,7 +31,7 @@ const outputConnections = {
 	}),
 	keyboard: createOutputConnection(document.querySelector('.keyboard-output'), async request => {
 		if (!request.connected) {
-			keyboardControls.releaseAll(); emulationAudio.disconnect();
+			keyboardControls.setConnected(false); emulationAudio.disconnect();
 			vscode.postMessage({ type: 'setOutputConnection', target: 'keyboard', id: outputId, ...request });
 			return;
 		}
@@ -109,6 +109,7 @@ window.addEventListener('message', event => {
 		&& typeof message.connected === 'boolean') {
 		if (message.target === 'keyboard') {
 			if (message.id !== outputId) { return; }
+			keyboardControls.setConnected(message.connected);
 			if (message.connected) { emulationAudio.start(); }
 			else if (!message.connecting) { keyboardControls.releaseAll(); emulationAudio.disconnect(); }
 		}
@@ -117,6 +118,7 @@ window.addEventListener('message', event => {
 		emulationAudio.pcm(message.pcm);
 	} else if (message?.type === 'buildSettings' || message?.type === 'serialSettings' || message?.type === 'midiSettings') {
 		settingsControls.render(message);
+		if (message.type === 'midiSettings') { keyboardControls.setMidiState(message); }
 	}
 });
 window.addEventListener('pagehide', () => emulationAudio.disconnect());
@@ -124,5 +126,7 @@ voiceControls.render(snapshot);
 playbackControls.setMode(playbackMode);
 playbackControls.render(null);
 keyboardControls.setMode(keyboardMode);
+outputConnections.playback.setConnected(false);
+outputConnections.keyboard.setConnected(false);
 selectTab(activeTab);
 vscode.postMessage({ type: 'ready' });

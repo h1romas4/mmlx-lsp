@@ -2,11 +2,13 @@ export function createKeyboardControls(root, onModeChange = () => {}, onNote = (
 	const body = root.querySelector('.p-keyboard__body');
 	const wrapper = root.querySelector('.p-keyboard__wrapper');
 	const mode = root.querySelector('#keyboard-mode');
+	const midiStatus = root.querySelector('#keyboard-midi-status');
 	const names = ['C', 'C#', 'D', 'D#', 'E', 'F', 'F#', 'G', 'G#', 'A', 'A#', 'B'];
 	const pointers = new Map();
 	const heldKeys = new Set();
 	let midiNotes = new Set();
 	let renderedWhiteCount = 0;
+	let connected = false;
 	const sounding = new Set();
 
 	function updateKey(key) {
@@ -18,6 +20,7 @@ export function createKeyboardControls(root, onModeChange = () => {}, onNote = (
 		const active = midiNotes.has(Number(key.dataset.midiNote)) || heldKeys.has(key) || [...pointers.values()].includes(key);
 		key.classList.toggle('is-active', active);
 		key.setAttribute('aria-pressed', String(active));
+		key.setAttribute('aria-disabled', String(!connected));
 	}
 
 	function releasePointer(event) {
@@ -58,10 +61,10 @@ export function createKeyboardControls(root, onModeChange = () => {}, onNote = (
 			key.setAttribute('aria-label', name);
 			key.setAttribute('aria-pressed', 'false');
 			key.title = name;
-			key.tabIndex = index === 0 ? 0 : -1;
+			key.tabIndex = connected && index === 0 ? 0 : -1;
 			key.textContent = note % 12 === 0 ? name : '';
 			key.addEventListener('pointerdown', event => {
-				if (event.button !== 0) { return; }
+				if (!connected || event.button !== 0) { return; }
 				event.preventDefault();
 				key.setPointerCapture(event.pointerId);
 				pointers.set(event.pointerId, key);
@@ -71,6 +74,7 @@ export function createKeyboardControls(root, onModeChange = () => {}, onNote = (
 				key.addEventListener(type, releasePointer);
 			}
 			key.addEventListener('keydown', event => {
+				if (!connected) { return; }
 				if ([' ', 'Enter'].includes(event.key)) {
 					event.preventDefault();
 					heldKeys.add(key);
@@ -104,6 +108,21 @@ export function createKeyboardControls(root, onModeChange = () => {}, onNote = (
 	document.addEventListener('visibilitychange', () => { if (document.hidden) { releaseAll(); } });
 	return {
 		releaseAll,
+		setConnected(value) {
+			connected = value === true;
+			if (!connected) { releaseAll(); }
+			root.classList.toggle('is-disconnected', !connected);
+			body.setAttribute('aria-disabled', String(!connected));
+			for (const [index, key] of [...wrapper.children].entries()) {
+				key.tabIndex = connected && index === 0 ? 0 : -1;
+				updateKey(key);
+			}
+		},
+		setMidiState(state) {
+			midiStatus.hidden = state.connected !== true;
+			midiStatus.title = state.connected ? `MIDI-IN: ${state.connection}` : '';
+			midiStatus.setAttribute('aria-label', state.connected ? `MIDI-IN connected: ${state.connection}` : 'MIDI-IN disconnected');
+		},
 		setMode(value) { mode.value = value === 'nanodrive8' ? 'nanodrive8' : 'emulation'; },
 		setMidiNotes(notes) {
 			midiNotes = new Set(Array.isArray(notes) ? notes.filter(note => Number.isInteger(note) && note >= 0 && note <= 127) : []);

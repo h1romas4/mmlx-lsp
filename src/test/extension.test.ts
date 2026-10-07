@@ -439,6 +439,120 @@ suite('mmlx extension', () => {
 		assert.ok((await vscode.languages.getLanguages()).includes('mmlx'));
 	});
 
+	test('output connections disable NanoDrive8 without locking mode selection', async () => {
+		const extension = vscode.extensions.all.find(extension => extension.packageJSON.name === 'mmlx-lsp');
+		assert.ok(extension);
+		const { createOutputConnection } = await import(vscode.Uri.joinPath(extension.extensionUri, 'media', 'outputConnection.js').toString());
+		const mode = Object.assign(new EventTarget(), { value: 'nanodrive8', disabled: false });
+		const attributes = new Map<string, string>();
+		const button = Object.assign(new EventTarget(), { disabled: false, title: '',
+			setAttribute: (name: string, value: string) => attributes.set(name, value) });
+		const requests: { mode: string; connected: boolean }[] = [];
+		const controls = createOutputConnection({ querySelector: (selector: string) => selector === 'select' ? mode : button },
+			(request: { mode: string; connected: boolean }) => requests.push(request));
+		assert.strictEqual(button.disabled, true);
+		assert.strictEqual(mode.disabled, false);
+		button.dispatchEvent(new Event('click')); assert.strictEqual(requests.length, 0);
+		mode.value = 'emulation'; mode.dispatchEvent(new Event('change'));
+		assert.strictEqual(button.disabled, false);
+		button.dispatchEvent(new Event('click'));
+		assert.deepStrictEqual(requests, [{ mode: 'emulation', connected: true }]);
+		controls.setState({ connected: false, connecting: true });
+		assert.strictEqual(button.disabled, true); assert.strictEqual(mode.disabled, true);
+		controls.setState({ connected: true, connecting: false });
+		assert.strictEqual(button.disabled, false); assert.strictEqual(mode.disabled, true);
+		assert.strictEqual(attributes.get('aria-pressed'), 'true');
+		controls.setState({ connected: false, connecting: false });
+		mode.value = 'nanodrive8'; controls.setConnected(false);
+		assert.strictEqual(button.disabled, true); assert.strictEqual(mode.disabled, false);
+		controls.setState({ connected: false, connecting: false });
+		assert.strictEqual(button.disabled, true);
+		const template = new TextDecoder().decode(await vscode.workspace.fs.readFile(vscode.Uri.joinPath(extension.extensionUri, 'media', 'voice.html')));
+		assert.strictEqual((template.match(/<option value="emulation">Emulation \(ymfm\)<\/option>/g) ?? []).length, 2);
+		assert.match(template, /<button\b[^>]*id="playback-connection"[^>]*\sdisabled[^>]*>/);
+		const unavailableMode = Object.assign(new EventTarget(), { value: 'emulation', disabled: false });
+		const unavailableButton = Object.assign(new EventTarget(), { disabled: true, title: '', setAttribute: () => {} });
+		const unavailable = createOutputConnection({ querySelector: (selector: string) => selector === 'select' ? unavailableMode : unavailableButton },
+			() => assert.fail('Unavailable output must not request a connection'));
+		for (const value of ['emulation', 'nanodrive8', 'emulation']) {
+			unavailableMode.value = value; unavailableMode.dispatchEvent(new Event('change'));
+			unavailable.setConnected(false);
+			unavailable.setState({ connected: false, connecting: false });
+			assert.strictEqual(unavailableButton.disabled, true);
+			assert.strictEqual(unavailableMode.disabled, false);
+			unavailableButton.dispatchEvent(new Event('click'));
+		}
+	});
+
+	test('FM Voice keyboard shows MIDI status and disables keys until output connects', async function () {
+		this.timeout(15000);
+		const extension = vscode.extensions.all.find(extension => extension.packageJSON.name === 'mmlx-lsp');
+		assert.ok(extension);
+		const media = vscode.Uri.joinPath(extension.extensionUri, 'media');
+		const panel = vscode.window.createWebviewPanel('mmlx.keyboardStateTest', 'mmlx Keyboard State Test', vscode.ViewColumn.Beside,
+			{ enableScripts: true, localResourceRoots: [media] });
+		let resolveResult!: () => void;
+		let rejectResult!: (error: Error) => void;
+		const result = new Promise<void>((resolve, reject) => { resolveResult = resolve; rejectResult = reject; });
+		const listener = panel.webview.onDidReceiveMessage(message => {
+			if (message.type === 'ready') { void panel.webview.postMessage({ type: 'keyboardProbe' }); }
+			else if (message.type === 'keyboardResult') { resolveResult(); }
+			else if (message.type === 'keyboardFailure') { rejectResult(new Error(message.error)); }
+		});
+		const nonce = randomUUID();
+		const template = new TextDecoder().decode(await vscode.workspace.fs.readFile(vscode.Uri.joinPath(media, 'voice.html')));
+		const probe = `<script nonce="${nonce}">
+		const nativeAcquire = acquireVsCodeApi; const messages = []; let probeApi;
+		window.acquireVsCodeApi = () => {
+			const api = nativeAcquire();
+			probeApi = api;
+			return { ...api, postMessage: message => { messages.push(message); api.postMessage(message); } };
+		};
+		const send = data => window.dispatchEvent(new MessageEvent('message', { data }));
+		const check = (condition, text) => { if (!condition) { throw new Error(text); } };
+		function runProbe() {
+			const key = document.querySelector('#keyboard [data-midi-note="60"]');
+			if (!key) { requestAnimationFrame(runProbe); return; }
+			try {
+				const keyboard = document.getElementById('keyboard');
+				const badge = document.getElementById('keyboard-midi-status');
+				check(keyboard.classList.contains('is-disconnected') && key.getAttribute('aria-disabled') === 'true', 'Keys must start disconnected');
+				check(getComputedStyle(keyboard.querySelector('.p-keyboard__body')).opacity < 1, 'Disconnected keyboard must look inactive');
+				check(getComputedStyle(badge).display === 'none', 'Disconnected MIDI indicator must not be visible');
+				key.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter' }));
+				check(!messages.some(message => message.type === 'emulationNote'), 'Disconnected keys must not send notes');
+				const midi = { type: 'midiSettings', connection: 'FM-1:FM-1 MIDI 1 28:0', ports: ['FM-1:FM-1 MIDI 1 28:0'],
+					folder: 'test', editable: false, connected: true, connecting: false, canConnect: true, loading: false, saving: false, error: '' };
+				send(midi);
+				check(!badge.hidden && badge.textContent === 'MIDI-IN' && badge.title.includes(midi.connection), 'MIDI indicator and port tooltip must appear');
+				check(getComputedStyle(badge).display !== 'none', 'Connected MIDI indicator must be visible');
+				check(document.getElementById('midi-settings-status').textContent === '', 'Settings must not show connected port text');
+				send({ type: 'outputConnection', target: 'keyboard', id: 0, connected: true, connecting: false });
+				check(!keyboard.classList.contains('is-disconnected') && key.getAttribute('aria-disabled') === 'false', 'Output must enable keys');
+				check(getComputedStyle(keyboard.querySelector('.p-keyboard__body')).opacity === '1', 'Connected keyboard must restore full contrast');
+				key.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter' }));
+				check(messages.some(message => message.type === 'emulationNote' && message.event === 'noteOn'), 'Connected keys must send notes');
+				send({ type: 'outputConnection', target: 'keyboard', id: 0, connected: false, connecting: false });
+				check(keyboard.classList.contains('is-disconnected') && key.tabIndex === -1, 'Disconnect must disable keys again');
+				check(messages.some(message => message.type === 'emulationNote' && message.event === 'noteOff'), 'Disconnect must release held keys');
+				send({ type: 'midiNotes', notes: [64] });
+				check(document.querySelector('#keyboard [data-midi-note="64"]').classList.contains('is-active'), 'MIDI feedback must remain independent of output');
+				send({ ...midi, connected: false, error: 'MIDI test error' });
+				check(badge.hidden && document.getElementById('midi-settings-status').textContent === 'MIDI test error', 'Disconnect must hide badge and preserve errors');
+				probeApi.postMessage({ type: 'keyboardResult' });
+			} catch (error) { probeApi.postMessage({ type: 'keyboardFailure', error: String(error) }); }
+		}
+		window.addEventListener('message', event => { if (event.data.type === 'keyboardProbe') { runProbe(); } });
+		</script>`;
+		panel.webview.html = template.replaceAll('{{cspSource}}', panel.webview.cspSource).replaceAll('{{nonce}}', nonce)
+			.replaceAll('{{styleUri}}', panel.webview.asWebviewUri(vscode.Uri.joinPath(media, 'voice.css')).toString())
+			.replaceAll('{{scriptUri}}', panel.webview.asWebviewUri(vscode.Uri.joinPath(media, 'voice.js')).toString())
+			.replace('<script type="module"', `${probe}<script type="module"`);
+		const timer = setTimeout(() => rejectResult(new Error('Keyboard UI probe timed out')), 8000);
+		try { await result; }
+		finally { clearTimeout(timer); listener.dispose(); panel.dispose(); }
+	});
+
 	test('opens the FM voice panel without modifying the selected definition', async function () {
 		this.timeout(30000);
 		const extension = vscode.extensions.all.find(extension => extension.packageJSON.name === 'mmlx-lsp');

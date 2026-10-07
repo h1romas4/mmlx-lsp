@@ -32,15 +32,17 @@
 				<div class="algorithm-grid"></div>
 			</details>
 			<div id="operators" hidden></div>
-			<details id="keyboard" class="p-keyboard" aria-labelledby="keyboard-heading" open>
+			<details id="keyboard" class="p-keyboard is-disconnected" aria-labelledby="keyboard-heading" open>
 				<summary class="keyboard-heading">
-					<span id="keyboard-heading">Keyboard</span>
-					<span class="keyboard-output output-controls"><label>Output <select id="keyboard-mode" aria-label="Keyboard output">
-						<option value="emulation">Emulation</option>
-						<option value="nanodrive8">NanoDrive8</option>
-					</select></label><button id="keyboard-connection" class="output-connection" type="button" title="Connect" aria-label="Connect" aria-pressed="false"></button></span>
+					<span class="keyboard-heading-content">
+						<span class="keyboard-title"><span id="keyboard-heading">Keyboard</span><span id="keyboard-midi-status" class="keyboard-midi-status" role="status" hidden>MIDI-IN</span></span>
+						<span class="keyboard-output output-controls"><label>Output <select id="keyboard-mode" aria-label="Keyboard output">
+							<option value="emulation">Emulation (ymfm)</option>
+							<option value="nanodrive8">NanoDrive8</option>
+						</select></label><button id="keyboard-connection" class="output-connection" type="button" title="Connect" aria-label="Connect" aria-pressed="false"></button></span>
+					</span>
 				</summary>
-				<div class="p-keyboard__body">
+				<div class="p-keyboard__body" aria-disabled="true">
 					<ul class="p-keyboard__wrapper" aria-label="Piano keyboard"></ul>
 				</div>
 			</details>
@@ -50,32 +52,16 @@
 				<h1 id="playback-message" class="empty" role="status">Playback is not ready yet. The music is still dreaming.</h1>
 				<div class="summary playback-options output-controls">
 					<label>Output <select id="playback-mode" aria-label="Playback output">
-						<option value="emulation">Emulation</option>
+						<option value="emulation">Emulation (ymfm)</option>
 						<option value="nanodrive8">NanoDrive8</option>
 					</select></label>
-					<button id="playback-connection" class="output-connection" type="button" title="Connect" aria-label="Connect" aria-pressed="false"></button>
+					<button id="playback-connection" class="output-connection" type="button" title="Connect" aria-label="Connect" aria-pressed="false" disabled></button>
 				</div>
 			</header>
 		</section>
 		<section id="settings-controls" role="tabpanel" aria-labelledby="settings-tab" hidden>
 			<header><h1>Settings</h1><span id="build-settings-status" role="status">Loading</span></header>
 			<p id="build-settings-source"></p>
-			<section class="build-settings" aria-labelledby="build-settings-heading">
-				<h2 id="build-settings-heading">Build</h2>
-				<fieldset id="build-settings-fields" disabled>
-					<label class="build-field"><span>Output format</span><select data-build-setting="format">
-						<option value="both">MDX + VGM</option><option value="mdx">MDX</option><option value="vgm">VGM</option>
-					</select></label>
-					<label class="build-field"><span>Output directory</span><input data-build-setting="outputDirectory" type="text" required></label>
-					<label class="build-field checkbox"><span>Build on save</span><input data-build-setting="onSave" type="checkbox"></label>
-					<label class="build-field"><span>PDX file</span><input data-build-setting="pdx" type="text" placeholder="Automatic"></label>
-					<label class="build-field"><span>ADPCM mode</span><select data-build-setting="adpcmMode">
-						<option value="through">Through</option><option value="resample">Resample</option><option value="lpf">Low-pass filter</option>
-					</select></label>
-					<label class="build-field"><span>Loop count</span><input data-build-setting="loopCount" type="number" min="0" max="4294967295" step="1" required title="0 preserves native loop points"></label>
-					<label class="build-field"><span>Maximum ticks</span><input data-build-setting="maxTicks" type="number" min="1" max="4294967295" step="1" required></label>
-				</fieldset>
-			</section>
 			<section class="build-settings connection-settings" aria-labelledby="connection-settings-heading">
 				<h2 id="connection-settings-heading">Connection</h2>
 				<fieldset id="connection-settings-fields">
@@ -97,6 +83,22 @@
 				</fieldset>
 				<p id="serial-settings-status" role="status">Loading</p>
 				<p id="midi-settings-status" role="status">Loading</p>
+			</section>
+			<section class="build-settings" aria-labelledby="build-settings-heading">
+				<h2 id="build-settings-heading">Build</h2>
+				<fieldset id="build-settings-fields" disabled>
+					<label class="build-field"><span>Output format</span><select data-build-setting="format">
+						<option value="both">MDX + VGM</option><option value="mdx">MDX</option><option value="vgm">VGM</option>
+					</select></label>
+					<label class="build-field"><span>Output directory</span><input data-build-setting="outputDirectory" type="text" required></label>
+					<label class="build-field checkbox"><span>Build on save</span><input data-build-setting="onSave" type="checkbox"></label>
+					<label class="build-field"><span>PDX file</span><input data-build-setting="pdx" type="text" placeholder="Automatic"></label>
+					<label class="build-field"><span>ADPCM mode</span><select data-build-setting="adpcmMode">
+						<option value="through">Through</option><option value="resample">Resample</option><option value="lpf">Low-pass filter</option>
+					</select></label>
+					<label class="build-field"><span>Loop count</span><input data-build-setting="loopCount" type="number" min="0" max="4294967295" step="1" required title="0 preserves native loop points"></label>
+					<label class="build-field"><span>Maximum ticks</span><input data-build-setting="maxTicks" type="number" min="1" max="4294967295" step="1" required></label>
+				</fieldset>
 			</section>
 		</section>
 	</main>

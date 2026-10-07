@@ -124,6 +124,42 @@ mod tests {
     }
 
     #[test]
+    fn pcm_preserves_resampled_volume_with_output_clamping() {
+        use rubato::{FastFixedOut, PolynomialDegree, Resampler};
+
+        let mut engine = Emulation::new(48000).unwrap();
+        let mut reference = Emulation::new(48000).unwrap();
+        for synth in [&mut engine, &mut reference] {
+            synth.set_voice(Some(tone())).unwrap();
+            synth.note_on(
+                Note {
+                    source: 0,
+                    channel: 0,
+                    note: 60,
+                },
+                127,
+            );
+        }
+        let mut resampler = FastFixedOut::new(
+            48000.0 / reference.chip.sample_rate() as f64,
+            1.0,
+            PolynomialDegree::Cubic,
+            audio::BLOCK_FRAMES,
+            2,
+        )
+        .unwrap();
+        let input = reference.chip.generate(resampler.input_frames_next());
+        let expected = resampler.process(&input, None).unwrap();
+        let bytes = engine.render().unwrap();
+        assert!(energy(&bytes) > 1.0);
+        for (index, sample) in bytes.chunks_exact(4).enumerate() {
+            let actual = f32::from_le_bytes(sample.try_into().unwrap());
+            assert_eq!(actual, expected[index % 2][index / 2].clamp(-1.0, 1.0));
+            assert!((-1.0..=1.0).contains(&actual));
+        }
+    }
+
+    #[test]
     fn stereo_pcm_voice_upload_and_release() {
         let mut engine = Emulation::new(48000).unwrap();
         assert_eq!(energy(&engine.render().unwrap()), 0.0);

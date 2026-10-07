@@ -245,10 +245,16 @@ dd input { display: block; width: 100%; }
 #keyboard { border-top: 1px solid var(--vscode-panel-border, #ddd); padding-top: 12px; }
 .keyboard-heading { cursor: pointer; min-height: 26px; line-height: 26px; user-select: none; }
 .keyboard-heading:focus-visible { outline: 1px solid var(--vscode-focusBorder, #39a9c7); outline-offset: 2px; }
+.keyboard-heading-content { display: inline-flex; flex-wrap: wrap; align-items: center; gap: 6px 12px; width: calc(100% - 18px); vertical-align: top; }
+.keyboard-title { display: inline-flex; align-items: center; gap: 8px; min-width: 142px; }
 #keyboard-heading { font-size: 13px; font-weight: 600; }
-.keyboard-output { float: right; display: inline-flex; align-items: center; gap: 6px; margin-left: 12px; max-width: calc(100% - 95px); color: var(--vscode-descriptionForeground, #666); font-size: 11px; }
+.keyboard-midi-status { display: inline-flex; align-items: center; gap: 5px; color: var(--vscode-testing-iconPassed, #238663); font-size: 10px; font-weight: 600; white-space: nowrap; }
+.keyboard-midi-status::before { content: ''; width: 5px; height: 5px; flex-shrink: 0; border-radius: 50%; background: currentColor; }
+.keyboard-output { display: inline-flex; align-items: center; gap: 6px; margin-left: auto; max-width: 100%; color: var(--vscode-descriptionForeground, #666); font-size: 11px; }
 .keyboard-output label { flex: 1; }
 .keyboard-output select { width: 136px; flex-shrink: 1; }
+.is-disconnected .p-keyboard__body { opacity: 0.42; filter: grayscale(1); cursor: not-allowed; }
+.is-disconnected .p-keyboard__white, .is-disconnected .p-keyboard__black { pointer-events: none; }
 .p-keyboard__white { width: calc(100% / var(--keyboard-white-count, 22)); flex-shrink: 0; min-width: 0; font-size: var(--keyboard-label-size, 13px); }
 .p-keyboard__black { width: calc(100% / var(--keyboard-white-count, 22) * 20 / 33.2); margin-left: calc(-100% / var(--keyboard-white-count, 22) * 20 / 33.2); flex-shrink: 0; min-width: 0; }
 .p-keyboard__white:focus-visible, .p-keyboard__black:focus-visible { outline: 2px solid var(--vscode-focusBorder, #39a9c7); outline-offset: -2px; }

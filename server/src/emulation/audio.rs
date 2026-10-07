@@ -32,7 +32,7 @@ impl Audio {
         let mut bytes = Vec::with_capacity(BLOCK_FRAMES * 8);
         for index in 0..BLOCK_FRAMES {
             for channel in &pcm {
-                bytes.extend_from_slice(&(channel[index] * 0.18).clamp(-1.0, 1.0).to_le_bytes());
+                bytes.extend_from_slice(&channel[index].clamp(-1.0, 1.0).to_le_bytes());
             }
         }
         Ok(bytes)
