@@ -60,7 +60,8 @@
         {
           "type": "webview",
           "id": "mmlx.voice",
-          "name": "mmlx (experimental)"
+          "name": "mmlx (experimental)",
+          "icon": "assets/icon/mmlx.png"
         }
       ]
     },
