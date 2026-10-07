@@ -1,5 +1,7 @@
 import * as assert from 'assert';
 import * as path from 'node:path';
+import { randomUUID } from 'node:crypto';
+import { tmpdir } from 'node:os';
 import * as vscode from 'vscode';
 import { Wasm } from '@vscode/wasm-wasi/v1';
 import { createUriConverters } from '@vscode/wasm-wasi-lsp';
@@ -65,7 +67,7 @@ async function editSource(document: vscode.TextDocument, source: string): Promis
 }
 
 async function runBuildTerminal(
-	definition: ConstructorParameters<typeof BuildTerminal>[2], cancel = false
+	definition: ConstructorParameters<typeof BuildTerminal>[2], cancel: boolean | ((output: string) => boolean) = false
 ): Promise<{ code: number; output: string; links: ReturnType<BuildTerminal['errorLinks']> }> {
 	const extension = vscode.extensions.all.find(extension => extension.packageJSON.name === 'mmlx-lsp');
 	assert.ok(extension);
@@ -74,7 +76,10 @@ async function runBuildTerminal(
 	const terminal = new BuildTerminal(extension.extensionUri, await Wasm.load(), definition,
 		vscode.workspace.getWorkspaceFolder(vscode.Uri.file(definition.input)), diagnostics, () => undefined);
 	let output = '';
-	const subscription = terminal.onDidWrite(data => { output += data; });
+	const subscription = terminal.onDidWrite(data => {
+		output += data;
+		if (typeof cancel === 'function' && cancel(data)) { terminal.close(); }
+	});
 	let timeout: ReturnType<typeof setTimeout> | undefined;
 	let closeSubscription: vscode.Disposable | undefined;
 	try {
@@ -82,7 +87,7 @@ async function runBuildTerminal(
 			timeout = setTimeout(() => { reject(new Error('Build terminal timed out')); terminal.close(); }, 30000);
 			closeSubscription = terminal.onDidClose(resolve);
 			terminal.open();
-			if (cancel) { terminal.close(); }
+			if (cancel === true) { terminal.close(); }
 		});
 		const lines = output.replace(/\x1b\[[0-9;]*m/g, '').split('\r\n');
 		return { code, output, links: lines.flatMap(line => terminal.errorLinks(line)) };
@@ -1339,6 +1344,30 @@ suite('mmlx extension', () => {
 			assert.strictEqual(await runBuildTask({ type: 'mmlx', input: input.fsPath, output: mdx.fsPath }), 1);
 			assert.strictEqual(new TextDecoder().decode(await vscode.workspace.fs.readFile(mdx)), 'existing MDX');
 			assert.strictEqual(new TextDecoder().decode(await vscode.workspace.fs.readFile(vgm)), 'existing VGM');
+			assert.ok((await vscode.workspace.fs.readDirectory(directory)).every(([name]) => !name.startsWith('.mmlx-')));
+		});
+
+		test('removes staged MDX output when canceled before VGM conversion', async function () {
+			this.timeout(60000);
+			const input = vscode.Uri.joinPath(directory, 'cancel.mml');
+			const mdx = vscode.Uri.joinPath(directory, 'cancel.mdx');
+			const vgm = vscode.Uri.joinPath(directory, 'cancel.vgm');
+			await vscode.workspace.fs.writeFile(input, new TextEncoder().encode('A r4'));
+			await vscode.workspace.fs.writeFile(mdx, new TextEncoder().encode('existing MDX'));
+			await vscode.workspace.fs.writeFile(vgm, new TextEncoder().encode('existing VGM'));
+			const result = await runBuildTerminal({ type: 'mmlx', input: input.fsPath,
+				output: mdx.fsPath, format: 'both' }, data => data.includes('VGM ['));
+			assert.strictEqual(result.code, 130, result.output);
+			assert.ok(result.output.includes('Canceled'));
+			const deadline = Date.now() + 5000;
+			let entries = await vscode.workspace.fs.readDirectory(directory);
+			while (entries.some(([name]) => name.startsWith('.mmlx-')) && Date.now() < deadline) {
+				await new Promise(resolve => setTimeout(resolve, 10));
+				entries = await vscode.workspace.fs.readDirectory(directory);
+			}
+			assert.ok(entries.every(([name]) => !name.startsWith('.mmlx-')));
+			assert.strictEqual(new TextDecoder().decode(await vscode.workspace.fs.readFile(mdx)), 'existing MDX');
+			assert.strictEqual(new TextDecoder().decode(await vscode.workspace.fs.readFile(vgm)), 'existing VGM');
 		});
 
 		test('builds MDX and converts it to VGM with the bundled WASM', async function () {
@@ -1365,7 +1394,7 @@ suite('mmlx extension', () => {
 			assert.strictEqual(finite.readUInt32LE(0x20), 0);
 		});
 
-		test('streams binary output larger than pipe chunks with the bundled WASM', async function () {
+		test('writes large output directly with the bundled WASM', async function () {
 			this.timeout(60000);
 			const input = vscode.Uri.joinPath(directory, 'large.mml');
 			const output = vscode.Uri.joinPath(directory, 'large.vgm');
@@ -1378,6 +1407,28 @@ suite('mmlx extension', () => {
 			assert.ok(bytes.length > 64 * 1024);
 			assert.strictEqual(bytes.subarray(0, 4).toString(), 'Vgm ');
 			assert.strictEqual(bytes.readUInt32LE(0x04) + 4, bytes.length);
+			assert.ok((await vscode.workspace.fs.readDirectory(directory)).every(([name]) => !name.startsWith('.mmlx-')));
+		});
+
+		test('writes both outputs outside the workspace using a mounted output directory', async function () {
+			this.timeout(60000);
+			const input = vscode.Uri.joinPath(directory, 'external.mml');
+			const external = vscode.Uri.joinPath(vscode.Uri.file(tmpdir()), `mmlx-output-${randomUUID()}`);
+			const destination = vscode.Uri.joinPath(external, 'output with spaces #1');
+			const output = vscode.Uri.joinPath(destination, 'external.vgm');
+			assert.strictEqual(vscode.workspace.getWorkspaceFolder(destination), undefined);
+			await vscode.workspace.fs.writeFile(input, new TextEncoder().encode('A r4 L r4'));
+			try {
+				const result = await runBuildTerminal({ type: 'mmlx', input: input.fsPath,
+					output: output.toString(), format: 'both' });
+				assert.strictEqual(result.code, 0, result.output);
+				assert.ok((await vscode.workspace.fs.readFile(vscode.Uri.joinPath(destination, 'external.mdx'))).length > 0);
+				assert.strictEqual(Buffer.from(await vscode.workspace.fs.readFile(output)).subarray(0, 4).toString(), 'Vgm ');
+				assert.deepStrictEqual((await vscode.workspace.fs.readDirectory(destination)).map(([name]) => name).sort(),
+					['external.mdx', 'external.vgm']);
+			} finally {
+				await vscode.workspace.fs.delete(external, { recursive: true });
+			}
 		});
 
 		test('configures relative and absolute output directories with task output taking precedence', async function () {

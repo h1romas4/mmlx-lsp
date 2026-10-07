@@ -1,4 +1,4 @@
-export type BuildResponse = { ok: true; bytes: Uint8Array } | {
+export type BuildResponse = { ok: true; byteLength: number } | {
 	ok: false;
 	message: string;
 	pdxName?: string;
@@ -12,7 +12,6 @@ export class BuildResponseDecoder {
 	private header: Uint8Array[] = [];
 	private headerLength = 0;
 	private response?: BuildResponse;
-	private received = 0;
 
 	push(data: Uint8Array): void {
 		if (!this.response) {
@@ -34,20 +33,11 @@ export class BuildResponseDecoder {
 			this.header = [];
 			data = data.subarray(newline + 1);
 		}
-		if (!this.response.ok) {
-			if (data.length !== 0) { throw new Error('Unexpected compiler error payload.'); }
-			return;
-		}
-		if (data.length > this.response.bytes.length - this.received) {
-			throw new Error('Compiler output exceeds declared byte length.');
-		}
-		this.response.bytes.set(data, this.received);
-		this.received += data.length;
+		if (data.length !== 0) { throw new Error('Unexpected compiler response payload.'); }
 	}
 
 	finish(code: number): BuildResponse {
-		if (!this.response || (this.response.ok
-			&& (code !== 0 || this.received !== this.response.bytes.length))) {
+		if (!this.response || (this.response.ok && code !== 0)) {
 			throw new Error(`Invalid compiler response (exit code ${code}).`);
 		}
 		return this.response;
@@ -62,6 +52,6 @@ export class BuildResponseDecoder {
 			|| header.byteLength < 0 || header.byteLength > maxByteLength) {
 			throw new Error('Invalid compiler response header.');
 		}
-		return { ok: true, bytes: new Uint8Array(header.byteLength) };
+		return { ok: true, byteLength: header.byteLength };
 	}
 }

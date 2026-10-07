@@ -21,22 +21,13 @@ struct BuildSuccess {
     ok: bool,
 }
 
-fn write_response(mut output: impl Write, result: &Result<Vec<u8>, Value>) -> io::Result<()> {
+fn write_response(mut output: impl Write, result: &Result<BuildSuccess, Value>) -> io::Result<()> {
     match result {
-        Ok(bytes) => serde_json::to_writer(
-            &mut output,
-            &BuildSuccess {
-                byte_length: bytes.len(),
-                ok: true,
-            },
-        ),
+        Ok(success) => serde_json::to_writer(&mut output, success),
         Err(error) => serde_json::to_writer(&mut output, error),
     }
     .map_err(io::Error::other)?;
     writeln!(output)?;
-    if let Ok(bytes) = result {
-        output.write_all(bytes)?;
-    }
     Ok(())
 }
 
@@ -162,6 +153,24 @@ fn build(request: &Value) -> Result<Vec<u8>, Value> {
     }
 }
 
+fn build_output(request: &Value) -> Result<BuildSuccess, Value> {
+    let path = request["outputPath"]
+        .as_str()
+        .filter(|path| !path.is_empty())
+        .ok_or_else(|| failure("Missing output path"))?;
+    let bytes = build(request)?;
+    let mut file = std::fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(path)
+        .map_err(failure)?;
+    file.write_all(&bytes).map_err(failure)?;
+    Ok(BuildSuccess {
+        byte_length: bytes.len(),
+        ok: true,
+    })
+}
+
 fn main() {
     let mut input = String::new();
     let result = io::stdin()
@@ -169,7 +178,7 @@ fn main() {
         .read_line(&mut input)
         .map_err(failure)
         .and_then(|_| serde_json::from_str::<Value>(&input).map_err(failure))
-        .and_then(|request| build(&request));
+        .and_then(|request| build_output(&request));
     let mut output = io::BufWriter::new(io::stdout().lock());
     write_response(&mut output, &result).expect("compiler response must be writable");
     output.flush().expect("compiler response must be flushed");
@@ -184,15 +193,47 @@ mod tests {
     use soundlog::mdx::document::MdxDocument;
 
     #[test]
-    fn writes_success_header_followed_by_unmodified_binary_bytes() {
-        for bytes in [vec![], (0..=u8::MAX).collect()] {
+    fn writes_only_success_metadata() {
+        for byte_length in [0, 256] {
             let mut output = Vec::new();
-            write_response(&mut output, &Ok(bytes.clone())).unwrap();
+            write_response(
+                &mut output,
+                &Ok(BuildSuccess {
+                    ok: true,
+                    byte_length,
+                }),
+            )
+            .unwrap();
             let boundary = output.iter().position(|byte| *byte == b'\n').unwrap();
             let header: Value = serde_json::from_slice(&output[..boundary]).unwrap();
-            assert_eq!(header, json!({ "ok": true, "byteLength": bytes.len() }));
-            assert_eq!(&output[boundary + 1..], bytes);
+            assert_eq!(header, json!({ "ok": true, "byteLength": byte_length }));
+            assert!(output[boundary + 1..].is_empty());
         }
+    }
+
+    #[test]
+    fn writes_output_and_protects_existing_files() {
+        let directory = std::env::temp_dir().join(format!(
+            "mmlx-build-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        std::fs::create_dir(&directory).unwrap();
+        let path = directory.join("output.mdx");
+        let request = json!({ "source": "A r4", "outputPath": path });
+        let expected = build(&request).unwrap();
+        let result = build_output(&request).unwrap();
+        assert_eq!(result.byte_length, expected.len());
+        assert_eq!(std::fs::read(&path).unwrap(), expected);
+        assert!(build_output(&request).is_err());
+        assert!(build_output(&json!({ "source": "A o999 c4", "outputPath": path })).is_err());
+        assert_eq!(std::fs::read(&path).unwrap(), expected);
+        assert!(build_output(&json!({ "source": "A r4" })).is_err());
+        assert!(build_output(&json!({ "source": "A r4", "outputPath": "" })).is_err());
+        std::fs::remove_dir_all(directory).unwrap();
     }
 
     #[test]

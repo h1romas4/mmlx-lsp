@@ -1,7 +1,8 @@
 import * as path from 'node:path';
+import { randomUUID } from 'node:crypto';
 import {
 	commands, CustomExecution, Diagnostic, DiagnosticCollection, DiagnosticSeverity,
-	EventEmitter, ExtensionContext, FileType, languages, Pseudoterminal, Range, Task,
+	EventEmitter, ExtensionContext, FileSystemError, FileType, languages, Pseudoterminal, Range, Task,
 	TaskDefinition, TaskGroup, TaskPanelKind, TaskRevealKind, tasks, TaskScope, Uri,
 	window, workspace, WorkspaceFolder, TextDocument, TaskExecution, TerminalLink,
 	TerminalLinkProvider
@@ -147,10 +148,17 @@ export class BuildTerminal implements Pseudoterminal {
 		}
 	}
 
-	private async execute(module: WebAssembly.Module, request: object): Promise<BuildResponse> {
+	private async execute(module: WebAssembly.Module, request: object, output: Uri): Promise<BuildResponse> {
+		this.checkCanceled();
+		const rootFileSystem = await this.wasm.createRootFileSystem([
+			{ kind: 'vscodeFileSystem', uri: Uri.joinPath(output, '..'), mountPoint: '/output' }
+		]);
+		const outputPath = await rootFileSystem.toWasm(output);
+		if (!outputPath) { throw new Error('Output path could not be mapped into WASI.'); }
 		this.checkCanceled();
 		const process = await this.wasm.createProcess('mmlx-build', module,
 			{ initial: 160, maximum: 16384, shared: true }, {
+				rootFileSystem,
 				stdio: { in: { kind: 'pipeIn' }, out: { kind: 'pipeOut' }, err: { kind: 'pipeOut' } }
 			});
 		this.process = process;
@@ -175,7 +183,7 @@ export class BuildTerminal implements Pseudoterminal {
 			this.checkCanceled();
 			const [code] = await Promise.all([
 				process.run(),
-				process.stdin!.write(`${JSON.stringify(request)}\n`)
+				process.stdin!.write(`${JSON.stringify({ ...request, outputPath })}\n`)
 			]);
 			this.checkCanceled();
 			if (outputError) { throw outputError; }
@@ -193,6 +201,8 @@ export class BuildTerminal implements Pseudoterminal {
 
 	private async build(): Promise<void> {
 		let input: Uri | undefined;
+		let exitCode = 1;
+		const temporaryOutputs = new Set<Uri>();
 		try {
 			if (!workspace.isTrusted) {
 				throw new Error('Build tasks require a trusted workspace.');
@@ -250,32 +260,40 @@ export class BuildTerminal implements Pseudoterminal {
 				'server', 'target', 'wasm32-wasip1-threads', 'release', 'mmlx-build.wasm');
 			const bytes = await workspace.fs.readFile(wasmUri);
 			const module = await WebAssembly.compile(new Uint8Array(bytes).buffer);
-			const results: { uri: Uri; bytes: Uint8Array }[] = [];
+			const results: { uri: Uri; temporary: Uri; byteLength: number }[] = [];
 			for (const output of outputs) {
+				this.checkCanceled();
+				const directory = Uri.joinPath(output.uri, '..');
+				await workspace.fs.createDirectory(directory);
+				const temporary = Uri.joinPath(directory, `.mmlx-${randomUUID()}.tmp`);
+				temporaryOutputs.add(temporary);
 				this.status(output.format === 'mdx' ? 'Emitting' : 'Converting',
 					output.format === 'mdx' ? 'MDX'
 						: `VGM [${loopCount === undefined ? 'native loop' : `${loopCount} playthrough(s)`}]`, '36');
 				request.format = output.format;
-				let response = await this.execute(module, request);
+				let response = await this.execute(module, request, temporary);
 				if (!response.ok && response.pdxName && !pdxPath) {
 					const pdx = await findPdx(input, response.pdxName);
 					request.pdx = Array.from(await workspace.fs.readFile(pdx));
 					this.status('Loading', `${this.displayPath(pdx)} [PDX]`, '36');
-					response = await this.execute(module, request);
+					response = await this.execute(module, request, temporary);
 				}
 				if (!response.ok) {
 					throw new BuildFailure(response);
 				}
-				results.push({ uri: output.uri, bytes: response.bytes });
+				const stat = await workspace.fs.stat(temporary);
+				if ((stat.type & FileType.File) === 0 || stat.size !== response.byteLength) {
+					throw new Error('Compiler output file does not match the declared byte length.');
+				}
+				results.push({ uri: output.uri, temporary, byteLength: response.byteLength });
 			}
 			for (const result of results) {
 				this.checkCanceled();
-				await workspace.fs.createDirectory(Uri.joinPath(result.uri, '..'));
-				this.checkCanceled();
-				await workspace.fs.writeFile(result.uri, result.bytes);
-				const size = result.bytes.length < 1024 ? `${result.bytes.length} B`
-					: result.bytes.length < 1024 * 1024 ? `${(result.bytes.length / 1024).toFixed(1)} KiB`
-						: `${(result.bytes.length / (1024 * 1024)).toFixed(1)} MiB`;
+				await workspace.fs.rename(result.temporary, result.uri, { overwrite: true });
+				temporaryOutputs.delete(result.temporary);
+				const size = result.byteLength < 1024 ? `${result.byteLength} B`
+					: result.byteLength < 1024 * 1024 ? `${(result.byteLength / 1024).toFixed(1)} KiB`
+						: `${(result.byteLength / (1024 * 1024)).toFixed(1)} MiB`;
 				this.status('Writing', `${this.displayPath(result.uri)} (${size})`);
 			}
 			try {
@@ -285,7 +303,7 @@ export class BuildTerminal implements Pseudoterminal {
 			}
 			this.checkCanceled();
 			this.status('Finished', `${results.length} output file(s) in ${this.elapsed()}s`);
-			this.finish(0);
+			exitCode = 0;
 		} catch (error) {
 			if (this.canceled) {
 				return;
@@ -310,7 +328,17 @@ export class BuildTerminal implements Pseudoterminal {
 				this.status('error', message, '31');
 			}
 			this.status('Failed', `Build failed after ${this.elapsed()}s`, '31');
-			this.finish(1);
+		} finally {
+			for (const temporary of temporaryOutputs) {
+				try {
+					await workspace.fs.delete(temporary);
+				} catch (error) {
+					if (!(error instanceof FileSystemError && error.code === 'FileNotFound')) {
+						this.status('Warning', `Could not remove temporary output: ${this.displayPath(temporary)}`, '33');
+					}
+				}
+			}
+			if (!this.canceled) { this.finish(exitCode); }
 		}
 	}
 }
