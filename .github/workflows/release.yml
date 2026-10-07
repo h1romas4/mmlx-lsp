@@ -63,7 +63,14 @@ jobs:
           workspaces: server
           key: wasm
       - run: npm ci
+      - name: Cache WASI SDK
+        id: wasi-sdk-cache
+        uses: actions/cache@v4
+        with:
+          path: toolchains/wasi-sdk/build/install
+          key: wasi-sdk-${{ runner.os }}-${{ runner.arch }}-33.0-0ba8b5bfaeb2adf3f29bab5841d76cf5318ab8e1642ea195f88baba1abd47bce
       - name: Install WASI SDK for YM2151 emulation
+        if: steps.wasi-sdk-cache.outputs.cache-hit != 'true'
         shell: bash
         run: |
           curl --fail --location --retry 3 -o "$RUNNER_TEMP/wasi-sdk.tar.gz" \
