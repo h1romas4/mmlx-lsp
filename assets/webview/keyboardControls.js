@@ -41,9 +41,10 @@ export function createKeyboardControls(root, onModeChange = () => {}, onNote = (
 		const width = body.getBoundingClientRect().width;
 		if (!width || !root.open) { releaseAll(); return; }
 		const targetWhiteCount = Math.max(22, Math.floor(width / 33.2));
+		const startNote = targetWhiteCount === 22 ? 48 : 36;
 		const notes = [];
 		let whiteCount = 0;
-		for (let note = 48; note <= 127 && whiteCount < targetWhiteCount; note++) {
+		for (let note = startNote; note <= 127 && whiteCount < targetWhiteCount; note++) {
 			const black = [1, 3, 6, 8, 10].includes(note % 12);
 			notes.push({ note, black, name: `${names[note % 12]}${Math.floor(note / 12) - 1}` });
 			if (!black) { whiteCount++; }

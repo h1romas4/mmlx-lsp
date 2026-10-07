@@ -10,15 +10,19 @@ pub struct Ym2151 {
 
 impl Default for Ym2151 {
     fn default() -> Self {
-        Self {
-            chip: ffi::create_chip(ffi::ChipType::Ym2151, 4_000_000),
-            pending_keys: [false; 8],
-            buffered_samples: VecDeque::new(),
-        }
+        Self::new(4_000_000)
     }
 }
 
 impl Ym2151 {
+    pub fn new(clock: u32) -> Self {
+        Self {
+            chip: ffi::create_chip(ffi::ChipType::Ym2151, clock),
+            pending_keys: [false; 8],
+            buffered_samples: VecDeque::new(),
+        }
+    }
+
     pub fn sample_rate(&self) -> u32 {
         self.chip.sample_rate()
     }

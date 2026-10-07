@@ -2,6 +2,11 @@
 
 All notable changes to the "mmlx-lsp" extension will be documented in this file.
 
+## [0.8.1] - 2026-10-08
+
+- Fix FM Voice keyboard and MIDI-IN audition pitch to match standard MIDI notes.
+- Start wider FM Voice keyboards at C2 while keeping 37-key keyboards at C3.
+
 ## [0.8.0] - 2026-10-08
 
 - Improve the Playback and connection settings UI with clearer status displays, compact playback controls, and reduced flicker.

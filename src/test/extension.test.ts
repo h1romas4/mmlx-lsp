@@ -791,7 +791,7 @@ suite('mmlx extension', () => {
 		const send = data => window.dispatchEvent(new MessageEvent('message', { data }));
 		const check = (condition, text) => { if (!condition) { throw new Error(text); } };
 		let startProbed = false;
-		function runProbe() {
+		async function runProbe() {
 			try {
 				if (!startProbed) {
 					if (!document.querySelector('#start-controls img').complete) { requestAnimationFrame(runProbe); return; }
@@ -834,6 +834,20 @@ suite('mmlx extension', () => {
 				check(document.querySelector('#keyboard [data-midi-note="64"]').classList.contains('is-active'), 'MIDI feedback must remain independent of output');
 				send({ ...midi, connected: false, error: 'MIDI test error' });
 				check(badge.hidden && document.getElementById('midi-settings-status').textContent === 'MIDI test error', 'Disconnect must hide badge and preserve errors');
+				send({ type: 'outputConnection', target: 'keyboard', id: 0, connected: true, connecting: false });
+				const body = keyboard.querySelector('.p-keyboard__body');
+				for (const [width, note, label] of [[800, 36, 'C2'], [320, 48, 'C3'], [800, 36, 'C2']]) {
+					body.style.width = width + 'px';
+					await new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve)));
+					const keys = [...keyboard.querySelector('.p-keyboard__wrapper').children];
+					const lowest = keys[0];
+					check(lowest.dataset.midiNote === String(note) && lowest.getAttribute('aria-label') === label, 'Lowest key must be ' + label + ' at width ' + width);
+					if (width === 320) { check(keys.length === 37, 'Compact keyboard must have 37 keys'); }
+					check(keyboard.querySelector('[data-midi-note="64"]').classList.contains('is-active'), 'Resize must preserve MIDI note feedback');
+					lowest.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter' }));
+					check(messages.at(-1).type === 'emulationNote' && messages.at(-1).event === 'noteOn' && messages.at(-1).note === note, 'Lowest key must send its MIDI note');
+					lowest.dispatchEvent(new KeyboardEvent('keyup', { key: 'Enter' }));
+				}
 				probeApi.postMessage({ type: 'keyboardResult' });
 			} catch (error) { probeApi.postMessage({ type: 'keyboardFailure', error: String(error) }); }
 		}

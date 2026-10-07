@@ -19,7 +19,7 @@ pub struct Emulation {
 
 impl Emulation {
     pub fn new(sample_rate: u32) -> Result<Self, String> {
-        let chip = Ym2151::default();
+        let chip = Ym2151::new(3_579_545);
         Ok(Self {
             audio: Audio::new(chip.sample_rate(), sample_rate)?,
             chip,
@@ -122,6 +122,53 @@ mod tests {
             .chunks_exact(4)
             .map(|sample| f32::from_le_bytes(sample.try_into().unwrap()).abs())
             .sum()
+    }
+
+    #[test]
+    fn keyboard_notes_match_midi_pitch() {
+        for note in [48, 60, 62, 69, 72, 84] {
+            let mut engine = Emulation::new(48000).unwrap();
+            let mut voice = tone();
+            voice.operator_mask = 8;
+            engine.set_voice(Some(voice)).unwrap();
+            engine.note_on(
+                Note {
+                    source: 0,
+                    channel: 0,
+                    note,
+                },
+                127,
+            );
+            for _ in 0..10 {
+                engine.render().unwrap();
+            }
+            let mut samples = Vec::new();
+            for _ in 0..30 {
+                samples.extend(
+                    engine
+                        .render()
+                        .unwrap()
+                        .chunks_exact(8)
+                        .map(|frame| f32::from_le_bytes(frame[..4].try_into().unwrap())),
+                );
+            }
+            let crossings: Vec<f64> = samples
+                .windows(2)
+                .enumerate()
+                .filter(|(_, pair)| pair[0] <= 0.0 && pair[1] > 0.0)
+                .map(|(index, pair)| {
+                    index as f64 - f64::from(pair[0]) / f64::from(pair[1] - pair[0])
+                })
+                .collect();
+            assert!(crossings.len() > 2, "MIDI note {note} must produce a tone");
+            let actual =
+                48000.0 * (crossings.len() - 1) as f64 / (crossings.last().unwrap() - crossings[0]);
+            let expected = 440.0 * 2_f64.powf((f64::from(note) - 69.0) / 12.0);
+            assert!(
+                (actual / expected - 1.0).abs() < 0.005,
+                "MIDI note {note}: expected {expected:.3} Hz, got {actual:.3} Hz"
+            );
+        }
     }
 
     #[test]
