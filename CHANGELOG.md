@@ -2,7 +2,9 @@
 
 All notable changes to the "mmlx-lsp" extension will be documented in this file.
 
-## [0.5.0] - Unreleased
+## [0.6.0] - Unreleased
+
+## [0.5.0] - 2026-10-07
 
 - Audition the displayed FM voice with the on-screen keyboard or a MIDI keyboard using ymfm-based YM2151 emulation, with up to eight simultaneous notes and MIDI velocity response.
 - Connect and disconnect MIDI-IN from Settings, see its connection indicator beside the FM Voice keyboard, and follow incoming notes on the keys.
