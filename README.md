@@ -4,7 +4,7 @@ MML (Music Macro Language) support for VS Code and Helix.
 Currently supports the MDX (MXDRV) dialect and `.mml` files.
 
 For installation, see [VS Code](#manual-installation-in-vs-code) or
-[Helix](#install-in-helix). Build commands and the experimental panel are VS Code-only.
+[Helix](#install-in-helix). Build commands and the mmlx panel are VS Code-only.
 
 ## Features
 
@@ -79,7 +79,7 @@ location (Cmd-click on macOS, depending on your terminal settings) to jump to
 the source. Stop the task to cancel.
 
 Change the options below in VS Code settings or in **Settings > Build** in the
-[experimental panel](#mmlx-experimental-panel). The panel saves changes to the
+[mmlx panel](#mmlx-panel). The panel saves changes to the
 workspace folder's `.vscode/settings.json`; they apply to the next build without
 restarting the language server.
 
@@ -106,7 +106,7 @@ the native language server.
 - `mmlx.language`: `auto` follows the editor language, falling back to Japanese.
     Use `ja` or `en` to select the language of completion descriptions and parameter hints.
 - `mmlx.serial.connection`: empty by default. Use **Settings > Connection > NanoDrive8**
-    in the [experimental panel](#mmlx-experimental-panel) to select a serial port,
+    in the [mmlx panel](#mmlx-panel) to select a serial port,
     such as `/dev/ttyUSB0` or `COM3`. The selection is saved to the workspace settings;
     it does not open the port or transmit data. In remote workspaces, the list shows
     ports on the remote extension host.
@@ -118,9 +118,9 @@ the native language server.
 After changing the dialect or language, run **mmlx: Restart Language Server** from the
 command palette. Diagnostic messages are not translated.
 
-## mmlx (experimental) Panel
+## mmlx Panel
 
-- **Dedicated bottom panel** opened with **mmlx: Show mmlx (experimental) Panel**.
+- **Dedicated bottom panel** opened with **mmlx: Show mmlx Panel**.
 - **FM Voice editing** for parameters, algorithms, and envelopes directly in the source by placing the cursor in an `@` definition.
 - **Settings** for MDX/VGM builds, NanoDrive8 port selection, and MIDI-IN selection, saved to `.vscode/settings.json`.
 - **MIDI-IN** connection and note reception, with pressed-key feedback in the FM Voice keyboard.
@@ -128,12 +128,10 @@ command palette. Diagnostic messages are not translated.
 
 <img src="https://raw.githubusercontent.com/h1romas4/mmlx-lsp/main/assets/docs/mmlx-004.png" alt="FM Voice panel with YM2151 algorithms and operator envelopes" width="500">
 
-Select **Emulation** under **FM Voice > Keyboard > Output** and use the connection
-button to audition the displayed voice. Its parameters are applied to all eight
-YM2151 channels. MIDI-IN velocity is supported; a ninth note replaces the oldest
-held note. Changing the voice releases held notes. YM2151 notes range from MIDI
-13 to 108. Connections are closed when the panel is hidden and are not restored
-automatically.
+Connect **Emulation** under **FM Voice > Keyboard > Output** to audition the voice with up to eight notes and MIDI-IN velocity.
+Connections stay active while the panel is hidden; only on-screen keyboard notes are released.
+The title shows `[Connected]`, and the badge counts active connections. Disconnect manually to stop emulation.
+Disposing the view closes connections; reloading does not restore them.
 
 Playback-tab audio and NanoDrive8 communication are not yet implemented.
 

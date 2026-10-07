@@ -2,7 +2,11 @@
 
 All notable changes to the "mmlx-lsp" extension will be documented in this file.
 
-## [0.6.0] - Unreleased
+## [0.6.0] - 2026-10-07
+
+- Open the panel with **mmlx: Show mmlx Panel**, without the experimental label.
+- Keep playing via MIDI-IN while using other panels, without reconnecting; on-screen keyboard notes stop when the panel is hidden.
+- See active emulation and MIDI-IN connections at a glance in the panel title and connection-count badge.
 
 ## [0.5.0] - 2026-10-07
 

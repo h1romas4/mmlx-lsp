@@ -159,16 +159,18 @@ function waitForDiagnostics(uri: vscode.Uri, count: number): Promise<void> {
 }
 
 suite('mmlx extension', () => {
-	test('Webview AudioWorklet plays PCM from the real WASI YM2151 backend', async function () {
+	test('Webview AudioWorklet plays PCM from the real WASI YM2151 backend while hidden', async function () {
 		this.timeout(15000);
 		const extension = vscode.extensions.all.find(extension => extension.packageJSON.name === 'mmlx-lsp');
 		assert.ok(extension);
 		const media = vscode.Uri.joinPath(extension.extensionUri, 'assets', 'webview');
 		const panel = vscode.window.createWebviewPanel('mmlx.audioOutputTest', 'mmlx Audio Output Test', vscode.ViewColumn.Beside,
 			{ enableScripts: true, retainContextWhenHidden: true, localResourceRoots: [media] });
-		let resolveResult!: (message: { pcmBlocks: number; requestedBlocks: number; maxRms: number; state: string }) => void;
+		const hiddenDocument = await vscode.workspace.openTextDocument({ language: 'plaintext', content: '' });
+		type AudioResult = { pcmBlocks: number; requestedBlocks: number; maxRms: number; hiddenBlocks: number; hiddenRms: number; state: string };
+		let resolveResult!: (message: AudioResult) => void;
 		let rejectResult!: (error: Error) => void;
-		const response = new Promise<{ pcmBlocks: number; requestedBlocks: number; maxRms: number; state: string }>((resolve, reject) => {
+		const response = new Promise<AudioResult>((resolve, reject) => {
 			resolveResult = resolve; rejectResult = reject;
 		});
 		const tone = { algorithm: 2, feedback: 7, operatorMask: 15, operators: [
@@ -217,6 +219,12 @@ suite('mmlx extension', () => {
 			if (message.type === 'stage') {
 				stages.push(message);
 				if (message.stage === 'moduleLoaded') { void startWithUserGesture().catch(rejectResult); }
+				if (message.stage === 'streaming') {
+					void vscode.window.showTextDocument(hiddenDocument, { viewColumn: panel.viewColumn }).then(() => {
+						assert.strictEqual(panel.visible, false);
+						return panel.webview.postMessage({ type: 'hidden' });
+					}).then(undefined, error => rejectResult(error));
+				}
 			}
 			if (message.type === 'ready') {
 				void session.connect(message.sampleRate, tone).then(() => {
@@ -240,7 +248,7 @@ suite('mmlx extension', () => {
 					await super.resume(); api.postMessage({ type: 'stage', stage: 'resumeFinished', state: this.state });
 				}
 			};
-			let analyser; let context; let pcmBlocks = 0; let requestedBlocks = 0; let maxRms = 0;
+			let analyser; let context; let pcmBlocks = 0; let requestedBlocks = 0; let maxRms = 0; let hiddenStart = null; let hiddenRms = 0;
 			const NativeNode = AudioWorkletNode;
 			window.AudioWorkletNode = class extends NativeNode {
 				constructor(audio, ...options) {
@@ -252,8 +260,12 @@ suite('mmlx extension', () => {
 			const audio = createEmulationAudio(blocks => { requestedBlocks += blocks; api.postMessage({ type: 'render', blocks }); },
 				error => api.postMessage({ type: 'failure', error }));
 			window.addEventListener('message', event => {
-				if (event.data.type === 'pcm') { pcmBlocks++; audio.pcm(event.data.pcm); }
+				if (event.data.type === 'pcm') {
+					pcmBlocks++; audio.pcm(event.data.pcm);
+					if (pcmBlocks === 8) { api.postMessage({ type: 'stage', stage: 'streaming' }); }
+				}
 				else if (event.data.type === 'state' && event.data.connected) { audio.start(); }
+				else if (event.data.type === 'hidden') { hiddenStart = pcmBlocks; }
 			});
 			window.__mmlxConnectAudio = async () => { try {
 				const sampleRate = await audio.connect();
@@ -261,11 +273,13 @@ suite('mmlx extension', () => {
 				const samples = new Float32Array(2048);
 				const meter = setInterval(() => {
 					analyser.getFloatTimeDomainData(samples);
-					maxRms = Math.max(maxRms, Math.sqrt(samples.reduce((sum, value) => sum + value * value, 0) / samples.length));
+					const rms = Math.sqrt(samples.reduce((sum, value) => sum + value * value, 0) / samples.length);
+					maxRms = Math.max(maxRms, rms);
+					if (hiddenStart !== null) { hiddenRms = Math.max(hiddenRms, rms); }
 				}, 20);
 				setTimeout(() => {
 					clearInterval(meter);
-					api.postMessage({ type: 'result', pcmBlocks, requestedBlocks, maxRms, state: context.state });
+					api.postMessage({ type: 'result', pcmBlocks, requestedBlocks, maxRms, hiddenBlocks: hiddenStart === null ? 0 : pcmBlocks - hiddenStart, hiddenRms, state: context.state });
 					audio.disconnect();
 				}, 1000);
 			} catch (error) { api.postMessage({ type: 'failure', error: String(error) }); audio.disconnect(); } };
@@ -279,6 +293,8 @@ suite('mmlx extension', () => {
 			assert.ok(result.requestedBlocks > 4, JSON.stringify(result));
 			assert.ok(result.pcmBlocks > 4, JSON.stringify(result));
 			assert.ok(result.maxRms > 0.0001, JSON.stringify(result));
+			assert.ok(result.hiddenBlocks > 4, JSON.stringify(result));
+			assert.ok(result.hiddenRms > 0.0001, JSON.stringify(result));
 		} finally { clearTimeout(timer); listener.dispose(); session.dispose(); panel.dispose(); }
 	});
 	test('Webview audio PCM arrives as a transferable ArrayBuffer', async function () {
@@ -315,7 +331,7 @@ suite('mmlx extension', () => {
 			assert.strictEqual(message.sample, 0.25);
 		} finally { listener.dispose(); panel.dispose(); }
 	});
-	test('YM2151 panel connects the selected voice and keyboard without coupling Playback disconnects', async function () {
+	test('YM2151 panel keeps output connected while hidden and releases keyboard notes', async function () {
 		this.timeout(20000);
 		const extension = vscode.extensions.all.find(extension => extension.packageJSON.name === 'mmlx-lsp');
 		assert.ok(extension);
@@ -335,7 +351,8 @@ suite('mmlx extension', () => {
 			code2ProtocolConverter: { asTextDocumentPositionParams: () => ({}) } } as unknown as LanguageClient;
 		const provider = new VoiceViewProvider(context as unknown as vscode.ExtensionContext, () => client,
 			async () => [], async () => [], undefined, await Wasm.load());
-		const view = { visible: true, onDidChangeVisibility: visibility.event, onDidDispose: disposed.event,
+		const view = { visible: true, title: 'mmlx', badge: undefined as vscode.ViewBadge | undefined,
+			onDidChangeVisibility: visibility.event, onDidDispose: disposed.event,
 			webview: { cspSource: 'https://test.invalid', asWebviewUri: (uri: vscode.Uri) => uri,
 				onDidReceiveMessage: messages.event, postMessage: (message: Update) => {
 					updates.push(message); changed.fire(message); return Promise.resolve(true);
@@ -351,19 +368,43 @@ suite('mmlx extension', () => {
 		try {
 			await provider.resolveWebviewView(view as unknown as vscode.WebviewView);
 			await waitFor(message => message.type === 'voice' && !!message.voice);
+			assert.strictEqual(view.title, 'mmlx');
+			assert.strictEqual(view.badge, undefined);
 			messages.fire({ type: 'setOutputConnection', target: 'keyboard', mode: 'emulation', connected: true, sampleRate: 48000, id: 1 });
 			await waitFor(message => message.type === 'outputConnection' && message.id === 1 && message.connected === true);
+			assert.strictEqual(view.title, 'mmlx [Connected]');
+			assert.deepStrictEqual(view.badge, { value: 1, tooltip: 'Connected: YM2151 (ymfm)' });
 			messages.fire({ type: 'emulationNote', event: 'noteOn', note: 60, velocity: 100, id: 1 });
 			messages.fire({ type: 'emulationRender', blocks: 4, id: 1 });
-			const pcm = (await waitFor(message => message.type === 'emulationPcm')).pcm;
+			const pcm = (await waitFor(message => message.type === 'emulationPcm'
+				&& updates.filter(update => update.type === 'emulationPcm').length === 4)).pcm;
 			assert.ok(pcm instanceof ArrayBuffer); assert.strictEqual(pcm.byteLength, 4096);
 			assert.ok(new Float32Array(pcm).some(value => Math.abs(value) > 0.0001));
 			const start = updates.length;
 			messages.fire({ type: 'setOutputConnection', target: 'playback', connected: false });
 			messages.fire({ type: 'emulationRender', blocks: 1, id: 1 });
 			await waitFor(message => message.type === 'emulationPcm', start);
+			const hiddenStart = updates.length;
 			view.visible = false; visibility.fire();
-			await waitFor(message => message.type === 'outputConnection' && message.id === 1 && !message.connected && !message.connecting, start);
+			assert.strictEqual(view.title, 'mmlx [Connected]');
+			assert.deepStrictEqual(view.badge, { value: 1, tooltip: 'Connected: YM2151 (ymfm)' });
+			messages.fire({ type: 'emulationRender', blocks: 4, id: 1 });
+			const released = (await waitFor(message => message.type === 'emulationPcm'
+				&& updates.slice(hiddenStart).filter(update => update.type === 'emulationPcm').length === 4, hiddenStart)).pcm;
+			assert.ok(released instanceof ArrayBuffer);
+			assert.ok(new Float32Array(released).every(value => Math.abs(value) < 0.0001), 'Hidden view must release screen-keyboard notes');
+			assert.ok(!updates.slice(hiddenStart).some(message => message.type === 'outputConnection' && !message.connected && !message.connecting));
+			view.visible = true; visibility.fire();
+			const resumedStart = updates.length;
+			messages.fire({ type: 'emulationNote', event: 'noteOn', note: 64, velocity: 100, id: 1 });
+			messages.fire({ type: 'emulationRender', blocks: 1, id: 1 });
+			const resumed = (await waitFor(message => message.type === 'emulationPcm', resumedStart)).pcm;
+			assert.ok(resumed instanceof ArrayBuffer);
+			assert.ok(new Float32Array(resumed).some(value => Math.abs(value) > 0.0001), 'Showing view must allow notes without reconnecting');
+			messages.fire({ type: 'setOutputConnection', target: 'keyboard', connected: false, id: 1 });
+			await waitFor(message => message.type === 'outputConnection' && message.id === 1 && !message.connected && !message.connecting, resumedStart);
+			assert.strictEqual(view.title, 'mmlx');
+			assert.strictEqual(view.badge, undefined);
 		} finally {
 			provider.dispose();
 			for (const subscription of context.subscriptions) { subscription.dispose(); }
@@ -561,8 +602,8 @@ suite('mmlx extension', () => {
 		assert.ok((await vscode.commands.getCommands()).includes('mmlx.showVoicePanel'));
 		assert.ok(extension.packageJSON.contributes.views.mmlx.some((view: { id: string; type: string }) =>
 			view.id === 'mmlx.voice' && view.type === 'webview'));
-		assert.strictEqual(extension.packageJSON.contributes.viewsContainers.panel[0].title, 'mmlx (experimental)');
-		assert.strictEqual(extension.packageJSON.contributes.views.mmlx[0].name, 'mmlx (experimental)');
+		assert.strictEqual(extension.packageJSON.contributes.viewsContainers.panel[0].title, 'mmlx');
+		assert.strictEqual(extension.packageJSON.contributes.views.mmlx[0].name, 'mmlx');
 		const source = '@7 = {\n' + '31,12,4,8,6,20,1,2,3,1,0,\n'.repeat(4) + '5,3,15\n}\nA @7 c4\n';
 		const document = await vscode.workspace.openTextDocument({ language: 'mmlx', content: source });
 		const editor = await vscode.window.showTextDocument(document);
@@ -818,6 +859,8 @@ suite('mmlx extension', () => {
 		try {
 			await provider.resolveWebviewView(view);
 			messages.fire({ type: 'ready' });
+			assert.strictEqual(view.title, 'mmlx');
+			assert.strictEqual(view.badge, undefined);
 			const listed = await waitFor(message => !message.loading && message.ports.length === 2);
 			assert.deepStrictEqual(listed.ports, ['Keyboard 2', 'Keyboard 10']);
 			messages.fire({ type: 'updateMidiInput', folder: folder.uri.toString(), value: 'Keyboard 2' });
@@ -837,10 +880,13 @@ suite('mmlx extension', () => {
 			messages.fire({ type: 'setMidiInputConnection', folder: folder.uri.toString(), connected: true });
 			await waitFor(message => message.error === 'MIDI open failed');
 			assert.strictEqual(destroyed, 1);
+			assert.strictEqual(view.badge, undefined);
 			openFailure = false;
 			messages.fire({ type: 'setMidiInputConnection', folder: folder.uri.toString(), connected: true });
 			const connected = await waitFor(message => message.connected);
 			assert.strictEqual(connected.editable, false);
+			assert.strictEqual(view.title, 'mmlx [Connected]');
+			assert.deepStrictEqual(view.badge, { value: 1, tooltip: 'Connected: MIDI-IN' });
 			inputs.at(-1)!.emit('noteon', 60, 100, { channel: 0 });
 			assert.deepStrictEqual(notes, [60]);
 			inputs.at(-1)!.emit('noteoff', 60, 0, { channel: 0 });
@@ -850,6 +896,8 @@ suite('mmlx extension', () => {
 			messages.fire({ type: 'setMidiInputConnection', folder: folder.uri.toString(), connected: false });
 			await waitFor(message => !message.connected && message.editable);
 			assert.strictEqual(destroyed, 2);
+			assert.strictEqual(view.title, 'mmlx');
+			assert.strictEqual(view.badge, undefined);
 			ports = [];
 			messages.fire({ type: 'getMidiInputPorts' });
 			const removed = await waitFor(message => !message.loading && message.ports.length === 0);
@@ -888,6 +936,9 @@ suite('mmlx extension', () => {
 			await waitFor(message => message.canConnect);
 			messages.fire({ type: 'setMidiInputConnection', folder: folder.uri.toString(), connected: true });
 			await waitFor(message => message.connected);
+			for (const property of ['title', 'badge']) {
+				Object.defineProperty(view, property, { set: () => { throw new Error('Disposed view marker must not be updated'); } });
+			}
 			events.fire();
 			assert.strictEqual(destroyed, 5);
 			assert.strictEqual(inputs.at(-1)!.listenerCount('noteon'), 0);

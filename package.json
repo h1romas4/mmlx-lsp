@@ -43,14 +43,14 @@
       },
       {
         "command": "mmlx.showVoicePanel",
-        "title": "mmlx: Show mmlx (experimental) Panel"
+        "title": "mmlx: Show mmlx Panel"
       }
     ],
     "viewsContainers": {
       "panel": [
         {
           "id": "mmlx",
-          "title": "mmlx (experimental)",
+          "title": "mmlx",
           "icon": "assets/webview/voice.svg"
         }
       ]
@@ -60,7 +60,7 @@
         {
           "type": "webview",
           "id": "mmlx.voice",
-          "name": "mmlx (experimental)",
+          "name": "mmlx",
           "icon": "assets/icon/mmlx.png"
         }
       ]

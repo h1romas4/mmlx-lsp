@@ -61,7 +61,7 @@ const buildSettingsValidators: Record<keyof typeof buildSettingsDefaults, (value
 export function registerVoiceView(context: ExtensionContext, getClient: () => LanguageClient | undefined, wasm?: Wasm): void {
 	const provider = new VoiceViewProvider(context, getClient, undefined, undefined, undefined, wasm);
 	context.subscriptions.push(provider,
-		window.registerWebviewViewProvider('mmlx.voice', provider),
+		window.registerWebviewViewProvider('mmlx.voice', provider, { webviewOptions: { retainContextWhenHidden: true } }),
 		commands.registerCommand('mmlx.showVoicePanel', () => commands.executeCommand('mmlx.voice.focus')));
 }
 
@@ -81,6 +81,7 @@ export class VoiceViewProvider implements WebviewViewProvider {
 	private midiError = '';
 	private readonly midiInput: MidiInputConnection;
 	private readonly emulation?: EmulationSession;
+	private emulationConnected = false;
 	private outputId = 0;
 	private midiFolder = '';
 	private editTarget: { document: TextDocument; version: number; token: number; voice: VoiceDefinition } | undefined;
@@ -93,7 +94,11 @@ export class VoiceViewProvider implements WebviewViewProvider {
 		private readonly getMidiInputPorts: () => Promise<string[]> = listMidiInputPorts,
 		createInput: () => Promise<MidiInputPort> = createMidiInput, wasm?: Wasm) {
 		this.emulation = wasm ? new EmulationSession(context.extensionUri, wasm,
-			state => { void this.view?.webview.postMessage({ type: 'outputConnection', target: 'keyboard', id: this.outputId, ...state }); },
+			state => {
+				this.emulationConnected = state.connected;
+				this.updateConnectionMarker();
+				void this.view?.webview.postMessage({ type: 'outputConnection', target: 'keyboard', id: this.outputId, ...state });
+			},
 			pcm => { void this.view?.webview.postMessage({ type: 'emulationPcm', id: this.outputId, pcm }); }) : undefined;
 		this.midiInput = new MidiInputConnection(() => this.sendMidiSettings(), createInput,
 			notes => { void this.view?.webview.postMessage({ type: 'midiNotes', notes }); },
@@ -123,6 +128,7 @@ export class VoiceViewProvider implements WebviewViewProvider {
 
 	async resolveWebviewView(view: WebviewView): Promise<void> {
 		this.view = view;
+		this.updateConnectionMarker();
 		const media = Uri.joinPath(this.context.extensionUri, 'assets', 'webview');
 		view.webview.options = { enableScripts: true, localResourceRoots: [media] };
 		this.context.subscriptions.push(
@@ -151,9 +157,12 @@ export class VoiceViewProvider implements WebviewViewProvider {
 					}
 				}
 			}),
-			view.onDidChangeVisibility(() => { if (view.visible) { this.schedule(); } else { this.emulation?.disconnect(); } }),
+			view.onDidChangeVisibility(() => {
+				if (view.visible) { this.schedule(); }
+				else { this.emulation?.note({ type: 'allOff', source: 0 }); }
+			}),
 			view.onDidDispose(() => {
-				if (this.view === view) { this.emulation?.disconnect(); this.view = undefined; this.sequence++; this.midiInput.disconnect(); }
+				if (this.view === view) { this.view = undefined; this.emulation?.disconnect(); this.sequence++; this.midiInput.disconnect(); }
 			})
 		);
 		const template = new TextDecoder().decode(await workspace.fs.readFile(Uri.joinPath(media, 'voice.html')));
@@ -281,7 +290,17 @@ export class VoiceViewProvider implements WebviewViewProvider {
 		}
 	}
 
+	private updateConnectionMarker(): void {
+		if (!this.view) { return; }
+		const connections = [];
+		if (this.emulationConnected) { connections.push('YM2151 (ymfm)'); }
+		if (this.midiInput.state.connected) { connections.push('MIDI-IN'); }
+		this.view.title = connections.length ? 'mmlx [Connected]' : 'mmlx';
+		this.view.badge = connections.length ? { value: connections.length, tooltip: `Connected: ${connections.join(', ')}` } : undefined;
+	}
+
 	private sendMidiSettings(error = ''): void {
+		this.updateConnectionMarker();
 		const folder = this.buildSettingsFolder();
 		const connection = workspace.getConfiguration('mmlx', folder?.uri).get<string>('midi.input', '');
 		const state = this.midiInput.state;
