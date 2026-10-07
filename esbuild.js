@@ -25,10 +25,10 @@ const esbuildProblemMatcherPlugin = {
 };
 
 async function main() {
-	copyFileSync(require.resolve('lucide-static/icons/refresh-cw.svg'), 'media/refresh.svg');
-	copyFileSync(require.resolve('lucide-static/icons/plug.svg'), 'media/plug.svg');
-	copyFileSync(require.resolve('lucide-static/icons/unplug.svg'), 'media/unplug.svg');
-	copyFileSync(require.resolve('lucide-static/LICENSE'), 'media/lucide-LICENSE');
+	copyFileSync(require.resolve('lucide-static/icons/refresh-cw.svg'), 'assets/webview/refresh.svg');
+	copyFileSync(require.resolve('lucide-static/icons/plug.svg'), 'assets/webview/plug.svg');
+	copyFileSync(require.resolve('lucide-static/icons/unplug.svg'), 'assets/webview/unplug.svg');
+	copyFileSync(require.resolve('lucide-static/LICENSE'), 'assets/webview/lucide-LICENSE');
 	const ctx = await esbuild.context({
 		entryPoints: [
 			'src/extension.ts'

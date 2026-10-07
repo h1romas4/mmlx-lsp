@@ -163,7 +163,7 @@ suite('mmlx extension', () => {
 		this.timeout(15000);
 		const extension = vscode.extensions.all.find(extension => extension.packageJSON.name === 'mmlx-lsp');
 		assert.ok(extension);
-		const media = vscode.Uri.joinPath(extension.extensionUri, 'media');
+		const media = vscode.Uri.joinPath(extension.extensionUri, 'assets', 'webview');
 		const panel = vscode.window.createWebviewPanel('mmlx.audioOutputTest', 'mmlx Audio Output Test', vscode.ViewColumn.Beside,
 			{ enableScripts: true, retainContextWhenHidden: true, localResourceRoots: [media] });
 		let resolveResult!: (message: { pcmBlocks: number; requestedBlocks: number; maxRms: number; state: string }) => void;
@@ -442,7 +442,7 @@ suite('mmlx extension', () => {
 	test('output connections disable NanoDrive8 without locking mode selection', async () => {
 		const extension = vscode.extensions.all.find(extension => extension.packageJSON.name === 'mmlx-lsp');
 		assert.ok(extension);
-		const { createOutputConnection } = await import(vscode.Uri.joinPath(extension.extensionUri, 'media', 'outputConnection.js').toString());
+		const { createOutputConnection } = await import(vscode.Uri.joinPath(extension.extensionUri, 'assets', 'webview', 'outputConnection.js').toString());
 		const mode = Object.assign(new EventTarget(), { value: 'nanodrive8', disabled: false });
 		const attributes = new Map<string, string>();
 		const button = Object.assign(new EventTarget(), { disabled: false, title: '',
@@ -467,7 +467,7 @@ suite('mmlx extension', () => {
 		assert.strictEqual(button.disabled, true); assert.strictEqual(mode.disabled, false);
 		controls.setState({ connected: false, connecting: false });
 		assert.strictEqual(button.disabled, true);
-		const template = new TextDecoder().decode(await vscode.workspace.fs.readFile(vscode.Uri.joinPath(extension.extensionUri, 'media', 'voice.html')));
+		const template = new TextDecoder().decode(await vscode.workspace.fs.readFile(vscode.Uri.joinPath(extension.extensionUri, 'assets', 'webview', 'voice.html')));
 		assert.strictEqual((template.match(/<option value="emulation">Emulation \(ymfm\)<\/option>/g) ?? []).length, 2);
 		assert.match(template, /<button\b[^>]*id="playback-connection"[^>]*\sdisabled[^>]*>/);
 		const unavailableMode = Object.assign(new EventTarget(), { value: 'emulation', disabled: false });
@@ -488,7 +488,7 @@ suite('mmlx extension', () => {
 		this.timeout(15000);
 		const extension = vscode.extensions.all.find(extension => extension.packageJSON.name === 'mmlx-lsp');
 		assert.ok(extension);
-		const media = vscode.Uri.joinPath(extension.extensionUri, 'media');
+		const media = vscode.Uri.joinPath(extension.extensionUri, 'assets', 'webview');
 		const panel = vscode.window.createWebviewPanel('mmlx.keyboardStateTest', 'mmlx Keyboard State Test', vscode.ViewColumn.Beside,
 			{ enableScripts: true, localResourceRoots: [media] });
 		let resolveResult!: () => void;
@@ -583,7 +583,7 @@ suite('mmlx extension', () => {
 	test('FM voice algorithm table matches YM2151 connections and carriers', async () => {
 		const extension = vscode.extensions.all.find(extension => extension.packageJSON.name === 'mmlx-lsp');
 		assert.ok(extension);
-		const module = await import(vscode.Uri.joinPath(extension.extensionUri, 'media', 'voiceControls.js').toString());
+		const module = await import(vscode.Uri.joinPath(extension.extensionUri, 'assets', 'webview', 'voiceControls.js').toString());
 		assert.deepStrictEqual(module.algorithmConnections.map((connection: { edges: number[][] }) => connection.edges), [
 			[[0, 1], [1, 2], [2, 3]], [[0, 2], [1, 2], [2, 3]],
 			[[0, 3], [1, 2], [2, 3]], [[0, 1], [1, 3], [2, 3]],
@@ -596,7 +596,7 @@ suite('mmlx extension', () => {
 	test('FM voice envelope dragging maps and clamps all envelope parameters', async () => {
 		const extension = vscode.extensions.all.find(extension => extension.packageJSON.name === 'mmlx-lsp');
 		assert.ok(extension);
-		const module = await import(vscode.Uri.joinPath(extension.extensionUri, 'media', 'voiceControls.js').toString());
+		const module = await import(vscode.Uri.joinPath(extension.extensionUri, 'assets', 'webview', 'voiceControls.js').toString());
 		const original = { ar: 16, tl: 10, rr: 8, d1r: 12, d1l: 3, d2r: 8 };
 		const base = module.envelopeHandlePositions(original);
 		for (let ar = 0; ar <= 31; ar++) {
@@ -638,7 +638,7 @@ suite('mmlx extension', () => {
 	test('FM voice algorithm connections use only orthogonal paths', async () => {
 		const extension = vscode.extensions.all.find(extension => extension.packageJSON.name === 'mmlx-lsp');
 		assert.ok(extension);
-		const module = await import(vscode.Uri.joinPath(extension.extensionUri, 'media', 'voiceControls.js').toString());
+		const module = await import(vscode.Uri.joinPath(extension.extensionUri, 'assets', 'webview', 'voiceControls.js').toString());
 		assert.strictEqual(module.connectionPath([24, 52], [64, 52]), 'M 36 52 H 52');
 		assert.strictEqual(module.connectionPath([24, 28], [84, 52]), 'M 36 28 H 54 V 52 H 72');
 		assert.strictEqual(module.connectionPath([104, 76], [180, 52], 6), 'M 116 76 H 145 V 52 H 174');

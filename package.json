@@ -51,7 +51,7 @@
         {
           "id": "mmlx",
           "title": "mmlx (experimental)",
-          "icon": "media/voice.svg"
+          "icon": "assets/webview/voice.svg"
         }
       ]
     },
@@ -273,15 +273,15 @@
     ]
   },
   "scripts": {
-    "build:grammar": "node tree-sitter/run.mjs generate",
-    "build:helix": "npm run build:grammar && node helix/build.mjs",
-    "test:helix": "node tree-sitter/run.mjs test",
+    "build:grammar": "node native/tree-sitter/run.mjs generate",
+    "build:helix": "npm run build:grammar && node native/helix/build.mjs",
+    "test:helix": "node native/tree-sitter/run.mjs test",
     "vscode:prepublish": "npm run package",
     "build": "npm run build:wasm && npm run compile",
     "build:wasm": "npm run build:server && npm run build:compiler && npm run build:emulator",
-    "build:emulator": "node server/build-emulator.mjs",
-    "build:server": "cargo rustc --locked --manifest-path server/Cargo.toml --bin mmlx-lsp-server --release --target wasm32-wasip1-threads -- -Clink-arg=--initial-memory=10485760 -Clink-arg=--max-memory=134217728",
-    "build:compiler": "cargo rustc --locked --manifest-path server/Cargo.toml --bin mmlx-build --release --target wasm32-wasip1-threads -- -Clink-arg=--initial-memory=10485760 -Clink-arg=--max-memory=1073741824",
+    "build:emulator": "cargo build --locked -j 1 --manifest-path server/Cargo.toml --features emulation --bin mmlx-emulator --release --target wasm32-wasip1-threads",
+    "build:server": "cargo build --locked -j 1 --manifest-path server/Cargo.toml --bin mmlx-lsp-server --release --target wasm32-wasip1-threads",
+    "build:compiler": "cargo build --locked -j 1 --manifest-path server/Cargo.toml --bin mmlx-build --release --target wasm32-wasip1-threads",
     "test:server": "cargo test --manifest-path server/Cargo.toml",
     "compile": "npm run check-types && npm run lint && node esbuild.js",
     "watch": "npm-run-all -p watch:*",

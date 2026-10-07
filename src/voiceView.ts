@@ -123,7 +123,7 @@ export class VoiceViewProvider implements WebviewViewProvider {
 
 	async resolveWebviewView(view: WebviewView): Promise<void> {
 		this.view = view;
-		const media = Uri.joinPath(this.context.extensionUri, 'media');
+		const media = Uri.joinPath(this.context.extensionUri, 'assets', 'webview');
 		view.webview.options = { enableScripts: true, localResourceRoots: [media] };
 		this.context.subscriptions.push(
 			view.webview.onDidReceiveMessage(message => {

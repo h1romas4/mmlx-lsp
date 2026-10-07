@@ -69,9 +69,8 @@ jobs:
           curl --fail --location --retry 3 -o "$RUNNER_TEMP/wasi-sdk.tar.gz" \
             https://github.com/WebAssembly/wasi-sdk/releases/download/wasi-sdk-33/wasi-sdk-33.0-x86_64-linux.tar.gz
           printf '%s  %s\n' '0ba8b5bfaeb2adf3f29bab5841d76cf5318ab8e1642ea195f88baba1abd47bce' "$RUNNER_TEMP/wasi-sdk.tar.gz" | sha256sum --check
-          mkdir -p "$RUNNER_TEMP/wasi-sdk"
-          tar -xzf "$RUNNER_TEMP/wasi-sdk.tar.gz" -C "$RUNNER_TEMP/wasi-sdk" --strip-components=1
-          printf 'WASI_SDK=%s\n' "$RUNNER_TEMP/wasi-sdk" >> "$GITHUB_ENV"
+          mkdir -p toolchains/wasi-sdk/build/install
+          tar -xzf "$RUNNER_TEMP/wasi-sdk.tar.gz" -C toolchains/wasi-sdk/build/install --strip-components=1
       - name: Prepare extension metadata
         shell: bash
         run: |
@@ -159,11 +158,11 @@ jobs:
           name="mmlx-lsp-${VERSION}-${RELEASE_PLATFORM}"
           staging="release/stage/$name"
           mkdir -p "$staging/bin" "$staging/runtime/grammars" "$staging/runtime/queries/mmlx-mdx"
-          cc -O3 -shared -fPIC -std=c11 -I tree-sitter/mdx/src tree-sitter/mdx/src/parser.c -o "$staging/runtime/grammars/mmlx-mdx.so"
+          cc -O3 -shared -fPIC -std=c11 -I native/tree-sitter/mdx/src native/tree-sitter/mdx/src/parser.c -o "$staging/runtime/grammars/mmlx-mdx.so"
           cp "server/target/$TARGET/release/mmlx-lsp-server" "$staging/bin/"
-          cp tree-sitter/mdx/queries/highlights.scm "$staging/runtime/queries/mmlx-mdx/"
-          cp helix/languages.release.toml "$staging/languages.toml"
-          cp helix/README.md "$staging/README.md"
+          cp native/tree-sitter/mdx/queries/highlights.scm "$staging/runtime/queries/mmlx-mdx/"
+          cp native/helix/languages.release.toml "$staging/languages.toml"
+          cp native/helix/README.md "$staging/README.md"
           cp LICENSE "$staging/LICENSE"
           tar -czf "release/$name.tar.gz" -C release/stage "$name"
       - name: Package Windows binaries and Helix resources
@@ -173,13 +172,13 @@ jobs:
           $name = "mmlx-lsp-$env:VERSION-$env:RELEASE_PLATFORM"
           $staging = "release/stage/$name"
           New-Item -ItemType Directory -Force "$staging/bin", "$staging/runtime/grammars", "$staging/runtime/queries/mmlx-mdx" | Out-Null
-          cl /nologo /O2 /LD /std:c11 /utf-8 /I tree-sitter/mdx/src tree-sitter/mdx/src/parser.c /link /out:release/mmlx-mdx.dll
+          cl /nologo /O2 /LD /std:c11 /utf-8 /I native/tree-sitter/mdx/src native/tree-sitter/mdx/src/parser.c /link /out:release/mmlx-mdx.dll
           if ($LASTEXITCODE -ne 0) { throw 'Tree-sitter DLL compilation failed' }
           Copy-Item release/mmlx-mdx.dll "$staging/runtime/grammars/"
           Copy-Item "server/target/$env:TARGET/release/mmlx-lsp-server.exe" "$staging/bin/"
-          Copy-Item tree-sitter/mdx/queries/highlights.scm "$staging/runtime/queries/mmlx-mdx/"
-          Copy-Item helix/languages.release.toml "$staging/languages.toml"
-          Copy-Item helix/README.md "$staging/README.md"
+          Copy-Item native/tree-sitter/mdx/queries/highlights.scm "$staging/runtime/queries/mmlx-mdx/"
+          Copy-Item native/helix/languages.release.toml "$staging/languages.toml"
+          Copy-Item native/helix/README.md "$staging/README.md"
           Copy-Item LICENSE "$staging/LICENSE"
           Compress-Archive -Path $staging -DestinationPath "release/$name.zip"
       - uses: actions/upload-artifact@v4

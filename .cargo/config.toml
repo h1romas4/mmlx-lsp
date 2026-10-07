@@ -1,0 +1,5 @@
+[env]
+WASI_SDK_PATH = { value = "toolchains/wasi-sdk/build/install", relative = true, force = true }
+CXXSTDLIB_wasm32_wasip1_threads = { value = "", force = true }
+CXXFLAGS_wasm32_wasip1_threads = "-fno-exceptions -pthread -matomics -mbulk-memory"
+CC_SHELL_ESCAPED_FLAGS = "1"

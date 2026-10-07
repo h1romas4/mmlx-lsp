@@ -3,8 +3,8 @@ import { copyFileSync, mkdirSync, writeFileSync } from 'node:fs';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
-const project = resolve(dirname(fileURLToPath(import.meta.url)), '..');
-const build = join(project, 'helix', 'build');
+const project = resolve(dirname(fileURLToPath(import.meta.url)), '../..');
+const build = join(project, 'native', 'helix', 'build');
 const configHome = join(build, 'config');
 const runtime = join(configHome, 'helix', 'runtime');
 const configFile = join(configHome, 'helix', 'languages.toml');
@@ -28,9 +28,9 @@ grammar = "mmlx-mdx"
 
 [[grammar]]
 name = "mmlx-mdx"
-source = { path = ${JSON.stringify(join(project, 'tree-sitter', 'mdx'))} }
+source = { path = ${JSON.stringify(join(project, 'native', 'tree-sitter', 'mdx'))} }
 `);
-copyFileSync(join(project, 'tree-sitter', 'mdx', 'queries', 'highlights.scm'), join(queryDirectory, 'highlights.scm'));
+copyFileSync(join(project, 'native', 'tree-sitter', 'mdx', 'queries', 'highlights.scm'), join(queryDirectory, 'highlights.scm'));
 execFileSync('hx', ['--grammar', 'build'], {
   cwd: project,
   stdio: 'inherit',

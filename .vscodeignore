@@ -20,12 +20,15 @@ vsc-extension-quickstart.md
 **/*.ts
 **/.vscode-test.*
 server/**
+.cargo/**
+toolchains/**
+wasi-sdk.tar.gz
 !server/target/wasm32-wasip1-threads/release/mmlx-lsp-server.wasm
 !server/target/wasm32-wasip1-threads/release/mmlx-build.wasm
 !server/target/wasm32-wasip1-threads/release/mmlx-emulator.wasm
 testbed/**
-helix/**
-tree-sitter/**
+native/helix/**
+native/tree-sitter/**
 .github/**
 release/**
 package-lock.json
