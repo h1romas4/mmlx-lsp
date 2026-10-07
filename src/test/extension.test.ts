@@ -610,7 +610,7 @@ suite('mmlx extension', () => {
 		finally { clearTimeout(timer); listener.dispose(); panel.dispose(); }
 	});
 
-	test('Get Started opens an editable untitled MML example without modifying existing documents', async function () {
+	test('Get Started opens an editable untitled MML example without a preset save path or modifying existing documents', async function () {
 		this.timeout(15000);
 		const extension = vscode.extensions.all.find(extension => extension.packageJSON.name === 'mmlx-lsp');
 		assert.ok(extension);
@@ -631,13 +631,14 @@ suite('mmlx extension', () => {
 			const openExample = () => new Promise<vscode.TextDocument>((resolve, reject) => {
 				clearTimeout(timer); subscription?.dispose();
 				subscription = vscode.window.onDidChangeActiveTextEditor(editor => {
-					if (editor?.document.isUntitled && editor.document.uri.path.endsWith('.mml')) { resolve(editor.document); }
+					if (editor?.document.isUntitled && editor.document.languageId === 'mmlx' && editor.document !== original) { resolve(editor.document); }
 				});
 				timer = setTimeout(() => reject(new Error('Example MML did not open')), 8000);
 				messages.fire({ type: 'openStarter' });
 			});
 			const document = await openExample();
-			assert.strictEqual(document.uri.path, '/example.mml');
+			assert.strictEqual(document.uri.scheme, 'untitled');
+			assert.match(document.uri.path, /^Untitled-\d+$/);
 			assert.strictEqual(document.languageId, 'mmlx');
 			assert.ok(document.isUntitled && document.isDirty);
 			const expected = new TextDecoder().decode(await vscode.workspace.fs.readFile(vscode.Uri.joinPath(extension.extensionUri, 'assets', 'webview', 'example.mml')));
@@ -646,7 +647,8 @@ suite('mmlx extension', () => {
 			await waitForDiagnostics(document.uri, 0);
 			await editSource(document, expected + '\n; My edits\n');
 			const second = await openExample();
-			assert.strictEqual(second.uri.path, '/example-2.mml');
+			assert.match(second.uri.path, /^Untitled-\d+$/);
+			assert.notStrictEqual(second.uri.toString(), document.uri.toString());
 			assert.strictEqual(second.getText(), expected);
 			assert.strictEqual(document.getText(), expected + '\n; My edits\n');
 			await vscode.commands.executeCommand('workbench.action.revertAndCloseActiveEditor');

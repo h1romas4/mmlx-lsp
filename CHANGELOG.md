@@ -2,6 +2,10 @@
 
 All notable changes to the "mmlx-lsp" extension will be documented in this file.
 
+## [0.6.1] - 2026-10-08
+
+- Fix saving the Get Started example so VS Code prompts for a save location instead of targeting the filesystem root.
+
 ## [0.6.0] - 2026-10-07
 
 - Open the panel with **mmlx: Show mmlx Panel**, without the experimental label.
