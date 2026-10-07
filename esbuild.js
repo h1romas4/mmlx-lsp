@@ -26,6 +26,8 @@ const esbuildProblemMatcherPlugin = {
 
 async function main() {
 	copyFileSync(require.resolve('lucide-static/icons/refresh-cw.svg'), 'media/refresh.svg');
+	copyFileSync(require.resolve('lucide-static/icons/plug.svg'), 'media/plug.svg');
+	copyFileSync(require.resolve('lucide-static/icons/unplug.svg'), 'media/unplug.svg');
 	copyFileSync(require.resolve('lucide-static/LICENSE'), 'media/lucide-LICENSE');
 	const ctx = await esbuild.context({
 		entryPoints: [

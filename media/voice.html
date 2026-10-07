@@ -32,15 +32,28 @@
 				<div class="algorithm-grid"></div>
 			</details>
 			<div id="operators" hidden></div>
+			<details id="keyboard" class="p-keyboard" aria-labelledby="keyboard-heading" open>
+				<summary class="keyboard-heading">
+					<span id="keyboard-heading">Keyboard</span>
+					<span class="keyboard-output output-controls"><label>Output <select id="keyboard-mode" aria-label="Keyboard output">
+						<option value="emulation">Emulation</option>
+						<option value="nanodrive8">NanoDrive8</option>
+					</select></label><button id="keyboard-connection" class="output-connection" type="button" title="Connect" aria-label="Connect" aria-pressed="false"></button></span>
+				</summary>
+				<div class="p-keyboard__body">
+					<ul class="p-keyboard__wrapper" aria-label="Piano keyboard"></ul>
+				</div>
+			</details>
 		</section>
 		<section id="playback-controls" role="tabpanel" aria-labelledby="playback-tab" hidden>
 			<header>
 				<h1 id="playback-message" class="empty" role="status">Playback is not ready yet. The music is still dreaming.</h1>
-				<div class="summary playback-options">
+				<div class="summary playback-options output-controls">
 					<label>Output <select id="playback-mode" aria-label="Playback output">
 						<option value="emulation">Emulation</option>
 						<option value="nanodrive8">NanoDrive8</option>
 					</select></label>
+					<button id="playback-connection" class="output-connection" type="button" title="Connect" aria-label="Connect" aria-pressed="false"></button>
 				</div>
 			</header>
 		</section>
