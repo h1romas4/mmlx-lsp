@@ -124,10 +124,26 @@ command palette. Diagnostic messages are not translated.
 - **FM Voice editing** for parameters, algorithms, and envelopes directly in the source by placing the cursor in an `@` definition.
 - **Settings** for MDX/VGM builds, NanoDrive8 port selection, and MIDI-IN selection, saved to `.vscode/settings.json`.
 - **MIDI-IN** connection and note reception, with pressed-key feedback in the FM Voice keyboard.
+- **YM2151 emulation** with up to eight simultaneous notes from the keyboard or MIDI-IN.
 
 <img src="https://raw.githubusercontent.com/h1romas4/mmlx-lsp/main/assets/docs/mmlx-004.png" alt="FM Voice panel with YM2151 algorithms and operator envelopes" width="500">
 
-Audio playback and NanoDrive8 communication are not yet implemented.
+Select **Emulation** under **FM Voice > Keyboard > Output** and use the connection
+button to audition the displayed voice. Its parameters are applied to all eight
+YM2151 channels. MIDI-IN velocity is supported; a ninth note replaces the oldest
+held note. Changing the voice releases held notes. YM2151 notes range from MIDI
+13 to 108. Connections are closed when the panel is hidden and are not restored
+automatically.
+
+Playback-tab audio and NanoDrive8 communication are not yet implemented.
+
+### Build From Source
+
+The VS Code build requires Rust with `wasm32-wasip1-threads`, Node.js, and WASI SDK 33.
+Set `WASI_SDK` to the SDK directory, then run `npm ci` and `npm run build`.
+`npm run build:emulator` builds just the audio backend. The language server and
+compiler do not enable the optional C++ emulator dependency. Installed VSIX users
+do not need Rust or WASI SDK.
 
 ## Current Limitations
 
@@ -202,3 +218,5 @@ not code-signed or notarized.
 ## License
 
 BSD-3-Clause
+
+The audio backend includes third-party components listed in [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md).

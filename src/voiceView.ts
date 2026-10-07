@@ -5,6 +5,8 @@ import {
 	window, workspace, WorkspaceEdit
 } from 'vscode';
 import type { LanguageClient } from 'vscode-languageclient/node';
+import type { Wasm } from '@vscode/wasm-wasi/v1';
+import { EmulationSession } from './emulation';
 import { createMidiInput, MidiInputConnection, type MidiInputPort } from './midiInput';
 
 interface VoiceDefinition {
@@ -56,8 +58,8 @@ const buildSettingsValidators: Record<keyof typeof buildSettingsDefaults, (value
 	maxTicks: value => typeof value === 'number' && Number.isInteger(value) && value >= 1 && value <= 4294967295
 };
 
-export function registerVoiceView(context: ExtensionContext, getClient: () => LanguageClient | undefined): void {
-	const provider = new VoiceViewProvider(context, getClient);
+export function registerVoiceView(context: ExtensionContext, getClient: () => LanguageClient | undefined, wasm?: Wasm): void {
+	const provider = new VoiceViewProvider(context, getClient, undefined, undefined, undefined, wasm);
 	context.subscriptions.push(provider,
 		window.registerWebviewViewProvider('mmlx.voice', provider),
 		commands.registerCommand('mmlx.showVoicePanel', () => commands.executeCommand('mmlx.voice.focus')));
@@ -78,6 +80,8 @@ export class VoiceViewProvider implements WebviewViewProvider {
 	private midiLoading = false;
 	private midiError = '';
 	private readonly midiInput: MidiInputConnection;
+	private readonly emulation?: EmulationSession;
+	private outputId = 0;
 	private midiFolder = '';
 	private editTarget: { document: TextDocument; version: number; token: number; voice: VoiceDefinition } | undefined;
 	private snapshot: { voice: VoiceDefinition | null; source: string; retained: boolean; error: boolean } = {
@@ -87,9 +91,13 @@ export class VoiceViewProvider implements WebviewViewProvider {
 	constructor(private readonly context: ExtensionContext, private readonly getClient: () => LanguageClient | undefined,
 		private readonly getSerialPorts: () => Promise<SerialPortInfo[]> = listSerialPorts,
 		private readonly getMidiInputPorts: () => Promise<string[]> = listMidiInputPorts,
-		createInput: () => Promise<MidiInputPort> = createMidiInput) {
+		createInput: () => Promise<MidiInputPort> = createMidiInput, wasm?: Wasm) {
+		this.emulation = wasm ? new EmulationSession(context.extensionUri, wasm,
+			state => { void this.view?.webview.postMessage({ type: 'outputConnection', target: 'keyboard', id: this.outputId, ...state }); },
+			pcm => { void this.view?.webview.postMessage({ type: 'emulationPcm', id: this.outputId, pcm }); }) : undefined;
 		this.midiInput = new MidiInputConnection(() => this.sendMidiSettings(), createInput,
-			notes => { void this.view?.webview.postMessage({ type: 'midiNotes', notes }); });
+			notes => { void this.view?.webview.postMessage({ type: 'midiNotes', notes }); },
+			event => this.emulation?.note({ ...event, source: 1 }));
 		context.subscriptions.push(
 			window.onDidChangeTextEditorSelection(event => this.follow(event.textEditor)),
 			window.onDidChangeActiveTextEditor(editor => { this.follow(editor); this.sendBuildSettings(); this.sendConnectionSettings(); }),
@@ -120,6 +128,7 @@ export class VoiceViewProvider implements WebviewViewProvider {
 		this.context.subscriptions.push(
 			view.webview.onDidReceiveMessage(message => {
 				if (message?.type === 'ready') {
+					this.emulation?.disconnect();
 					this.send(); this.schedule(); this.sendBuildSettings();
 					void this.view?.webview.postMessage({ type: 'midiNotes', notes: this.midiInput.notes });
 					void this.refreshSerialPorts(); void this.refreshMidiInputPorts();
@@ -132,10 +141,19 @@ export class VoiceViewProvider implements WebviewViewProvider {
 				else if (message?.type === 'getMidiInputPorts') { void this.refreshMidiInputPorts(); }
 				else if (message?.type === 'updateMidiInput') { void this.updateMidiInput(message); }
 				else if (message?.type === 'setMidiInputConnection') { void this.setMidiInputConnection(message); }
+				else if (message?.type === 'setOutputConnection') { void this.setOutputConnection(message); }
+				else if (message?.type === 'emulationRender' && message.id === this.outputId) { this.emulation?.request(message.blocks); }
+				else if (message?.type === 'emulationNote' && message.id === this.outputId) {
+					if (['noteOn', 'noteOff'].includes(message.event) && Number.isInteger(message.note)
+						&& message.note >= 0 && message.note <= 127 && Number.isInteger(message.velocity)
+						&& message.velocity >= 0 && message.velocity <= 127) {
+						this.emulation?.note({ type: message.event, source: 0, channel: 0, note: message.note, velocity: message.velocity });
+					}
+				}
 			}),
-			view.onDidChangeVisibility(() => { if (view.visible) { this.schedule(); } }),
+			view.onDidChangeVisibility(() => { if (view.visible) { this.schedule(); } else { this.emulation?.disconnect(); } }),
 			view.onDidDispose(() => {
-				if (this.view === view) { this.view = undefined; this.sequence++; this.midiInput.disconnect(); }
+				if (this.view === view) { this.emulation?.disconnect(); this.view = undefined; this.sequence++; this.midiInput.disconnect(); }
 			})
 		);
 		const template = new TextDecoder().decode(await workspace.fs.readFile(Uri.joinPath(media, 'voice.html')));
@@ -148,6 +166,22 @@ export class VoiceViewProvider implements WebviewViewProvider {
 		this.follow(window.activeTextEditor);
 		this.sendBuildSettings();
 		this.sendConnectionSettings();
+	}
+
+	private async setOutputConnection(message: { target: unknown; mode: unknown; connected: unknown; sampleRate?: unknown; id?: unknown }): Promise<void> {
+		if (!['keyboard', 'playback'].includes(String(message.target)) || typeof message.connected !== 'boolean') { return; }
+		if (message.target === 'keyboard' && Number.isInteger(message.id)) { this.outputId = message.id as number; }
+		if (!message.connected) {
+			if (message.target === 'keyboard') { this.emulation?.disconnect(); }
+			else { void this.view?.webview.postMessage({ type: 'outputConnection', target: 'playback', connected: false, connecting: false }); }
+			return;
+		}
+		if (message.target !== 'keyboard' || message.mode !== 'emulation' || !this.emulation || !workspace.isTrusted) {
+			void this.view?.webview.postMessage({ type: 'outputConnection', target: message.target, id: message.id,
+				connected: false, connecting: false, error: 'This output is not available.' });
+			return;
+		}
+		await this.emulation.connect(message.sampleRate as number, this.snapshot.voice);
 	}
 
 	private buildSettingsFolder() {
@@ -436,6 +470,7 @@ export class VoiceViewProvider implements WebviewViewProvider {
 	}
 
 	private send(): void {
+		if (!this.snapshot.error) { this.emulation?.setVoice(this.snapshot.voice); }
 		const target = this.editTarget;
 		const editable = !!target && !this.editing && !this.snapshot.retained && !this.snapshot.error
 			&& !target.document.isClosed && target.document.version === target.version;
@@ -444,6 +479,7 @@ export class VoiceViewProvider implements WebviewViewProvider {
 	}
 
 	dispose(): void {
+		this.emulation?.dispose();
 		this.midiInput.disconnect();
 		this.view = undefined;
 		clearTimeout(this.timer);

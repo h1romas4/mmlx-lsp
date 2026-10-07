@@ -14,6 +14,12 @@ export function createOutputConnection(root, onRequest = () => {}) {
 			button.title = connected ? 'Disconnect' : 'Connect';
 			button.setAttribute('aria-label', button.title);
 			button.setAttribute('aria-pressed', String(connected));
+		},
+		setState(state) {
+			this.setConnected(state.connected);
+			button.disabled = state.connecting === true;
+			mode.disabled = connected || button.disabled;
+			if (state.error) { button.title = state.error; }
 		}
 	};
 }

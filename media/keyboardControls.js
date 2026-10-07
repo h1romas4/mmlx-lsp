@@ -1,4 +1,4 @@
-export function createKeyboardControls(root, onModeChange = () => {}) {
+export function createKeyboardControls(root, onModeChange = () => {}, onNote = () => {}) {
 	const body = root.querySelector('.p-keyboard__body');
 	const wrapper = root.querySelector('.p-keyboard__wrapper');
 	const mode = root.querySelector('#keyboard-mode');
@@ -7,8 +7,14 @@ export function createKeyboardControls(root, onModeChange = () => {}) {
 	const heldKeys = new Set();
 	let midiNotes = new Set();
 	let renderedWhiteCount = 0;
+	const sounding = new Set();
 
 	function updateKey(key) {
+		const local = heldKeys.has(key) || [...pointers.values()].includes(key);
+		if (sounding.has(key) !== local) {
+			if (local) { sounding.add(key); } else { sounding.delete(key); }
+			onNote({ event: local ? 'noteOn' : 'noteOff', note: Number(key.dataset.midiNote), velocity: local ? 100 : 0 });
+		}
 		const active = midiNotes.has(Number(key.dataset.midiNote)) || heldKeys.has(key) || [...pointers.values()].includes(key);
 		key.classList.toggle('is-active', active);
 		key.setAttribute('aria-pressed', String(active));
@@ -97,6 +103,7 @@ export function createKeyboardControls(root, onModeChange = () => {}) {
 	window.addEventListener('blur', releaseAll);
 	document.addEventListener('visibilitychange', () => { if (document.hidden) { releaseAll(); } });
 	return {
+		releaseAll,
 		setMode(value) { mode.value = value === 'nanodrive8' ? 'nanodrive8' : 'emulation'; },
 		setMidiNotes(notes) {
 			midiNotes = new Set(Array.isArray(notes) ? notes.filter(note => Number.isInteger(note) && note >= 0 && note <= 127) : []);

@@ -3,8 +3,18 @@ import { createPlaybackControls } from './playbackControls.js';
 import { createSettingsControls } from './settingsControls.js';
 import { createKeyboardControls } from './keyboardControls.js';
 import { createOutputConnection } from './outputConnection.js';
+import { createEmulationAudio } from './emulationAudio.js';
 
 const vscode = acquireVsCodeApi();
+let outputId = 0;
+const emulationAudio = createEmulationAudio(
+	blocks => vscode.postMessage({ type: 'emulationRender', id: outputId, blocks }),
+	error => {
+		emulationAudio.disconnect();
+		keyboardControls.releaseAll();
+		outputConnections.keyboard.setState({ connected: false, connecting: false, error });
+		vscode.postMessage({ type: 'setOutputConnection', target: 'keyboard', id: outputId, mode: 'emulation', connected: false });
+	});
 const voiceControls = createVoiceControls(document.getElementById('voice-controls'), message => vscode.postMessage(message));
 const playbackControls = createPlaybackControls(document.getElementById('playback-controls'), mode => {
 	playbackMode = mode;
@@ -14,13 +24,32 @@ const settingsControls = createSettingsControls(document.getElementById('setting
 const keyboardControls = createKeyboardControls(document.getElementById('keyboard'), mode => {
 	keyboardMode = mode;
 	saveState();
-});
+}, note => vscode.postMessage({ type: 'emulationNote', id: outputId, ...note }));
 const outputConnections = {
 	playback: createOutputConnection(document.querySelector('.playback-options'), request => {
 		vscode.postMessage({ type: 'setOutputConnection', target: 'playback', ...request });
 	}),
-	keyboard: createOutputConnection(document.querySelector('.keyboard-output'), request => {
-		vscode.postMessage({ type: 'setOutputConnection', target: 'keyboard', ...request });
+	keyboard: createOutputConnection(document.querySelector('.keyboard-output'), async request => {
+		if (!request.connected) {
+			keyboardControls.releaseAll(); emulationAudio.disconnect();
+			vscode.postMessage({ type: 'setOutputConnection', target: 'keyboard', id: outputId, ...request });
+			return;
+		}
+		outputId++;
+		const id = outputId;
+		if (request.mode !== 'emulation') {
+			vscode.postMessage({ type: 'setOutputConnection', target: 'keyboard', id, ...request });
+			return;
+		}
+		outputConnections.keyboard.setState({ connected: false, connecting: true });
+		try {
+			const sampleRate = await emulationAudio.connect();
+			if (id === outputId) { vscode.postMessage({ type: 'setOutputConnection', target: 'keyboard', id, ...request, sampleRate }); }
+		} catch (error) {
+			if (id !== outputId) { return; }
+			emulationAudio.disconnect();
+			outputConnections.keyboard.setState({ connected: false, connecting: false, error: String(error) });
+		}
 	})
 };
 const tabs = ['voice', 'playback', 'settings'];
@@ -78,11 +107,19 @@ window.addEventListener('message', event => {
 		keyboardControls.setMidiNotes(message.notes);
 	} else if (message?.type === 'outputConnection' && ['playback', 'keyboard'].includes(message.target)
 		&& typeof message.connected === 'boolean') {
-		outputConnections[message.target].setConnected(message.connected);
+		if (message.target === 'keyboard') {
+			if (message.id !== outputId) { return; }
+			if (message.connected) { emulationAudio.start(); }
+			else if (!message.connecting) { keyboardControls.releaseAll(); emulationAudio.disconnect(); }
+		}
+		outputConnections[message.target].setState(message);
+	} else if (message?.type === 'emulationPcm' && message.id === outputId) {
+		emulationAudio.pcm(message.pcm);
 	} else if (message?.type === 'buildSettings' || message?.type === 'serialSettings' || message?.type === 'midiSettings') {
 		settingsControls.render(message);
 	}
 });
+window.addEventListener('pagehide', () => emulationAudio.disconnect());
 voiceControls.render(snapshot);
 playbackControls.setMode(playbackMode);
 playbackControls.render(null);

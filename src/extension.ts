@@ -58,7 +58,7 @@ export async function activate(context: ExtensionContext): Promise<void> {
 		}
 	});
 	await client.start();
-	registerVoiceView(context, () => client);
+	registerVoiceView(context, () => client, wasm);
 	context.subscriptions.push(commands.registerCommand('mmlx.restartLanguageServer', async () => {
 		await client?.stop();
 		await client?.start();

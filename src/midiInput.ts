@@ -11,6 +11,10 @@ export interface MidiInputState {
 	error: string;
 }
 
+export type MidiNoteEvent = { type: 'noteOn'; channel: number; note: number; velocity: number }
+	| { type: 'noteOff'; channel: number; note: number }
+	| { type: 'allOff'; channel?: number };
+
 export async function createMidiInput(): Promise<MidiInputPort> {
 	const { Input } = await import('@julusian/midi');
 	return new Input();
@@ -24,7 +28,8 @@ export class MidiInputConnection {
 
 	constructor(private readonly onState: (state: MidiInputState) => void,
 		private readonly createInput: () => Promise<MidiInputPort> = createMidiInput,
-		private readonly onNotes: (notes: number[]) => void = () => {}) {}
+		private readonly onNotes: (notes: number[]) => void = () => {},
+		private readonly onNoteEvent: (event: MidiNoteEvent) => void = () => {}) {}
 
 	get state(): MidiInputState { return { ...this.snapshot }; }
 	get notes(): number[] { return [...new Set([...this.held].map(note => note % 128))].sort((first, second) => first - second); }
@@ -44,7 +49,7 @@ export class MidiInputConnection {
 			input.ignoreTypes(true, true, true);
 			input.on('noteon', (note, velocity, info) => {
 				if (this.input === source && Number.isInteger(velocity) && velocity >= 0 && velocity <= 127) {
-					this.setNote(note, info.channel, velocity > 0);
+						this.setNote(note, info.channel, velocity > 0, velocity);
 				}
 			});
 			input.on('noteoff', (note, _velocity, info) => {
@@ -53,6 +58,7 @@ export class MidiInputConnection {
 			input.on('cc', (parameter, _value, info) => {
 				if (this.input !== source || !Number.isInteger(info.channel) || info.channel < 0 || info.channel > 15) { return; }
 				if (parameter === 120 || (parameter >= 123 && parameter <= 127)) {
+						this.onNoteEvent({ type: 'allOff', channel: info.channel });
 					for (const note of this.held) { if (Math.floor(note / 128) === info.channel) { this.held.delete(note); } }
 					this.onNotes(this.notes);
 				}
@@ -78,6 +84,7 @@ export class MidiInputConnection {
 		const input = this.input;
 		this.input = undefined;
 		this.held.clear();
+		this.onNoteEvent({ type: 'allOff' });
 		try { input?.destroy(); } catch (failure) {
 			error = failure instanceof Error ? failure.message : 'Could not close MIDI input.';
 		}
@@ -86,8 +93,9 @@ export class MidiInputConnection {
 		this.onState(this.state);
 	}
 
-	private setNote(note: number, channel: number, active: boolean): void {
+	private setNote(note: number, channel: number, active: boolean, velocity = 0): void {
 		if (!Number.isInteger(note) || note < 0 || note > 127 || !Number.isInteger(channel) || channel < 0 || channel > 15) { return; }
+		this.onNoteEvent(active ? { type: 'noteOn', channel, note, velocity } : { type: 'noteOff', channel, note });
 		const key = channel * 128 + note;
 		if (this.held.has(key) === active) { return; }
 		if (active) { this.held.add(key); } else { this.held.delete(key); }

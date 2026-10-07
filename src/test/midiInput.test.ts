@@ -1,6 +1,6 @@
 import * as assert from 'assert';
 import { EventEmitter } from 'node:events';
-import { MidiInputConnection, type MidiInputPort, type MidiInputState } from '../midiInput';
+import { MidiInputConnection, type MidiInputPort, type MidiInputState, type MidiNoteEvent } from '../midiInput';
 
 class FakeInput extends EventEmitter {
 	opened = -1;
@@ -15,6 +15,23 @@ class FakeInput extends EventEmitter {
 }
 
 suite('MIDI input connection', () => {
+	test('forwards velocity, retriggers and source channel releases independently of display changes', async () => {
+		const input = new FakeInput();
+		const events: MidiNoteEvent[] = [];
+		const connection = new MidiInputConnection(() => {}, async () => input, () => {}, event => events.push(event));
+		await connection.connect('Keyboard 2'); events.length = 0;
+		input.emit('noteon', 60, 100, { channel: 3 });
+		input.emit('noteon', 60, 70, { channel: 3 });
+		input.emit('noteon', 60, 0, { channel: 3 });
+		input.emit('cc', 123, 0, { channel: 4 });
+		connection.disconnect();
+		assert.deepStrictEqual(events, [
+			{ type: 'noteOn', channel: 3, note: 60, velocity: 100 },
+			{ type: 'noteOn', channel: 3, note: 60, velocity: 70 },
+			{ type: 'noteOff', channel: 3, note: 60 },
+			{ type: 'allOff', channel: 4 }, { type: 'allOff' }
+		]);
+	});
 	test('opens the selected name using the current native index and releases notes on disconnect', async () => {
 		const input = new FakeInput();
 		const states: MidiInputState[] = [];

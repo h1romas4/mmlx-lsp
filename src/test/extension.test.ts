@@ -10,6 +10,7 @@ import type { LanguageClient } from 'vscode-languageclient/node';
 import { BuildTerminal, buildErrorLinkProvider } from '../tasks';
 import { listMidiInputPorts, VoiceViewProvider } from '../voiceView';
 import { MidiInputConnection } from '../midiInput';
+import { EmulationSession, type EmulationState } from '../emulation';
 
 function observeBuilds(uri: vscode.Uri) {
 	const active = new Set<vscode.TaskExecution>();
@@ -158,6 +159,282 @@ function waitForDiagnostics(uri: vscode.Uri, count: number): Promise<void> {
 }
 
 suite('mmlx extension', () => {
+	test('Webview AudioWorklet plays PCM from the real WASI YM2151 backend', async function () {
+		this.timeout(15000);
+		const extension = vscode.extensions.all.find(extension => extension.packageJSON.name === 'mmlx-lsp');
+		assert.ok(extension);
+		const media = vscode.Uri.joinPath(extension.extensionUri, 'media');
+		const panel = vscode.window.createWebviewPanel('mmlx.audioOutputTest', 'mmlx Audio Output Test', vscode.ViewColumn.Beside,
+			{ enableScripts: true, retainContextWhenHidden: true, localResourceRoots: [media] });
+		let resolveResult!: (message: { pcmBlocks: number; requestedBlocks: number; maxRms: number; state: string }) => void;
+		let rejectResult!: (error: Error) => void;
+		const response = new Promise<{ pcmBlocks: number; requestedBlocks: number; maxRms: number; state: string }>((resolve, reject) => {
+			resolveResult = resolve; rejectResult = reject;
+		});
+		const tone = { algorithm: 2, feedback: 7, operatorMask: 15, operators: [
+			{ ar: 28, d1r: 4, d2r: 0, rr: 5, d1l: 1, tl: 37, ks: 2, mul: 1, dt1: 7, dt2: 0, ame: 0 },
+			{ ar: 22, d1r: 9, d2r: 1, rr: 2, d1l: 1, tl: 47, ks: 2, mul: 12, dt1: 0, dt2: 0, ame: 0 },
+			{ ar: 29, d1r: 4, d2r: 3, rr: 6, d1l: 1, tl: 37, ks: 1, mul: 3, dt1: 3, dt2: 0, ame: 0 },
+			{ ar: 15, d1r: 7, d2r: 0, rr: 5, d1l: 10, tl: 0, ks: 2, mul: 1, dt1: 0, dt2: 0, ame: 1 }
+		] };
+		const session = new EmulationSession(extension.extensionUri, await Wasm.load(), state => {
+			if (state.error) { rejectResult(new Error(state.error)); }
+			void panel.webview.postMessage({ type: 'state', ...state });
+		}, pcm => { void panel.webview.postMessage({ type: 'pcm', pcm }); });
+		const stages: unknown[] = [];
+		async function startWithUserGesture(): Promise<void> {
+			const targets = await (await fetch('http://127.0.0.1:9237/json')).json() as { webSocketDebuggerUrl?: string }[];
+			for (const target of targets) {
+				if (!target.webSocketDebuggerUrl) { continue; }
+				const socket = new WebSocket(target.webSocketDebuggerUrl);
+				const contexts: number[] = [];
+				const pending = new Map<number, { resolve: (result: Record<string, unknown>) => void; reject: (error: Error) => void }>();
+				let sequence = 0;
+				socket.addEventListener('message', event => {
+					const message = JSON.parse(String(event.data));
+					if (message.method === 'Runtime.executionContextCreated') { contexts.push(message.params.context.id); }
+					const request = pending.get(message.id);
+					if (request) { pending.delete(message.id); if (message.error) { request.reject(new Error(message.error.message)); } else { request.resolve(message.result); } }
+				});
+				function command(method: string, params = {}): Promise<Record<string, unknown>> {
+					return new Promise((resolve, reject) => { const id = ++sequence; pending.set(id, { resolve, reject }); socket.send(JSON.stringify({ id, method, params })); });
+				}
+				try {
+					await new Promise<void>((resolve, reject) => { socket.addEventListener('open', () => resolve(), { once: true }); socket.addEventListener('error', () => reject(new Error('Test renderer debug connection failed')), { once: true }); });
+					await command('Runtime.enable');
+					for (const contextId of contexts) {
+						const probe = await command('Runtime.evaluate', { expression: 'typeof window.__mmlxConnectAudio', contextId, returnByValue: true });
+						if ((probe.result as { value?: unknown })?.value === 'function') {
+							await command('Runtime.evaluate', { expression: 'window.__mmlxConnectAudio()', contextId, userGesture: true });
+							return;
+						}
+					}
+				} finally { socket.close(); }
+			}
+			throw new Error('Audio test Webview renderer was not found');
+		}
+		const listener = panel.webview.onDidReceiveMessage(message => {
+			if (message.type === 'stage') {
+				stages.push(message);
+				if (message.stage === 'moduleLoaded') { void startWithUserGesture().catch(rejectResult); }
+			}
+			if (message.type === 'ready') {
+				void session.connect(message.sampleRate, tone).then(() => {
+					session.note({ type: 'noteOn', source: 0, channel: 0, note: 69, velocity: 127 });
+				});
+			} else if (message.type === 'render') { session.request(message.blocks); }
+			else if (message.type === 'result') { resolveResult(message); }
+			else if (message.type === 'failure') { rejectResult(new Error(message.error)); }
+		});
+		const nonce = randomUUID();
+		const audioUri = panel.webview.asWebviewUri(vscode.Uri.joinPath(media, 'emulationAudio.js')).toString();
+		panel.webview.html = `<!DOCTYPE html><html><head><meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'nonce-${nonce}' ${panel.webview.cspSource}; worker-src ${panel.webview.cspSource} blob:; connect-src ${panel.webview.cspSource};"></head><body>
+			<script type="module" nonce="${nonce}">
+			import { createEmulationAudio } from '${audioUri}';
+			const api = acquireVsCodeApi();
+			const NativeContext = AudioContext;
+			window.AudioContext = class extends NativeContext {
+				constructor(options) { super(options); api.postMessage({ type: 'stage', stage: 'contextCreated', state: this.state }); }
+				async resume() {
+					api.postMessage({ type: 'stage', stage: 'resumeStarted', state: this.state });
+					await super.resume(); api.postMessage({ type: 'stage', stage: 'resumeFinished', state: this.state });
+				}
+			};
+			let analyser; let context; let pcmBlocks = 0; let requestedBlocks = 0; let maxRms = 0;
+			const NativeNode = AudioWorkletNode;
+			window.AudioWorkletNode = class extends NativeNode {
+				constructor(audio, ...options) {
+					super(audio, ...options); context = audio; analyser = audio.createAnalyser(); analyser.fftSize = 2048;
+					const mute = audio.createGain(); mute.gain.value = 0;
+					this.connect(analyser); analyser.connect(mute).connect(audio.destination);
+				}
+			};
+			const audio = createEmulationAudio(blocks => { requestedBlocks += blocks; api.postMessage({ type: 'render', blocks }); },
+				error => api.postMessage({ type: 'failure', error }));
+			window.addEventListener('message', event => {
+				if (event.data.type === 'pcm') { pcmBlocks++; audio.pcm(event.data.pcm); }
+				else if (event.data.type === 'state' && event.data.connected) { audio.start(); }
+			});
+			window.__mmlxConnectAudio = async () => { try {
+				const sampleRate = await audio.connect();
+				api.postMessage({ type: 'ready', sampleRate });
+				const samples = new Float32Array(2048);
+				const meter = setInterval(() => {
+					analyser.getFloatTimeDomainData(samples);
+					maxRms = Math.max(maxRms, Math.sqrt(samples.reduce((sum, value) => sum + value * value, 0) / samples.length));
+				}, 20);
+				setTimeout(() => {
+					clearInterval(meter);
+					api.postMessage({ type: 'result', pcmBlocks, requestedBlocks, maxRms, state: context.state });
+					audio.disconnect();
+				}, 1000);
+			} catch (error) { api.postMessage({ type: 'failure', error: String(error) }); audio.disconnect(); } };
+			api.postMessage({ type: 'stage', stage: 'moduleLoaded', secure: isSecureContext, activation: navigator.userActivation.isActive });
+			</script></body></html>`;
+		const timer = setTimeout(() => rejectResult(new Error(`Webview audio output timed out: ${JSON.stringify(stages)}`)), 8000);
+		try {
+			const result = await response;
+			console.log('Webview audio output:', JSON.stringify(result));
+			assert.strictEqual(result.state, 'running');
+			assert.ok(result.requestedBlocks > 4, JSON.stringify(result));
+			assert.ok(result.pcmBlocks > 4, JSON.stringify(result));
+			assert.ok(result.maxRms > 0.0001, JSON.stringify(result));
+		} finally { clearTimeout(timer); listener.dispose(); session.dispose(); panel.dispose(); }
+	});
+	test('Webview audio PCM arrives as a transferable ArrayBuffer', async function () {
+		this.timeout(15000);
+		const panel = vscode.window.createWebviewPanel('mmlx.audioTransportTest', 'mmlx Audio Transport Test', vscode.ViewColumn.Beside,
+			{ enableScripts: true, retainContextWhenHidden: true });
+		let ready!: () => void;
+		let received!: (message: { tag: string; isBuffer: boolean; byteLength: number; sample: number }) => void;
+		const initialized = new Promise<void>(resolve => { ready = resolve; });
+		const response = new Promise<{ tag: string; isBuffer: boolean; byteLength: number; sample: number }>(resolve => { received = resolve; });
+		const listener = panel.webview.onDidReceiveMessage(message => {
+			if (message.type === 'ready') { ready(); }
+			else if (message.type === 'pcmProbe') { received(message); }
+		});
+		const nonce = randomUUID();
+		panel.webview.html = `<!DOCTYPE html><html><head><meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'nonce-${nonce}';"></head><body>
+			<script nonce="${nonce}">
+			const api = acquireVsCodeApi();
+			window.addEventListener('message', event => {
+				const pcm = event.data.pcm;
+				api.postMessage({ type: 'pcmProbe', tag: Object.prototype.toString.call(pcm), isBuffer: pcm instanceof ArrayBuffer,
+					byteLength: pcm.byteLength, sample: new Float32Array(pcm)[0] });
+			});
+			api.postMessage({ type: 'ready' });
+			</script></body></html>`;
+		try {
+			await initialized;
+			const pcm = new Float32Array(1024); pcm[0] = 0.25;
+			assert.ok(await panel.webview.postMessage({ pcm: pcm.buffer }));
+			const message = await response;
+			assert.strictEqual(message.tag, '[object ArrayBuffer]');
+			assert.ok(message.isBuffer, 'PCM buffer must pass the Webview realm check');
+			assert.strictEqual(message.byteLength, 4096);
+			assert.strictEqual(message.sample, 0.25);
+		} finally { listener.dispose(); panel.dispose(); }
+	});
+	test('YM2151 panel connects the selected voice and keyboard without coupling Playback disconnects', async function () {
+		this.timeout(20000);
+		const extension = vscode.extensions.all.find(extension => extension.packageJSON.name === 'mmlx-lsp');
+		assert.ok(extension);
+		const document = await vscode.workspace.openTextDocument({ language: 'mmlx', content: '@0 = {\n' + '31,0,0,15,0,32,0,1,0,0,0,\n'.repeat(4) + '7,0,15\n}\n' });
+		await vscode.window.showTextDocument(document);
+		const context = { extensionUri: extension.extensionUri, subscriptions: [] as vscode.Disposable[] };
+		const messages = new vscode.EventEmitter<unknown>();
+		const visibility = new vscode.EventEmitter<void>();
+		const disposed = new vscode.EventEmitter<void>();
+		type Update = { type: string; id?: number; connected?: boolean; connecting?: boolean; pcm?: ArrayBuffer; voice?: unknown };
+		const updates: Update[] = [];
+		const changed = new vscode.EventEmitter<Update>();
+		const voice = { number: 0, algorithm: 7, feedback: 0, operatorMask: 15, position: { line: 0, character: 0 },
+			parameterRanges: [], range: { start: { line: 0, character: 0 }, end: { line: 6, character: 1 } },
+			operators: Array.from({ length: 4 }, () => ({ ar: 31, d1r: 0, d2r: 0, rr: 15, d1l: 0, tl: 32, ks: 0, mul: 1, dt1: 0, dt2: 0, ame: 0 })) };
+		const client = { isRunning: () => true, sendRequest: async () => voice,
+			code2ProtocolConverter: { asTextDocumentPositionParams: () => ({}) } } as unknown as LanguageClient;
+		const provider = new VoiceViewProvider(context as unknown as vscode.ExtensionContext, () => client,
+			async () => [], async () => [], undefined, await Wasm.load());
+		const view = { visible: true, onDidChangeVisibility: visibility.event, onDidDispose: disposed.event,
+			webview: { cspSource: 'https://test.invalid', asWebviewUri: (uri: vscode.Uri) => uri,
+				onDidReceiveMessage: messages.event, postMessage: (message: Update) => {
+					updates.push(message); changed.fire(message); return Promise.resolve(true);
+				} } };
+		function waitFor(predicate: (message: Update) => boolean, after = 0): Promise<Update> {
+			const existing = updates.slice(after).find(predicate);
+			if (existing) { return Promise.resolve(existing); }
+			return new Promise((resolve, reject) => {
+				const subscription = changed.event(message => { if (predicate(message)) { clearTimeout(timer); subscription.dispose(); resolve(message); } });
+				const timer = setTimeout(() => { subscription.dispose(); reject(new Error('Panel audio timed out')); }, 4000);
+			});
+		}
+		try {
+			await provider.resolveWebviewView(view as unknown as vscode.WebviewView);
+			await waitFor(message => message.type === 'voice' && !!message.voice);
+			messages.fire({ type: 'setOutputConnection', target: 'keyboard', mode: 'emulation', connected: true, sampleRate: 48000, id: 1 });
+			await waitFor(message => message.type === 'outputConnection' && message.id === 1 && message.connected === true);
+			messages.fire({ type: 'emulationNote', event: 'noteOn', note: 60, velocity: 100, id: 1 });
+			messages.fire({ type: 'emulationRender', blocks: 4, id: 1 });
+			const pcm = (await waitFor(message => message.type === 'emulationPcm')).pcm;
+			assert.ok(pcm instanceof ArrayBuffer); assert.strictEqual(pcm.byteLength, 4096);
+			assert.ok(new Float32Array(pcm).some(value => Math.abs(value) > 0.0001));
+			const start = updates.length;
+			messages.fire({ type: 'setOutputConnection', target: 'playback', connected: false });
+			messages.fire({ type: 'emulationRender', blocks: 1, id: 1 });
+			await waitFor(message => message.type === 'emulationPcm', start);
+			view.visible = false; visibility.fire();
+			await waitFor(message => message.type === 'outputConnection' && message.id === 1 && !message.connected && !message.connecting, start);
+		} finally {
+			provider.dispose();
+			for (const subscription of context.subscriptions) { subscription.dispose(); }
+			messages.dispose(); visibility.dispose(); disposed.dispose(); changed.dispose();
+		}
+	});
+	test('YM2151 WASI produces polyphonic stereo PCM, releases notes and reconnects', async function () {
+		this.timeout(20000);
+		const extension = vscode.extensions.all.find(extension => extension.packageJSON.name === 'mmlx-lsp');
+		assert.ok(extension);
+		const blocks: ArrayBuffer[] = [];
+		const changed = new vscode.EventEmitter<void>();
+		let state: EmulationState | undefined;
+		const session = new EmulationSession(extension.extensionUri, await Wasm.load(), value => { state = value; },
+			pcm => { blocks.push(pcm); changed.fire(); });
+		const tone = { algorithm: 7, feedback: 0, operatorMask: 15,
+			operators: Array.from({ length: 4 }, () => ({ ar: 31, d1r: 0, d2r: 0, rr: 15, d1l: 0, tl: 32, ks: 0, mul: 1, dt1: 0, dt2: 0, ame: 0 })) };
+		async function render(): Promise<ArrayBuffer[]> {
+			const start = blocks.length;
+			const received = new Promise<void>((resolve, reject) => {
+				const subscription = changed.event(() => {
+					if (blocks.length === start + 4) { clearTimeout(timer); subscription.dispose(); resolve(); }
+				});
+				const timer = setTimeout(() => { subscription.dispose(); reject(new Error(`Audio timed out: ${state?.error}`)); }, 4000);
+			});
+			session.request(4);
+			await received;
+			return blocks.slice(start);
+		}
+		const energy = (pcm: ArrayBuffer) => new Float32Array(pcm).reduce((total, value) => total + Math.abs(value), 0);
+		try {
+			await session.connect(48000, tone);
+			assert.ok(state?.connected, state?.error ?? 'Emulator did not initialize');
+			assert.strictEqual(blocks.length, 0, 'PCM must be demand-driven');
+			for (let index = 0; index < 8; index++) { session.note({ type: 'noteOn', source: 0, channel: 0, note: 60 + index, velocity: 127 }); }
+			await render();
+			const active = await render();
+			assert.ok(active.every(pcm => pcm.byteLength === 4096 && energy(pcm) > 1));
+			session.note({ type: 'allOff', source: 0 });
+			for (let index = 0; index < 16; index++) { await render(); }
+			assert.ok((await render()).every(pcm => energy(pcm) < 0.001));
+			session.disconnect(); assert.strictEqual(state?.connected, false);
+			await session.connect(44100, tone); assert.ok(state?.connected, state?.error);
+			session.note({ type: 'noteOn', source: 1, channel: 3, note: 69, velocity: 100 });
+			await render(); assert.ok((await render()).some(pcm => energy(pcm) > 1));
+		} finally { session.dispose(); changed.dispose(); }
+	});
+
+	test('YM2151 WASI cancels pending startup and reports unavailable or invalid audio backends', async function () {
+		this.timeout(20000);
+		const extension = vscode.extensions.all.find(extension => extension.packageJSON.name === 'mmlx-lsp');
+		assert.ok(extension);
+		let state: EmulationState | undefined;
+		const session = new EmulationSession(extension.extensionUri, await Wasm.load(), value => { state = value; }, () => {});
+		try {
+			const pending = session.connect(48000); session.disconnect(); await pending;
+			assert.strictEqual(state?.connected, false); assert.strictEqual(state?.connecting, false);
+			await session.connect(0); assert.strictEqual(state?.connected, false); assert.ok(state?.error);
+			await session.connect(48000); assert.ok(state?.connected, state?.error);
+			const failed = new Promise<void>((resolve, reject) => {
+				const timer = setTimeout(() => reject(new Error('Invalid voice did not stop the backend')), 4000);
+				const poll = setInterval(() => { if (state?.error) { clearInterval(poll); clearTimeout(timer); resolve(); } }, 10);
+			});
+			session.setVoice({ algorithm: 99 }); await failed;
+			assert.strictEqual(state?.connected, false); assert.ok(state?.error);
+		} finally { session.dispose(); }
+		const missing = new EmulationSession(vscode.Uri.joinPath(extension.extensionUri, 'missing-emulator'), await Wasm.load(),
+			value => { state = value; }, () => {});
+		try { await missing.connect(48000); assert.strictEqual(state?.connected, false); assert.ok(state?.error); }
+		finally { missing.dispose(); }
+	});
 	test('registers the MML language', async () => {
 		assert.ok((await vscode.languages.getLanguages()).includes('mmlx'));
 	});
