@@ -7,6 +7,7 @@ All notable changes to the "mmlx-lsp" extension will be documented in this file.
 - Update JavaScript and Rust LSP dependencies, including Language Client 10.1, Tree-sitter 0.27, lsp-server 0.10, and lsp-types 0.97.
 - Use a log output channel for the language server and align WASI-LSP with the stable Language Client.
 - Write MDX/VGM output directly from Rust/WASI to temporary files, returning only metadata to the extension host and committing outputs after all conversions succeed.
+- Add MIDI-IN connection and disconnection beside port refresh, and show received notes on the FM Voice keyboard.
 
 ## [0.4.0] - 2026-10-06
 

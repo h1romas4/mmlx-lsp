@@ -110,11 +110,10 @@ the native language server.
     such as `/dev/ttyUSB0` or `COM3`. The selection is saved to the workspace settings;
     it does not open the port or transmit data. In remote workspaces, the list shows
     ports on the remote extension host.
-- `mmlx.midi.input`: empty by default. Use **Settings > Connection > MIDI-IN**
-    in the experimental panel to select or refresh MIDI input ports. The selected
-    port name is saved to the workspace settings; it does not open the port or
-    receive MIDI messages. In remote workspaces, the list shows ports on the
-    remote extension host. Linux enumeration requires ALSA MIDI to be available.
+- `mmlx.midi.input`: empty by default. Select a port under **Settings > Connection > MIDI-IN**
+    and use the connection button to connect or disconnect. Incoming notes highlight
+    the FM Voice keyboard. The selected port is saved; connections are not restored
+    automatically.
 
 After changing the dialect or language, run **mmlx: Restart Language Server** from the
 command palette. Diagnostic messages are not translated.
@@ -124,6 +123,7 @@ command palette. Diagnostic messages are not translated.
 - **Dedicated bottom panel** opened with **mmlx: Show mmlx (experimental) Panel**.
 - **FM Voice editing** for parameters, algorithms, and envelopes directly in the source by placing the cursor in an `@` definition.
 - **Settings** for MDX/VGM builds, NanoDrive8 port selection, and MIDI-IN selection, saved to `.vscode/settings.json`.
+- **MIDI-IN** connection and note reception, with pressed-key feedback in the FM Voice keyboard.
 
 <img src="https://raw.githubusercontent.com/h1romas4/mmlx-lsp/main/assets/docs/mmlx-004.png" alt="FM Voice panel with YM2151 algorithms and operator envelopes" width="500">
 

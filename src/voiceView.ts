@@ -5,6 +5,7 @@ import {
 	window, workspace, WorkspaceEdit
 } from 'vscode';
 import type { LanguageClient } from 'vscode-languageclient/node';
+import { createMidiInput, MidiInputConnection, type MidiInputPort } from './midiInput';
 
 interface VoiceDefinition {
 	number: number;
@@ -76,6 +77,8 @@ export class VoiceViewProvider implements WebviewViewProvider {
 	private midiPorts: string[] = [];
 	private midiLoading = false;
 	private midiError = '';
+	private readonly midiInput: MidiInputConnection;
+	private midiFolder = '';
 	private editTarget: { document: TextDocument; version: number; token: number; voice: VoiceDefinition } | undefined;
 	private snapshot: { voice: VoiceDefinition | null; source: string; retained: boolean; error: boolean } = {
 		voice: null, source: '', retained: false, error: false
@@ -83,7 +86,10 @@ export class VoiceViewProvider implements WebviewViewProvider {
 
 	constructor(private readonly context: ExtensionContext, private readonly getClient: () => LanguageClient | undefined,
 		private readonly getSerialPorts: () => Promise<SerialPortInfo[]> = listSerialPorts,
-		private readonly getMidiInputPorts: () => Promise<string[]> = listMidiInputPorts) {
+		private readonly getMidiInputPorts: () => Promise<string[]> = listMidiInputPorts,
+		createInput: () => Promise<MidiInputPort> = createMidiInput) {
+		this.midiInput = new MidiInputConnection(() => this.sendMidiSettings(), createInput,
+			notes => { void this.view?.webview.postMessage({ type: 'midiNotes', notes }); });
 		context.subscriptions.push(
 			window.onDidChangeTextEditorSelection(event => this.follow(event.textEditor)),
 			window.onDidChangeActiveTextEditor(editor => { this.follow(editor); this.sendBuildSettings(); this.sendConnectionSettings(); }),
@@ -115,6 +121,7 @@ export class VoiceViewProvider implements WebviewViewProvider {
 			view.webview.onDidReceiveMessage(message => {
 				if (message?.type === 'ready') {
 					this.send(); this.schedule(); this.sendBuildSettings();
+					void this.view?.webview.postMessage({ type: 'midiNotes', notes: this.midiInput.notes });
 					void this.refreshSerialPorts(); void this.refreshMidiInputPorts();
 				}
 				else if (message?.type === 'editVoice') { void this.edit(message); }
@@ -124,9 +131,12 @@ export class VoiceViewProvider implements WebviewViewProvider {
 				else if (message?.type === 'updateSerialConnection') { void this.updateSerialConnection(message); }
 				else if (message?.type === 'getMidiInputPorts') { void this.refreshMidiInputPorts(); }
 				else if (message?.type === 'updateMidiInput') { void this.updateMidiInput(message); }
+				else if (message?.type === 'setMidiInputConnection') { void this.setMidiInputConnection(message); }
 			}),
 			view.onDidChangeVisibility(() => { if (view.visible) { this.schedule(); } }),
-			view.onDidDispose(() => { if (this.view === view) { this.view = undefined; this.sequence++; } })
+			view.onDidDispose(() => {
+				if (this.view === view) { this.view = undefined; this.sequence++; this.midiInput.disconnect(); }
+			})
 		);
 		const template = new TextDecoder().decode(await workspace.fs.readFile(Uri.joinPath(media, 'voice.html')));
 		const nonce = randomBytes(16).toString('hex');
@@ -240,10 +250,34 @@ export class VoiceViewProvider implements WebviewViewProvider {
 	private sendMidiSettings(error = ''): void {
 		const folder = this.buildSettingsFolder();
 		const connection = workspace.getConfiguration('mmlx', folder?.uri).get<string>('midi.input', '');
+		const state = this.midiInput.state;
+		if (state.port && (this.midiFolder !== folder?.uri.toString() || state.port !== connection)) {
+			this.midiInput.disconnect(); return;
+		}
 		void this.view?.webview.postMessage({ type: 'midiSettings', connection, ports: this.midiPorts,
-			folder: folder?.uri.toString() ?? '', editable: !!folder && !this.savingSettings && !this.midiLoading,
+			folder: folder?.uri.toString() ?? '', editable: !!folder && !this.savingSettings && !this.midiLoading
+				&& !state.connected && !state.connecting,
+			connected: state.connected, connecting: state.connecting,
+			canConnect: !!folder && workspace.isTrusted && !this.savingSettings && !this.midiLoading
+				&& !!connection && this.midiPorts.includes(connection),
 			saving: this.savingSettings, loading: this.midiLoading,
-			error: error || this.midiError || (folder ? '' : 'Open a workspace folder to edit connection settings.') });
+			error: error || state.error || this.midiError || (folder ? '' : 'Open a workspace folder to edit connection settings.') });
+	}
+
+	private async setMidiInputConnection(message: { folder?: unknown; connected?: unknown }): Promise<void> {
+		const folder = this.buildSettingsFolder();
+		if (!folder || message.folder !== folder.uri.toString() || typeof message.connected !== 'boolean') {
+			this.sendMidiSettings(); return;
+		}
+		if (!message.connected) { this.midiInput.disconnect(); return; }
+		const connection = workspace.getConfiguration('mmlx', folder.uri).get<string>('midi.input', '');
+		if (!workspace.isTrusted || this.savingSettings || this.midiLoading || this.midiInput.state.connecting
+			|| this.midiInput.state.connected) { this.sendMidiSettings(); return; }
+		if (!connection || !this.midiPorts.includes(connection)) {
+			this.sendMidiSettings('Select an available MIDI input port.'); return;
+		}
+		this.midiFolder = folder.uri.toString();
+		await this.midiInput.connect(connection);
 	}
 
 	private async refreshMidiInputPorts(): Promise<void> {
@@ -254,6 +288,9 @@ export class VoiceViewProvider implements WebviewViewProvider {
 		try {
 			this.midiPorts = [...new Set((await this.getMidiInputPorts()).filter(port => port.trim()))]
 				.sort((first, second) => first.localeCompare(second, undefined, { numeric: true }));
+			if (this.midiInput.state.connected && !this.midiPorts.includes(this.midiInput.state.port)) {
+				this.midiInput.disconnect('MIDI input port is no longer available.');
+			}
 		} catch (failure) {
 			this.midiPorts = [];
 			this.midiError = failure instanceof Error ? failure.message : 'Could not list MIDI input ports.';
@@ -265,7 +302,8 @@ export class VoiceViewProvider implements WebviewViewProvider {
 
 	private async updateMidiInput(message: { folder?: unknown; value?: unknown }): Promise<void> {
 		const folder = this.buildSettingsFolder();
-		if (!folder || message.folder !== folder.uri.toString() || this.savingSettings || this.midiLoading) {
+		if (!folder || message.folder !== folder.uri.toString() || this.savingSettings || this.midiLoading
+			|| this.midiInput.state.connected || this.midiInput.state.connecting) {
 			this.sendMidiSettings(); return;
 		}
 		if (typeof message.value !== 'string' || (message.value !== '' && !this.midiPorts.includes(message.value))) {
@@ -406,6 +444,8 @@ export class VoiceViewProvider implements WebviewViewProvider {
 	}
 
 	dispose(): void {
+		this.midiInput.disconnect();
+		this.view = undefined;
 		clearTimeout(this.timer);
 		this.sequence++;
 		this.editTarget = undefined;

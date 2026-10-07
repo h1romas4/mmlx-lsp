@@ -12,13 +12,22 @@ export function createSettingsControls(root, onChange = () => {}) {
 	function createPortControls(prefix, label, refreshType, updateType, option) {
 		const connection = root.querySelector(`#${prefix}-connection`);
 		const refresh = root.querySelector(`#refresh-${prefix}-ports`);
+		const connect = root.querySelector(`#connect-${prefix}`);
 		const status = root.querySelector(`#${prefix}-settings-status`);
 		let current;
 		function renderPorts(message) {
 			current = message;
-			connection.disabled = !message.editable;
-			refresh.disabled = !message.folder || message.saving || message.loading;
-			status.textContent = message.error || (message.loading ? `Loading ${label} ports` : message.saving ? 'Saving'
+			connection.disabled = !message.editable || !!message.connected || !!message.connecting;
+			refresh.disabled = !message.folder || message.saving || message.loading || !!message.connecting;
+			if (connect) {
+				connect.disabled = !!message.connecting || (!message.connected && !message.canConnect);
+				connect.title = message.connected ? 'Disconnect MIDI input' : 'Connect MIDI input';
+				connect.setAttribute('aria-label', connect.title);
+				connect.setAttribute('aria-pressed', String(!!message.connected));
+			}
+			status.textContent = message.error || (message.connecting ? `Connecting ${label}`
+				: message.loading ? `Loading ${label} ports` : message.saving ? 'Saving'
+				: message.connected ? `Connected: ${message.connection}`
 				: message.ports.length === 0 ? `No ${label} ports found` : '');
 			const ports = message.ports.map(option);
 			const options = [new Option('Not selected', ''), ...ports.map(port => new Option(port.label, port.value))];
@@ -32,6 +41,10 @@ export function createSettingsControls(root, onChange = () => {}) {
 			if (!current?.folder || current.loading || current.saving) { return; }
 			renderPorts({ ...current, editable: false, loading: true, error: '' });
 			onChange({ type: refreshType });
+		});
+		connect?.addEventListener('click', () => {
+			if (!current?.folder || current.connecting || (!current.connected && !current.canConnect)) { return; }
+			onChange({ type: 'setMidiInputConnection', folder: current.folder, connected: !current.connected });
 		});
 		connection.addEventListener('change', () => {
 			if (!current?.editable || !current.folder || connection.value === current.connection) { return; }

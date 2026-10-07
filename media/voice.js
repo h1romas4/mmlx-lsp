@@ -74,6 +74,8 @@ window.addEventListener('message', event => {
 		saveState();
 	} else if (message?.type === 'playback') {
 		playbackControls.render(message);
+	} else if (message?.type === 'midiNotes') {
+		keyboardControls.setMidiNotes(message.notes);
 	} else if (message?.type === 'outputConnection' && ['playback', 'keyboard'].includes(message.target)
 		&& typeof message.connected === 'boolean') {
 		outputConnections[message.target].setConnected(message.connected);

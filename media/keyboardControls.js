@@ -5,10 +5,11 @@ export function createKeyboardControls(root, onModeChange = () => {}) {
 	const names = ['C', 'C#', 'D', 'D#', 'E', 'F', 'F#', 'G', 'G#', 'A', 'A#', 'B'];
 	const pointers = new Map();
 	const heldKeys = new Set();
+	let midiNotes = new Set();
 	let renderedWhiteCount = 0;
 
 	function updateKey(key) {
-		const active = heldKeys.has(key) || [...pointers.values()].includes(key);
+		const active = midiNotes.has(Number(key.dataset.midiNote)) || heldKeys.has(key) || [...pointers.values()].includes(key);
 		key.classList.toggle('is-active', active);
 		key.setAttribute('aria-pressed', String(active));
 	}
@@ -86,6 +87,7 @@ export function createKeyboardControls(root, onModeChange = () => {}) {
 			key.addEventListener('blur', () => { heldKeys.delete(key); updateKey(key); });
 			return key;
 		});
+		for (const key of keys) { updateKey(key); }
 		wrapper.replaceChildren(...keys);
 	}
 
@@ -94,5 +96,11 @@ export function createKeyboardControls(root, onModeChange = () => {}) {
 	mode.addEventListener('change', () => { releaseAll(); onModeChange(mode.value); });
 	window.addEventListener('blur', releaseAll);
 	document.addEventListener('visibilitychange', () => { if (document.hidden) { releaseAll(); } });
-	return { setMode(value) { mode.value = value === 'nanodrive8' ? 'nanodrive8' : 'emulation'; } };
+	return {
+		setMode(value) { mode.value = value === 'nanodrive8' ? 'nanodrive8' : 'emulation'; },
+		setMidiNotes(notes) {
+			midiNotes = new Set(Array.isArray(notes) ? notes.filter(note => Number.isInteger(note) && note >= 0 && note <= 127) : []);
+			for (const key of wrapper.children) { updateKey(key); }
+		}
+	};
 }
