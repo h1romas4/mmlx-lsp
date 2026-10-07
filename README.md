@@ -137,44 +137,13 @@ automatically.
 
 Playback-tab audio and NanoDrive8 communication are not yet implemented.
 
-### Build From Source
-
-Requires Rust, Node.js, curl, and tar. Example for Linux x86_64:
-
-```console
-git clone https://github.com/h1romas4/mmlx-lsp.git
-cd mmlx-lsp
-
-curl --fail --location --retry 3 -o wasi-sdk.tar.gz https://github.com/WebAssembly/wasi-sdk/releases/download/wasi-sdk-33/wasi-sdk-33.0-x86_64-linux.tar.gz
-echo "0ba8b5bfaeb2adf3f29bab5841d76cf5318ab8e1642ea195f88baba1abd47bce  wasi-sdk.tar.gz" | sha256sum --check
-mkdir -p toolchains/wasi-sdk/build/install
-tar -xzf wasi-sdk.tar.gz -C toolchains/wasi-sdk/build/install --strip-components=1
-
-rustup target add wasm32-wasip1-threads
-npm ci
-npx --no-install vsce package --out mmlx-lsp.vsix
-```
-
-On Windows x64, replace the SDK download and extraction commands with:
-
-```powershell
-Invoke-WebRequest https://github.com/WebAssembly/wasi-sdk/releases/download/wasi-sdk-33/wasi-sdk-33.0-x86_64-windows.tar.gz -OutFile wasi-sdk.tar.gz
-New-Item -ItemType Directory -Force toolchains/wasi-sdk/build/install | Out-Null
-tar -xzf wasi-sdk.tar.gz -C toolchains/wasi-sdk/build/install --strip-components=1
-```
-
-For other platforms, use the matching [SDK 33 release archive](https://github.com/WebAssembly/wasi-sdk/releases/tag/wasi-sdk-33).
-The output is `mmlx-lsp/mmlx-lsp.vsix`. No SDK environment variable is needed.
-
 ## Current Limitations
 
-- Only the first parse, compile, or playback error is reported.
 - Language-server playback validation checks one playthrough with execution limits; it does not
     load or validate PDX sample files.
 - Completion covers commands and voice-definition templates, not notes,
     metadata directives, available voice numbers, or argument values.
 - Hover, go-to-definition, formatting, and browser-based VS Code are not supported.
-- Helix indentation queries and text objects are not included.
 
 ## Manual Installation in VS Code
 
@@ -230,6 +199,35 @@ and hints. The prebuilt parser does not need a `[[grammar]]` source entry.
 Linux archives are built on Ubuntu 26.04 and require a compatible glibc-based
 system. Older distributions may not run these binaries. Native binaries are
 not code-signed or notarized.
+
+### Build From Source
+
+Requires Rust, Node.js, curl, and tar. Example for Linux x86_64:
+
+```console
+git clone https://github.com/h1romas4/mmlx-lsp.git
+cd mmlx-lsp
+
+curl --fail --location --retry 3 -o wasi-sdk.tar.gz https://github.com/WebAssembly/wasi-sdk/releases/download/wasi-sdk-33/wasi-sdk-33.0-x86_64-linux.tar.gz
+echo "0ba8b5bfaeb2adf3f29bab5841d76cf5318ab8e1642ea195f88baba1abd47bce  wasi-sdk.tar.gz" | sha256sum --check
+mkdir -p toolchains/wasi-sdk/build/install
+tar -xzf wasi-sdk.tar.gz -C toolchains/wasi-sdk/build/install --strip-components=1
+
+rustup target add wasm32-wasip1-threads
+npm ci
+npx --no-install vsce package --out mmlx-lsp.vsix
+```
+
+On Windows x64, replace the SDK download and extraction commands with:
+
+```powershell
+Invoke-WebRequest https://github.com/WebAssembly/wasi-sdk/releases/download/wasi-sdk-33/wasi-sdk-33.0-x86_64-windows.tar.gz -OutFile wasi-sdk.tar.gz
+New-Item -ItemType Directory -Force toolchains/wasi-sdk/build/install | Out-Null
+tar -xzf wasi-sdk.tar.gz -C toolchains/wasi-sdk/build/install --strip-components=1
+```
+
+For other platforms, use the matching [SDK 33 release archive](https://github.com/WebAssembly/wasi-sdk/releases/tag/wasi-sdk-33).
+The output is `mmlx-lsp/mmlx-lsp.vsix`. No SDK environment variable is needed.
 
 ## Dependencies
 
