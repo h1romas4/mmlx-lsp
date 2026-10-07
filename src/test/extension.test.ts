@@ -816,7 +816,8 @@ suite('mmlx extension', () => {
 		assert.ok(gate.range instanceof vscode.Range);
 		assert.ok(gate.range.isEqual(new vscode.Range(0, 2, 0, 3)));
 		assert.ok(gate.documentation instanceof vscode.MarkdownString);
-		assert.ok(gate.documentation.value.includes('soundlog'));
+		assert.ok(gate.documentation.value.includes('キーオフ時刻を指定します。'));
+		assert.ok(gate.documentation.value.includes('256 - N'));
 		assert.strictEqual(gate.command?.command, 'editor.action.triggerParameterHints');
 		const editor = await vscode.window.showTextDocument(document);
 		assert.ok(await editor.insertSnippet(gate.insertText, gate.range));
@@ -843,7 +844,7 @@ suite('mmlx extension', () => {
 		const comment = await vscode.workspace.openTextDocument({ language: 'mmlx', content: 'A /* @' });
 		const suppressed = await vscode.commands.executeCommand<vscode.CompletionList>(
 			'vscode.executeCompletionItemProvider', comment.uri, new vscode.Position(0, 6));
-		assert.ok(!(suppressed?.items ?? []).some(item => item.documentation instanceof vscode.MarkdownString && item.documentation.value.includes('soundlog')));
+		assert.ok(!(suppressed?.items ?? []).some(item => item.command?.command === 'editor.action.triggerParameterHints'));
 	});
 
 	test('inserts the voice definition template with an editable voice number', async function () {
@@ -907,7 +908,7 @@ suite('mmlx extension', () => {
 		assert.strictEqual(tempo.detail, 't<19..4882 BPM>');
 		assert.ok(tempo.documentation instanceof vscode.MarkdownString);
 		assert.ok(tempo.documentation.value.includes('テンポを BPM で指定します。'));
-		assert.ok(tempo.documentation.value.includes('全トラック共通のテンポを変更します。'));
+		assert.ok(tempo.documentation.value.includes('全トラック共通のテンポとして適用されます。'));
 	});
 
 	test('provides argument hints without competing command completions while entering arguments', async function () {
@@ -937,10 +938,11 @@ suite('mmlx extension', () => {
 			assert.strictEqual(help.activeParameter, parameter);
 			assert.strictEqual(help.signatures[0].label, label);
 			assert.ok(help.signatures[0].documentation instanceof vscode.MarkdownString);
-			assert.ok(help.signatures[0].documentation.value.includes('soundlog'));
+			const description = help.signatures[0].documentation.value.split('\n\n')[1];
+			assert.ok(description?.trim(), `Missing command description for ${label}`);
 			const completions = await vscode.commands.executeCommand<vscode.CompletionList>(
 				'vscode.executeCompletionItemProvider', document.uri, document.positionAt(source.length));
-			assert.ok(!(completions?.items ?? []).some(item => item.documentation instanceof vscode.MarkdownString && item.documentation.value.includes('soundlog')));
+			assert.ok(!(completions?.items ?? []).some(item => item.command?.command === 'editor.action.triggerParameterHints'));
 			if (source === 'A MP0,') {
 				assert.deepStrictEqual(help.signatures[0].parameters[1].label, [7, 9]);
 			}
