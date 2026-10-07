@@ -3,7 +3,7 @@
   "publisher": "h1romas4",
   "displayName": "mmlx-lsp",
   "description": "MML language support powered by mmlx and WebAssembly.",
-  "version": "0.4.0",
+  "version": "0.5.0",
   "license": "BSD-3-Clause",
   "icon": "assets/icon/mmlx.png",
   "engines": {
@@ -298,11 +298,11 @@
     "@serialport/bindings-cpp": "^13.0.1",
     "@vscode/wasm-wasi": "^1.0.1",
     "@vscode/wasm-wasi-lsp": "0.1.0-pre.8",
-    "vscode-languageclient": "10.0.0-next.12"
+    "vscode-languageclient": "^10.1.2"
   },
   "devDependencies": {
     "@types/mocha": "^10.0.10",
-    "@types/node": "24.x",
+    "@types/node": "^26.6.4",
     "@types/vscode": "^1.100.0",
     "@vscode/test-cli": "^0.0.15",
     "@vscode/test-electron": "^3.0.0",
@@ -311,11 +311,14 @@
     "eslint": "^10.5.0",
     "lucide-static": "^1.52.0",
     "npm-run-all": "^4.1.5",
-    "tree-sitter-cli": "0.25.10",
+    "tree-sitter-cli": "0.27.0",
     "typescript": "^6.0.3",
-    "typescript-eslint": "^8.61.1"
+    "typescript-eslint": "^8.71.1"
   },
   "overrides": {
+    "@vscode/wasm-wasi-lsp": {
+      "vscode-languageclient": "$vscode-languageclient"
+    },
     "diff": "^8.0.4",
     "serialize-javascript": "^7.0.6"
   }

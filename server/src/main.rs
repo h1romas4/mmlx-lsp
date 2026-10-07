@@ -15,7 +15,7 @@ use lsp_types::{
     CompletionParams, Diagnostic, DiagnosticSeverity, DidChangeTextDocumentParams,
     DidCloseTextDocumentParams, DidOpenTextDocumentParams, InitializeParams, NumberOrString,
     Position, PublishDiagnosticsParams, Range, SemanticTokensParams, SignatureHelpParams,
-    TextDocumentPositionParams, Url,
+    TextDocumentPositionParams, Uri,
 };
 use mmlx::diagnostic::Severity;
 use mmlx::frontend::SourceFile;
@@ -104,7 +104,7 @@ fn initialize(connection: &Connection) -> Result<(InitializeParams, Dialect), Bo
 
 fn handle_request(
     request: Request,
-    documents: &HashMap<Url, String>,
+    documents: &HashMap<Uri, String>,
     snippets: bool,
     language: i18n::Language,
     dialect: Dialect,
@@ -197,7 +197,7 @@ fn handle_request(
 
 fn handle_notification(
     connection: &Connection,
-    documents: &mut HashMap<Url, String>,
+    documents: &mut HashMap<Uri, String>,
     notification: Notification,
     dialect: Dialect,
 ) -> Result<(), Box<dyn Error>> {
@@ -358,7 +358,7 @@ mod tests {
 
     fn handle_notification(
         connection: &Connection,
-        documents: &mut HashMap<Url, String>,
+        documents: &mut HashMap<Uri, String>,
         notification: Notification,
     ) -> Result<(), Box<dyn Error>> {
         super::handle_notification(connection, documents, notification, Dialect::Mdx)
@@ -366,7 +366,7 @@ mod tests {
 
     fn handle_request(
         request: Request,
-        documents: &HashMap<Url, String>,
+        documents: &HashMap<Uri, String>,
         snippets: bool,
     ) -> Response {
         super::handle_request(
@@ -391,8 +391,7 @@ mod tests {
             &documents,
             false,
         );
-        assert!(response.error.is_none());
-        assert_eq!(response.result, Some(serde_json::Value::Null));
+        assert_eq!(response.response_result.unwrap(), serde_json::Value::Null);
         let response = handle_request(
             Request::new(
                 2.into(),
@@ -403,7 +402,7 @@ mod tests {
             false,
         );
         assert_eq!(
-            response.error.unwrap().code,
+            response.response_result.unwrap_err().code,
             ErrorCode::InvalidParams as i32
         );
     }
@@ -434,8 +433,7 @@ mod tests {
                 else {
                     panic!("Expected initialize response");
                 };
-                assert!(response.error.is_none());
-                let capabilities = &response.result.unwrap()["capabilities"];
+                let capabilities = &response.response_result.unwrap()["capabilities"];
                 assert_eq!(capabilities["positionEncoding"], "utf-16");
                 assert_eq!(capabilities["semanticTokensProvider"]["full"], true);
                 client
@@ -478,8 +476,7 @@ mod tests {
                     panic!("Expected initialize error");
                 };
                 assert_eq!(response.id, 1.into());
-                assert!(response.result.is_none());
-                let error = response.error.unwrap();
+                let error = response.response_result.unwrap_err();
                 assert_eq!(error.code, ErrorCode::InvalidParams as i32);
                 assert!(error.message.starts_with(expected), "{}", error.message);
                 assert!(error.message.contains("future") && error.message.contains("mdx"));
@@ -501,7 +498,7 @@ mod tests {
                     panic!("Expected corrected initialize response");
                 };
                 assert_eq!(response.id, 2.into());
-                assert!(response.error.is_none() && response.result.is_some());
+                assert!(response.response_result.is_ok());
                 client
                     .sender
                     .send(Message::Notification(Notification::new(
@@ -516,7 +513,7 @@ mod tests {
 
     #[test]
     fn requests_use_the_selected_session_language() {
-        let uri = Url::parse("file:///english.mml").unwrap();
+        let uri = "file:///english.mml".parse::<Uri>().unwrap();
         let documents = HashMap::from([(uri.clone(), "A MP0,".to_string())]);
         for (language, label) in [
             (i18n::Language::Japanese, "MP(波形, 周期, 深さ)"),
@@ -536,7 +533,7 @@ mod tests {
                 Dialect::Mdx,
             );
             let help: lsp_types::SignatureHelp =
-                serde_json::from_value(response.result.unwrap()).unwrap();
+                serde_json::from_value(response.response_result.unwrap()).unwrap();
             assert_eq!(help.signatures[0].label, label);
         }
     }
@@ -680,7 +677,7 @@ mod tests {
 
     #[test]
     fn signature_requests_follow_cached_text_and_reject_invalid_params() {
-        let uri = Url::parse("file:///arguments.mml").unwrap();
+        let uri = "file:///arguments.mml".parse::<Uri>().unwrap();
         let mut documents = HashMap::new();
         for (source, parameter) in [("A MP0,", 1), ("A MP0,16,", 2)] {
             documents.insert(uri.clone(), source.to_string());
@@ -696,9 +693,8 @@ mod tests {
                 &documents,
                 false,
             );
-            assert!(response.error.is_none());
             let help: lsp_types::SignatureHelp =
-                serde_json::from_value(response.result.unwrap()).unwrap();
+                serde_json::from_value(response.response_result.unwrap()).unwrap();
             assert_eq!(help.active_parameter, Some(parameter));
         }
         documents.clear();
@@ -713,7 +709,7 @@ mod tests {
             &documents,
             false,
         );
-        assert_eq!(response.result, Some(serde_json::Value::Null));
+        assert_eq!(response.response_result.unwrap(), serde_json::Value::Null);
         let response = handle_request(
             Request::new(
                 3.into(),
@@ -724,7 +720,7 @@ mod tests {
             false,
         );
         assert_eq!(
-            response.error.unwrap().code,
+            response.response_result.unwrap_err().code,
             ErrorCode::InvalidParams as i32
         );
     }
@@ -769,7 +765,7 @@ mod tests {
             )
             .unwrap();
             assert_eq!(
-                documents.contains_key(&Url::parse(uri).unwrap()),
+                documents.contains_key(&uri.parse::<Uri>().unwrap()),
                 version.is_some()
             );
             let Message::Notification(notification) = client.receiver.try_recv().unwrap() else {
@@ -790,9 +786,8 @@ mod tests {
                 &documents,
                 false,
             );
-            assert!(response.error.is_none());
             let tokens: lsp_types::SemanticTokens =
-                serde_json::from_value(response.result.unwrap()).unwrap();
+                serde_json::from_value(response.response_result.unwrap()).unwrap();
             assert_eq!(tokens.data.len(), if version == Some(2) { 2 } else { 0 });
         }
     }

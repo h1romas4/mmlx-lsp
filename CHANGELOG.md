@@ -2,6 +2,11 @@
 
 All notable changes to the "mmlx-lsp" extension will be documented in this file.
 
+## [0.5.0] - Unreleased
+
+- Update JavaScript and Rust LSP dependencies, including Language Client 10.1, Tree-sitter 0.27, lsp-server 0.10, and lsp-types 0.97.
+- Use a log output channel for the language server and align WASI-LSP with the stable Language Client.
+
 ## [0.4.0] - 2026-10-06
 
 - Add an extension icon.

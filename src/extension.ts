@@ -8,7 +8,7 @@ import { registerVoiceView } from './voiceView';
 let client: LanguageClient | undefined;
 
 export async function activate(context: ExtensionContext): Promise<void> {
-	const channel = window.createOutputChannel('mmlx Language Server');
+	const channel = window.createOutputChannel('mmlx Language Server', { log: true });
 	context.subscriptions.push(channel);
 	channel.appendLine('Activating mmlx language support.');
 	const wasm = await Wasm.load();
