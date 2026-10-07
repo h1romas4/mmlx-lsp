@@ -128,18 +128,13 @@ command palette. Diagnostic messages are not translated.
 - **YM2151 emulation** with up to eight simultaneous notes from the keyboard or MIDI-IN.
 - **Playback** of the current MML through MDX, soundlog's lazy callback stream, and ymfm, with play/pause, stop, volume, elapsed time, and optional MML loop points.
 
-Connect **Emulation** under **FM Voice > Keyboard > Output** to audition the voice with up to eight notes and MIDI-IN velocity.
-Connections stay active while the panel is hidden; only on-screen keyboard notes are released.
-The title shows `[Connected]`, and the badge counts active connections. Disconnect manually to stop emulation.
-Disposing the view closes connections; reloading does not restore them.
+Select **Emulation** under **FM Voice > Keyboard > Output** to play up to eight notes with the on-screen keyboard or MIDI-IN.
+Connections stay active while the panel is hidden; on-screen notes stop. `[Connected]` and the badge show active connections.
+Disconnect manually when finished. Connections are not restored after a reload.
 
-Playback is enabled while an MML editor is active and uses its current contents, including unsaved edits.
-**Play from cursor** starts at the command under the editor cursor, or the next command on the same line.
-All tracks and the YM2151 advance silently to that time, preserving tempo, voices, envelopes, and synchronization.
-Repeated commands start at their first occurrence. Positions without a playable command report an error.
-Starting far into a song can take time while the emulator advances silently.
-Changing the active document stops playback; FM voice audition and MIDI-IN remain independent.
-OKI ADPCM playback is not yet supported; PCM tracks are silent. NanoDrive8 communication is not yet implemented.
+**Playback** plays the active MML, including unsaved edits. Switching files stops playback without affecting FM Voice or MIDI-IN.
+**Play from cursor** starts at the current command or the next command on the same line. Repeats start at the first occurrence; seeking may take a moment.
+FM (YM2151) only: PCM is silent, and NanoDrive8 is not yet supported.
 
 ## Current Limitations
 
