@@ -16,7 +16,7 @@ For installation, see [VS Code](#manual-installation-in-vs-code) or
 - **Built-in VS Code build tasks** for MML to MDX and MML/MDX to VGM.
 - **FM voice panel prototype** with cursor-linked operator envelopes and two-way parameter editing.
 
-<img src="https://raw.githubusercontent.com/h1romas4/mmlx-lsp/main/assets/docs/mmlx-005.png" alt="FM Voice panel with YM2151 algorithms and operator envelopes" width="500">
+<img src="https://raw.githubusercontent.com/h1romas4/mmlx-lsp/main/assets/docs/mmlx-006.png" alt="FM Voice panel with YM2151 algorithms and operator envelopes" width="640">
 
 ## Usage
 
