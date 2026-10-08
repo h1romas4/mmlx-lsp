@@ -954,6 +954,31 @@ suite('mmlx extension', () => {
 			[[3], [3], [3], [3], [1, 3], [1, 2, 3], [1, 2, 3], [0, 1, 2, 3]]);
 	});
 
+	test('FM voice attack follows YMFM attenuation while preserving normalized handles', async () => {
+		const extension = vscode.extensions.all.find(extension => extension.packageJSON.name === 'mmlx-lsp');
+		assert.ok(extension);
+		const module = await import(vscode.Uri.joinPath(extension.extensionUri, 'assets', 'webview', 'voiceControls.js').toString());
+		const original = { ar: 16, tl: 0, rr: 8, d1r: 12, d1l: 3, d2r: 8 };
+		const points: number[][] = module.envelopeAttackPoints(original);
+		assert.deepStrictEqual(points[0], [12, 116]);
+		assert.deepStrictEqual(points.at(-1), module.envelopeHandlePositions(original).attack);
+		const expectedAttenuations = [1023, 959, 899, 842];
+		for (const [index, attenuation] of expectedAttenuations.entries()) {
+			assert.ok(Math.abs((points[index][1] - 16) / 100 * 1023 - attenuation) < 0.000001);
+		}
+		for (const ar of [0, 1, 16, 30, 31]) {
+			for (const tl of [0, 40, 127]) {
+				const operator = { ...original, ar, tl };
+				const attack: number[][] = module.envelopeAttackPoints(operator);
+				assert.deepStrictEqual(attack.at(-1), module.envelopeHandlePositions(operator).attack);
+				assert.ok(attack.every(([positionX, positionY]) => Number.isFinite(positionX) && Number.isFinite(positionY) && positionY >= 16 && positionY <= 116));
+				assert.ok(attack.every((point, index) => index === 0 || (point[0] >= attack[index - 1][0] && point[1] <= attack[index - 1][1])));
+				if (ar === 0) { assert.ok(attack.every(point => point[1] === 116)); }
+				if (ar === 31) { assert.deepStrictEqual(attack[1], [12, module.envelopeHandlePositions(operator).attack[1]]); }
+			}
+		}
+	});
+
 	test('FM voice envelope dragging maps and clamps all envelope parameters', async () => {
 		const extension = vscode.extensions.all.find(extension => extension.packageJSON.name === 'mmlx-lsp');
 		assert.ok(extension);

@@ -32,6 +32,24 @@ export function envelopeHandlePositions(operator) {
 	};
 }
 
+export function envelopeAttackPoints(operator) {
+	const [endX, endY] = envelopeHandlePositions(operator).attack;
+	if (operator.ar === 0) { return [[12, 116], [endX, 116]]; }
+	if (operator.ar === 31) { return [[12, 116], [12, endY], [endX, endY]]; }
+	let attenuation = 0x3ff;
+	const levels = [attenuation];
+	while (attenuation > 0) {
+		attenuation -= Math.ceil((attenuation + 1) / 16);
+		levels.push(attenuation);
+	}
+	const points = levels.map((level, index) => [
+		12 + (endX - 12) * index / (levels.length - 1),
+		16 + Math.min(100, (operator.tl * 0.75 + level / 0x3ff * 96) / 96 * 100)
+	]);
+	points[points.length - 1] = [endX, endY];
+	return points;
+}
+
 export function dragEnvelope(operator, kind, deltaX, deltaY) {
 	const clamp = (value, minimum, maximum) => Math.max(minimum, Math.min(maximum, value));
 	if (kind === 'attack') {
@@ -343,7 +361,9 @@ export function createVoiceControls(root, onEdit = () => {}) {
 		const end = operator.d1r === 0 ? peak : held * Math.pow(1 - operator.d2r / 31, 2);
 		const release = 0.75 + 0.05 + Math.pow(1 - operator.rr / 15, 2) * 0.2;
 		if (operator.ar === 0) { return 'M 12 116 H 308'; }
-		return `M 12 116 Q ${x(attack * 0.25)} ${y(peak)} ${x(attack)} ${y(peak)} `
+		const attackPath = envelopeAttackPoints(operator).map(([positionX, positionY], index) =>
+			`${index === 0 ? 'M' : 'L'} ${positionX} ${positionY}`).join(' ');
+		return `${attackPath} `
 			+ `L ${x(decay)} ${y(held)} L 234 ${y(end)} L ${x(release)} 116 H 308`;
 	}
 
