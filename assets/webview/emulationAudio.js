@@ -2,6 +2,7 @@ export function createEmulationAudio(onRequest, onFailure, onEnded = () => {}) {
 	let context;
 	let node;
 	let gain;
+	let analysis;
 	let volume = 1;
 	let paused = false;
 	let generation = 0;
@@ -9,6 +10,7 @@ export function createEmulationAudio(onRequest, onFailure, onEnded = () => {}) {
 		generation++;
 		const previous = context;
 		context = undefined;
+		analysis?.scope.disconnect(); analysis?.spectrum.disconnect(); analysis = undefined;
 		gain = undefined; paused = false;
 		node?.disconnect(); node = undefined;
 		if (previous) { previous.onstatechange = null; void previous.close().catch(() => {}); }
@@ -44,6 +46,19 @@ export function createEmulationAudio(onRequest, onFailure, onEnded = () => {}) {
 		async pause() { paused = true; await context?.suspend(); },
 		async resume() { paused = false; await context?.resume(); },
 		setVolume(value) { volume = Math.max(0, Math.min(1, value)); if (gain) { gain.gain.setTargetAtTime(volume, context.currentTime, 0.015); } },
+		readAnalysis() {
+			if (!context || !node || context.state !== 'running') { return null; }
+			if (!analysis) {
+				const scope = context.createAnalyser(); scope.fftSize = 32768;
+				const spectrum = context.createAnalyser(); spectrum.fftSize = 8192;
+				spectrum.minDecibels = -100; spectrum.maxDecibels = 0; spectrum.smoothingTimeConstant = .65;
+				node.connect(scope); node.connect(spectrum);
+				analysis = { scope, spectrum, samples: new Float32Array(scope.fftSize), decibels: new Float32Array(spectrum.frequencyBinCount), sampleRate: context.sampleRate };
+			}
+			analysis.scope.getFloatTimeDomainData(analysis.samples);
+			analysis.spectrum.getFloatFrequencyData(analysis.decibels);
+			return analysis;
+		},
 		pcm(pcm) { if (node && pcm instanceof ArrayBuffer) { node.port.postMessage({ type: 'pcm', pcm }, [pcm]); } },
 		disconnect
 	};

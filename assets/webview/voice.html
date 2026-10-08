@@ -42,6 +42,16 @@
 				<div class="algorithm-grid"></div>
 			</details>
 			<div id="operators" hidden></div>
+			<div id="audio-monitors" class="audio-monitors" role="group" aria-label="Audio monitors" data-state="disconnected">
+				<figure class="audio-monitor">
+					<figcaption><span>Oscilloscope</span><div class="monitor-settings"><select id="scope-gain" aria-label="Oscilloscope gain" title="Vertical gain"><option value="1">x1</option><option value="4" selected>x4</option><option value="16">x16</option></select><span id="scope-reference">-</span></div></figcaption>
+					<canvas id="oscilloscope" role="img" aria-label="Audio waveform synchronized to the reference note"></canvas>
+				</figure>
+				<figure class="audio-monitor">
+					<figcaption><span>Spectrum</span><span id="spectrum-state">Disconnected</span></figcaption>
+					<canvas id="spectrum" role="img" aria-label="Audio spectrum, logarithmic frequency in Hz and amplitude in dB"></canvas>
+				</figure>
+			</div>
 			<details id="keyboard" class="p-keyboard is-disconnected" aria-labelledby="keyboard-heading" open>
 				<summary class="keyboard-heading">
 					<span class="keyboard-heading-content">

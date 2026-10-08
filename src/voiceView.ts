@@ -124,7 +124,10 @@ export class VoiceViewProvider implements WebviewViewProvider {
 			}) : undefined;
 		this.midiInput = new MidiInputConnection(() => this.sendMidiSettings(), createInput,
 			notes => { void this.view?.webview.postMessage({ type: 'midiNotes', notes }); },
-			event => this.emulation?.note({ ...event, source: 1 }));
+			event => {
+				this.emulation?.note({ ...event, source: 1 });
+				void this.view?.webview.postMessage({ type: 'midiNote', event });
+			});
 		context.subscriptions.push(
 			window.onDidChangeTextEditorSelection(event => this.follow(event.textEditor)),
 			window.onDidChangeActiveTextEditor(editor => { this.follow(editor); this.sendBuildSettings(); this.sendConnectionSettings(); }),

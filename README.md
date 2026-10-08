@@ -126,11 +126,17 @@ command palette. Diagnostic messages are not translated.
 - **Settings** for MDX/VGM builds, NanoDrive8 port selection, and MIDI-IN selection, saved to `.vscode/settings.json`.
 - **MIDI-IN** connection and note reception, with pressed-key feedback in the FM Voice keyboard.
 - **YM2151 emulation** with up to eight simultaneous notes from the keyboard or MIDI-IN.
+- **Audio monitors** above the FM Voice keyboard: a note-synchronized oscilloscope and a logarithmic frequency spectrum for Emulation output.
 - **Playback** of the current MML through MDX, soundlog's lazy callback stream, and ymfm, with play/pause, stop, volume, elapsed time, and optional MML loop points.
 
 Select **Emulation** under **FM Voice > Keyboard > Output** to play up to eight notes with the on-screen keyboard or MIDI-IN.
 Connections stay active while the panel is hidden; on-screen notes stop. `[Connected]` and the badge show active connections.
 Disconnect manually when finished. Connections are not restored after a reload.
+
+The oscilloscope shows up to two periods of the reference note, with a fixed amplitude scale and selectable x1/x4/x16 vertical gain (default x4).
+For chords, the last pressed note sets the reference; both monitors show the combined output, including release tails.
+The spectrum uses Hz and dB, with a marker at the reference frequency. Monitor drawing stops while hidden without stopping audio or MIDI reception.
+Playback and NanoDrive8 are not monitored. Modulation and detuning can keep a waveform moving even with note synchronization.
 
 **Playback** plays the active MML, including unsaved edits. Switching files stops playback without affecting FM Voice or MIDI-IN.
 **Play from cursor** starts at the current command or the next command on the same line. Repeats start at the first occurrence; seeking may take a moment.

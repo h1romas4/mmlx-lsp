@@ -211,6 +211,17 @@ dd select { display: block; width: 100%; padding: 2px; }
 	.operator { padding: 12px 0; border-right: 0; }
 	#status { margin-left: 0; }
 }
+.audio-monitors { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(100%, 280px), 1fr)); gap: 12px; margin-top: 16px; }
+.audio-monitor { min-width: 0; margin: 0; overflow: hidden; border: 1px solid var(--vscode-panel-border, #38443e); border-radius: 4px; background: #111615; }
+.audio-monitor figcaption { display: flex; align-items: center; justify-content: space-between; gap: 12px; height: 44px; padding: 4px 12px; color: #6de0b2; font-size: 11px; font-weight: 600; }
+.audio-monitor:nth-child(2) figcaption { color: #f0bc67; }
+.audio-monitor figcaption span:last-child { color: #a6b7ae; font: 10px var(--vscode-editor-font-family, monospace); font-variant-numeric: tabular-nums; }
+.audio-monitor figcaption > span:first-child { flex-shrink: 0; color: inherit; font: inherit; }
+.monitor-settings { display: flex; align-items: center; justify-content: flex-end; flex-wrap: wrap; min-width: 0; gap: 3px 8px; }
+.monitor-settings select { width: 48px; height: 20px; padding: 0 2px; border-color: #3c5046; background: #19221e; color: #c5ddd0; font-size: 10px; }
+.monitor-settings span { white-space: nowrap; }
+.audio-monitor canvas { display: block; width: 100%; height: 164px; }
+.audio-monitors[data-state="disconnected"] canvas { opacity: .55; }
 .p-keyboard { margin: 15px 0 0; }
 .p-keyboard__wrapper {
 	list-style: none;

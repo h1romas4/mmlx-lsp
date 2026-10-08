@@ -169,7 +169,7 @@ suite('mmlx extension', () => {
 		const panel = vscode.window.createWebviewPanel('mmlx.audioOutputTest', 'mmlx Audio Output Test', vscode.ViewColumn.Beside,
 			{ enableScripts: true, retainContextWhenHidden: true, localResourceRoots: [media] });
 		const hiddenDocument = await vscode.workspace.openTextDocument({ language: 'plaintext', content: '' });
-		type AudioResult = { pcmBlocks: number; requestedBlocks: number; maxRms: number; hiddenBlocks: number; hiddenRms: number; state: string };
+		type AudioResult = { pcmBlocks: number; requestedBlocks: number; maxRms: number; hiddenBlocks: number; hiddenRms: number; analysisPeak: number; spectrumPeak: number; state: string };
 		let resolveResult!: (message: AudioResult) => void;
 		let rejectResult!: (error: Error) => void;
 		const response = new Promise<AudioResult>((resolve, reject) => {
@@ -263,6 +263,7 @@ suite('mmlx extension', () => {
 				}
 			};
 			let analyser; let context; let pcmBlocks = 0; let requestedBlocks = 0; let maxRms = 0; let hiddenStart = null; let hiddenRms = 0;
+			let analysisPeak = 0; let spectrumPeak = -Infinity;
 			const NativeNode = AudioWorkletNode;
 			window.AudioWorkletNode = class extends NativeNode {
 				constructor(audio, ...options) {
@@ -291,13 +292,18 @@ suite('mmlx extension', () => {
 				const samples = new Float32Array(2048);
 				const meter = setInterval(() => {
 					analyser.getFloatTimeDomainData(samples);
+					const analysis = audio.readAnalysis();
+					if (analysis) {
+						for (const value of analysis.samples) { analysisPeak = Math.max(analysisPeak, Math.abs(value)); }
+						for (const value of analysis.decibels) { spectrumPeak = Math.max(spectrumPeak, value); }
+					}
 					const rms = Math.sqrt(samples.reduce((sum, value) => sum + value * value, 0) / samples.length);
 					maxRms = Math.max(maxRms, rms);
 					if (hiddenStart !== null) { hiddenRms = Math.max(hiddenRms, rms); }
 				}, 20);
 				setTimeout(() => {
 					clearInterval(meter);
-					api.postMessage({ type: 'result', pcmBlocks, requestedBlocks, maxRms, hiddenBlocks: hiddenStart === null ? 0 : pcmBlocks - hiddenStart, hiddenRms, state: context.state });
+					api.postMessage({ type: 'result', pcmBlocks, requestedBlocks, maxRms, hiddenBlocks: hiddenStart === null ? 0 : pcmBlocks - hiddenStart, hiddenRms, analysisPeak, spectrumPeak, state: context.state });
 					audio.disconnect();
 				}, 1000);
 			} catch (error) { api.postMessage({ type: 'failure', error: String(error) }); audio.disconnect(); } };
@@ -313,7 +319,186 @@ suite('mmlx extension', () => {
 			assert.ok(result.maxRms > 0.0001, JSON.stringify(result));
 			assert.ok(result.hiddenBlocks > 4, JSON.stringify(result));
 			assert.ok(result.hiddenRms > 0.0001, JSON.stringify(result));
+			assert.ok(result.analysisPeak > 0.0001, JSON.stringify(result));
+			assert.ok(result.spectrumPeak > -80 && result.spectrumPeak <= 0, JSON.stringify(result));
 		} finally { clearTimeout(timer); listener.dispose(); session.dispose(); panel.dispose(); }
+	});
+	test('FM Voice audio analysis preserves output and releases buffers on reconnect', async () => {
+		const extension = vscode.extensions.all.find(extension => extension.packageJSON.name === 'mmlx-lsp');
+		assert.ok(extension);
+		const { createEmulationAudio } = await import(vscode.Uri.joinPath(extension.extensionUri, 'assets', 'webview', 'emulationAudio.js').toString());
+		const globals = globalThis as unknown as Record<string, unknown>;
+		const original = { AudioContext: globals.AudioContext, AudioWorkletNode: globals.AudioWorkletNode };
+		class MockNode {
+			outputs: unknown[] = []; disconnected = false;
+			connect(target: unknown): void { this.outputs.push(target); }
+			disconnect(): void { this.disconnected = true; }
+		}
+		class MockAnalyser extends MockNode {
+			fftSize = 0;
+			get frequencyBinCount(): number { return this.fftSize / 2; }
+			getFloatTimeDomainData(data: Float32Array): void { data.fill(.25); }
+			getFloatFrequencyData(data: Float32Array): void { data.fill(-20); }
+		}
+		class MockContext {
+			state = 'running'; sampleRate = 48000; destination = {};
+			audioWorklet = { addModule: async () => {} };
+			analysers: MockAnalyser[] = [];
+			gain = Object.assign(new MockNode(), { gain: { value: 1 } });
+			constructor() { contexts.push(this); }
+			async resume(): Promise<void> { this.state = 'running'; }
+			async close(): Promise<void> { this.state = 'closed'; }
+			createGain(): typeof this.gain { return this.gain; }
+			createAnalyser(): MockAnalyser { const node = new MockAnalyser(); this.analysers.push(node); return node; }
+		}
+		const contexts: MockContext[] = [];
+		const worklets: MockNode[] = [];
+		globals.AudioContext = MockContext;
+		globals.AudioWorkletNode = class extends MockNode {
+			port = { postMessage: () => {} };
+			constructor() { super(); worklets.push(this); }
+		};
+		const audio = createEmulationAudio(() => {}, () => {});
+		try {
+			assert.strictEqual(audio.readAnalysis(), null);
+			await audio.connect();
+			assert.strictEqual(contexts[0].analysers.length, 0);
+			const data = audio.readAnalysis();
+			assert.strictEqual(data.sampleRate, 48000);
+			assert.strictEqual(data.samples.length, 32768); assert.strictEqual(data.decibels.length, 4096);
+			assert.strictEqual(data.samples[0], .25); assert.strictEqual(data.decibels[0], -20);
+			assert.strictEqual(audio.readAnalysis(), data);
+			assert.strictEqual(worklets[0].outputs[0], contexts[0].gain);
+			assert.strictEqual(contexts[0].gain.outputs[0], contexts[0].destination);
+			assert.strictEqual(worklets[0].outputs.length, 3);
+			contexts[0].state = 'suspended'; assert.strictEqual(audio.readAnalysis(), null);
+			contexts[0].state = 'running';
+			audio.disconnect(); assert.strictEqual(audio.readAnalysis(), null);
+			assert.ok(contexts[0].analysers.every(node => node.disconnected));
+			await audio.connect(); assert.notStrictEqual(audio.readAnalysis(), data);
+		} finally {
+			audio.disconnect();
+			for (const [name, value] of Object.entries(original)) { if (value === undefined) { delete globals[name]; } else { globals[name] = value; } }
+		}
+	});
+
+	test('FM Voice oscilloscope aligns reference periods across sample rates and pitches', async () => {
+		const extension = vscode.extensions.all.find(extension => extension.packageJSON.name === 'mmlx-lsp');
+		assert.ok(extension);
+		const { noteFrequency, findScopeStart } = await import(vscode.Uri.joinPath(extension.extensionUri, 'assets', 'webview', 'audioMonitors.js').toString());
+		assert.strictEqual(noteFrequency(69), 440);
+		for (const sampleRate of [44100, 48000, 96000]) {
+			for (const note of [0, 36, 69, 108, 127]) {
+				const period = sampleRate / noteFrequency(note); const span = period * 2;
+				const wave = (phase: number) => Float32Array.from({ length: 32768 }, (_, index) => .4 * Math.sin(2 * Math.PI * index / period + phase));
+				const first = wave(0); const shifted = wave(1.7);
+				const sample = (samples: Float32Array, position: number) => {
+					const index = Math.floor(position); return samples[index] + (samples[index + 1] - samples[index]) * (position - index);
+				};
+				const start = findScopeStart(first, period, span);
+				const reference = Float32Array.from({ length: 128 }, (_, index) => sample(first, start + span * index / 127));
+				const aligned = findScopeStart(shifted, period, span, reference);
+				const error = Math.sqrt(reference.reduce((sum, value, index) => sum + (value - sample(shifted, aligned + span * index / 127)) ** 2, 0) / reference.length);
+				assert.ok(aligned >= 0 && aligned + span < first.length - 1);
+				assert.ok(error < .12, `MIDI ${note} at ${sampleRate} Hz: ${error}`);
+			}
+		}
+	});
+
+	test('FM Voice audio monitors draw signal, follow notes and stop rendering when hidden', async function () {
+		this.timeout(15000);
+		const extension = vscode.extensions.all.find(extension => extension.packageJSON.name === 'mmlx-lsp');
+		assert.ok(extension);
+		const media = vscode.Uri.joinPath(extension.extensionUri, 'assets', 'webview');
+		const panel = vscode.window.createWebviewPanel('mmlx.monitorTest', 'mmlx Audio Monitor Test', vscode.ViewColumn.Beside,
+			{ enableScripts: true, localResourceRoots: [media] });
+		let resolveResult!: () => void; let rejectResult!: (error: Error) => void;
+		const result = new Promise<void>((resolve, reject) => { resolveResult = resolve; rejectResult = reject; });
+		const listener = panel.webview.onDidReceiveMessage(message => {
+			if (message.type === 'monitorResult') { resolveResult(); }
+			else if (message.type === 'monitorFailure') { rejectResult(new Error(message.error)); }
+		});
+		const nonce = randomUUID();
+		const template = new TextDecoder().decode(await vscode.workspace.fs.readFile(vscode.Uri.joinPath(media, 'voice.html')));
+		const probe = `<script type="module" nonce="${nonce}">
+		import { createAudioMonitors } from '${panel.webview.asWebviewUri(vscode.Uri.joinPath(media, 'audioMonitors.js'))}';
+		const api = acquireVsCodeApi();
+		const check = (condition, message) => { if (!condition) { throw new Error(message); } };
+		const wait = () => new Promise(resolve => setTimeout(resolve, 90));
+		const root = document.getElementById('audio-monitors');
+		const section = document.getElementById('voice-controls'); section.hidden = false;
+		document.getElementById('start-controls').hidden = true;
+		const data = { sampleRate: 48000, samples: Float32Array.from({ length: 32768 }, (_, index) => .4 * Math.sin(2 * Math.PI * 440 * index / 48000)), decibels: new Float32Array(4096).fill(-100) };
+		data.decibels[Math.round(440 * 8192 / 48000)] = -12;
+		let reads = 0;
+		const monitors = createAudioMonitors(root, () => { reads++; return data; });
+		try {
+			check(root.dataset.state === 'disconnected', 'Monitors must start disconnected');
+			monitors.setNote({ event: 'noteOn', note: 69, velocity: 100 }); monitors.setConnected(true);
+			check(root.dataset.state === 'active' && document.getElementById('scope-reference').textContent.includes('440.0 Hz'), 'Signal and note reference must appear');
+			check(monitors.gain === 4, 'Oscilloscope must default to fixed x4 gain');
+			const gainInput = document.getElementById('scope-gain');
+			gainInput.value = '16'; gainInput.dispatchEvent(new Event('change'));
+			check(monitors.gain === 16, 'Gain control must adjust the fixed amplitude scale');
+			monitors.setGain(1); check(gainInput.value === '1', 'Saved gain must restore the control');
+			monitors.setGain(99); check(monitors.gain === 4, 'Invalid saved gain must fall back to x4');
+			for (const width of [800, 320]) {
+				root.style.width = width + 'px'; await wait();
+				const scope = root.querySelector('#oscilloscope'); const spectrum = root.querySelector('#spectrum');
+				const context = spectrum.getContext('2d'); const originalText = context.fillText;
+				const labels = [];
+				context.fillText = function(text, horizontal, vertical) {
+					if (vertical > spectrum.clientHeight - 20) {
+						const size = this.measureText(text).width;
+						const left = horizontal - (this.textAlign === 'center' ? size / 2 : this.textAlign === 'right' ? size : 0);
+						labels.push({ text, left, right: left + size });
+					}
+					originalText.call(this, text, horizontal, vertical);
+				};
+				monitors.setConnected(true); context.fillText = originalText;
+				check(labels.at(-1).text === '20k', 'Spectrum must retain the maximum frequency label');
+				for (let index = 1; index < labels.length; index++) { check(labels[index].left - labels[index - 1].right >= 5, 'Frequency labels must not overlap'); }
+				const first = scope.getBoundingClientRect(); const second = spectrum.getBoundingClientRect();
+				check(width === 800 ? Math.abs(first.top - second.top) < 1 : second.top > first.bottom, 'Monitors must adapt to panel width');
+				check(scope.height === Math.round(scope.clientHeight * Math.min(devicePixelRatio || 1, 3)), 'Canvas must use device pixel ratio');
+				const pixels = scope.getContext('2d').getImageData(0, 0, scope.width, scope.height).data;
+				let waveform = 0;
+				for (let index = 0; index < pixels.length; index += 4) { if (pixels[index] < 130 && pixels[index + 1] > 150 && pixels[index + 2] > 100) { waveform++; } }
+				check(waveform > 100, 'Oscilloscope must draw a visible waveform');
+				const bins = spectrum.getContext('2d').getImageData(0, 0, spectrum.width, spectrum.height).data;
+				let spectrumPixels = 0;
+				for (let index = 0; index < bins.length; index += 4) { if (bins[index] > 180 && bins[index + 1] > 100 && bins[index + 2] < 150) { spectrumPixels++; } }
+				check(spectrumPixels > 20, 'Spectrum must draw a visible peak');
+			}
+			const label = () => document.getElementById('scope-reference').textContent;
+			monitors.setNote({ event: 'noteOn', note: 60, velocity: 100 }); monitors.setConnected(true);
+			check(label().includes('261.6 Hz'), 'Most recent local note must become the reference');
+			monitors.setNote({ type: 'noteOn', channel: 2, note: 72, velocity: 100 }, 'midi'); monitors.setMidiNotes([72]); monitors.setConnected(true);
+			check(label().includes('523.3 Hz'), 'MIDI note events must select the reference without duplicate holds');
+			monitors.setNote({ type: 'allOff', channel: 2 }, 'midi'); monitors.setMidiNotes([]); monitors.setConnected(true);
+			check(label().includes('261.6 Hz'), 'Channel all-off must restore the held local reference');
+			monitors.setNote({ event: 'noteOff', note: 60 }); monitors.setConnected(true);
+			check(label().includes('440.0 Hz'), 'Release must restore the previous held reference');
+			monitors.setNote({ event: 'noteOff', note: 69 }); monitors.setConnected(true);
+			check(label().includes('440.0 Hz') && root.dataset.state === 'active', 'Release tail must retain the reference and waveform');
+			const beforeHidden = reads; section.hidden = true; await wait();
+			check(reads === beforeHidden, 'Hidden tab must stop analysing');
+			section.hidden = false; await wait(); check(reads > beforeHidden, 'Visible tab must restart analysing');
+			data.samples.fill(0); data.decibels.fill(-Infinity); monitors.setConnected(true);
+			check(root.dataset.state === 'silent' && document.getElementById('spectrum-state').textContent === 'Silent', 'Silence must clear the signal state');
+			monitors.setConnected(false); const beforeDisconnected = reads; await wait();
+			check(reads === beforeDisconnected && root.dataset.state === 'disconnected', 'Disconnect must stop analysing');
+			monitors.setConnected(true); monitors.dispose(); const beforeDisposed = reads; await wait();
+			check(reads === beforeDisposed, 'Dispose must stop the animation');
+			api.postMessage({ type: 'monitorResult' });
+		} catch (error) { api.postMessage({ type: 'monitorFailure', error: String(error) }); }
+		finally { monitors.dispose(); }
+		</script>`;
+		panel.webview.html = template.replaceAll('{{cspSource}}', panel.webview.cspSource).replaceAll('{{nonce}}', nonce)
+			.replaceAll('{{styleUri}}', panel.webview.asWebviewUri(vscode.Uri.joinPath(media, 'voice.css')).toString())
+			.replace(/<script type="module"[^>]*src="\{\{scriptUri\}\}"[^>]*><\/script>/, probe);
+		const timer = setTimeout(() => rejectResult(new Error('Audio monitor Webview timed out')), 10000);
+		try { await result; } finally { clearTimeout(timer); listener.dispose(); panel.dispose(); }
 	});
 	test('Webview audio PCM arrives as a transferable ArrayBuffer', async function () {
 		this.timeout(15000);
@@ -1262,6 +1447,7 @@ suite('mmlx extension', () => {
 		let destroyed = 0;
 		const inputs: NodeEventEmitter[] = [];
 		let notes: number[] = [];
+		const noteEvents: unknown[] = [];
 		function waitFor(predicate: (message: MidiMessage) => boolean): Promise<MidiMessage> {
 			if (latest && predicate(latest)) { return Promise.resolve(latest); }
 			return new Promise((resolve, reject) => {
@@ -1288,6 +1474,7 @@ suite('mmlx extension', () => {
 				onDidReceiveMessage: messages.event, postMessage: (message: MidiMessage) => {
 					if (message.type === 'midiSettings') { latest = message; updates.fire(message); }
 					if (message.type === 'midiNotes') { notes = message.notes ?? []; }
+					if (message.type === 'midiNote') { noteEvents.push((message as unknown as { event: unknown }).event); }
 					return Promise.resolve(true);
 				} }
 		} as unknown as vscode.WebviewView;
@@ -1324,8 +1511,10 @@ suite('mmlx extension', () => {
 			assert.deepStrictEqual(view.badge, { value: 1, tooltip: 'Connected: MIDI-IN' });
 			inputs.at(-1)!.emit('noteon', 60, 100, { channel: 0 });
 			assert.deepStrictEqual(notes, [60]);
+			assert.deepStrictEqual(noteEvents.at(-1), { type: 'noteOn', channel: 0, note: 60, velocity: 100 });
 			inputs.at(-1)!.emit('noteoff', 60, 0, { channel: 0 });
 			assert.deepStrictEqual(notes, []);
+			assert.deepStrictEqual(noteEvents.at(-1), { type: 'noteOff', channel: 0, note: 60 });
 			messages.fire({ type: 'updateMidiInput', folder: folder.uri.toString(), value: 'Keyboard 10' });
 			assert.strictEqual(vscode.workspace.getConfiguration('mmlx', folder.uri).get('midi.input'), 'Keyboard 2');
 			messages.fire({ type: 'setMidiInputConnection', folder: folder.uri.toString(), connected: false });
