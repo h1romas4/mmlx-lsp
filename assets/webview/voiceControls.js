@@ -81,6 +81,7 @@ export function dragEnvelope(operator, kind, deltaX, deltaY) {
 export function createVoiceControls(root, onEdit = () => {}) {
 	const namespace = 'http://www.w3.org/2000/svg';
 	const fields = ['ar', 'd1r', 'd2r', 'rr', 'd1l', 'tl', 'ks', 'mul', 'dt1', 'dt2', 'ame'];
+	const displayFields = ['mul', 'tl', 'dt1', 'dt2', 'ar', 'd1r', 'd1l', 'd2r', 'rr', 'ks', 'ame'];
 	const limits = [31, 31, 31, 15, 15, 127, 3, 15, 7, 3, 1];
 	const handleFields = { attack: ['ar', 'tl'], decay: ['d1r', 'd1l'], keyoff: [null, 'd2r'], release: ['rr', null] };
 	const operators = root.querySelector('#operators');
@@ -88,8 +89,10 @@ export function createVoiceControls(root, onEdit = () => {}) {
 	const elements = [];
 	const diagrams = [];
 	const inputs = [];
+	const voicePanel = root;
 	let snapshot;
 	let drag;
+	let pendingVoice;
 	const algorithm = root.querySelector('#algorithm');
 	for (let index = 0; index < 8; index++) {
 		const option = document.createElement('option');
@@ -98,23 +101,27 @@ export function createVoiceControls(root, onEdit = () => {}) {
 		algorithm.append(option);
 	}
 
-	function bindInput(input, index) {
+	function bindInput(input, index, readValue = () => input.type === 'checkbox' ? Number(input.checked)
+		: input.tagName === 'SELECT' ? Number(input.value) : input.valueAsNumber) {
 		input.dataset.parameter = index;
 		input.disabled = true;
 		inputs.push(input);
 		input.addEventListener('change', () => {
-			if (drag || !snapshot?.editable || !Number.isInteger(snapshot.editToken)) { return; }
-			const value = input.tagName === 'SELECT' ? Number(input.value) : input.valueAsNumber;
+			if (drag || !snapshot?.editable || !Number.isInteger(snapshot.editToken)) {
+				if (snapshot && !drag) { render(snapshot); }
+				return;
+			}
+			const value = readValue();
 			if (!Number.isInteger(value) || !input.checkValidity()) { input.reportValidity(); render(snapshot); return; }
 			const previous = index < 44 ? snapshot.voice.operators[Math.floor(index / 11)][fields[index % 11]]
 				: snapshot.voice[index === 44 ? 'algorithm' : index === 45 ? 'feedback' : 'operatorMask'];
 			if (value === previous) { return; }
 			const token = snapshot.editToken;
-			render({ ...snapshot, editable: false, editing: true });
+			previewEdit([{ index, value }]);
 			onEdit({ type: 'editVoice', token, index, value });
 		});
 		input.addEventListener('keydown', event => {
-			if (event.key === 'Enter' && input.tagName === 'INPUT') {
+			if (event.key === 'Enter' && input.type === 'number') {
 				event.preventDefault();
 				input.dispatchEvent(new Event('change'));
 			}
@@ -123,7 +130,9 @@ export function createVoiceControls(root, onEdit = () => {}) {
 
 	bindInput(algorithm, 44);
 	bindInput(root.querySelector('#feedback'), 45);
-	bindInput(root.querySelector('#operator-mask'), 46);
+	const maskInputs = [...root.querySelectorAll('#operator-mask input')];
+	maskInputs.forEach((input, index) => bindInput(input, 46, () => input.checked
+		? snapshot.voice.operatorMask | (1 << index) : snapshot.voice.operatorMask & ~(1 << index)));
 
 	function svgElement(tag, attributes) {
 		const element = document.createElementNS(namespace, tag);
@@ -132,7 +141,10 @@ export function createVoiceControls(root, onEdit = () => {}) {
 	}
 
 	function lockControls(disabled) {
-		for (const input of inputs) { input.disabled = disabled; }
+		for (const input of inputs) {
+			input.disabled = disabled && !voicePanel.classList.contains('voice-editing');
+			input.setAttribute('aria-disabled', String(disabled));
+		}
 		for (const { figure } of diagrams) {
 			figure.setAttribute('aria-disabled', String(disabled));
 			figure.tabIndex = disabled ? -1 : 0;
@@ -140,10 +152,11 @@ export function createVoiceControls(root, onEdit = () => {}) {
 		for (const [index, { handles }] of elements.entries()) {
 			const operator = snapshot?.voice?.operators[index];
 			for (const [kind, handle] of Object.entries(handles)) {
-				const inactive = disabled || (kind === 'keyoff' && (!operator || operator.ar === 0 || operator.d1r === 0
-					|| operator.tl * 0.75 + (operator.d1l === 15 ? 93 : operator.d1l * 3) >= 96));
-				handle.setAttribute('aria-disabled', String(inactive));
-				handle.setAttribute('tabindex', inactive ? -1 : 0);
+				const inactive = kind === 'keyoff' && (!operator || operator.ar === 0 || operator.d1r === 0
+					|| operator.tl * 0.75 + (operator.d1l === 15 ? 93 : operator.d1l * 3) >= 96);
+				handle.classList.toggle('edit-locked', disabled && !inactive);
+				handle.setAttribute('aria-disabled', String(disabled || inactive));
+				handle.setAttribute('tabindex', disabled || inactive ? -1 : 0);
 			}
 		}
 	}
@@ -169,8 +182,27 @@ export function createVoiceControls(root, onEdit = () => {}) {
 			.map(field => ({ index: index * 11 + fields.indexOf(field), value: operator[field] }));
 		if (!changes.length) { render(snapshot); return; }
 		const token = snapshot.editToken;
-		render({ ...snapshot, editable: false, editing: true });
+		previewEdit(changes);
 		onEdit({ type: 'editVoice', token, changes });
+	}
+
+	function previewEdit(changes) {
+		const voice = { ...snapshot.voice, operators: snapshot.voice.operators.map(operator => ({ ...operator })) };
+		for (const { index, value } of changes) {
+			if (index < 44) { voice.operators[Math.floor(index / 11)][fields[index % 11]] = value; }
+			else { voice[index === 44 ? 'algorithm' : index === 45 ? 'feedback' : 'operatorMask'] = value; }
+		}
+		pendingVoice = { source: snapshot.source, voice };
+		render({ ...snapshot, voice, editable: false, editing: true });
+	}
+
+	for (const type of ['pointerdown', 'click', 'keydown', 'beforeinput']) {
+		voicePanel.addEventListener(type, event => {
+			if (!voicePanel.classList.contains('voice-editing') || (type === 'keydown' && event.key === 'Tab')) { return; }
+			if (!event.target.closest('[data-parameter], .algorithm-diagram, .envelope-handle')) { return; }
+			event.preventDefault();
+			event.stopImmediatePropagation();
+		}, true);
 	}
 
 	root.addEventListener('keydown', event => { if (event.key === 'Escape') { cancelDrag(); } });
@@ -258,9 +290,18 @@ export function createVoiceControls(root, onEdit = () => {}) {
 		const section = document.createElement('section');
 		section.className = 'operator';
 		const heading = document.createElement('h2');
-		heading.textContent = `OP ${index + 1}`;
+		const identity = document.createElement('span');
+		identity.className = 'operator-identity';
+		const badge = svgElement('svg', { class: 'operator-badge', viewBox: '0 0 24 24', 'aria-hidden': 'true' });
+		badge.append(svgElement('circle', { cx: 12, cy: 12, r: 10 }));
+		const number = svgElement('text', { x: 12, y: 16, 'text-anchor': 'middle' });
+		number.textContent = index + 1;
+		badge.append(number);
+		const role = document.createElement('span');
+		role.className = 'operator-role';
+		identity.append('OP ', badge, role);
 		const enabled = document.createElement('span');
-		heading.append(enabled);
+		heading.append(identity, enabled);
 		const graph = svgElement('svg', { viewBox: '0 0 320 145', role: 'group', 'aria-label': `OP ${index + 1} normalized envelope` });
 		graph.append(svgElement('path', { d: 'M 12 16 V 116 H 308 M 12 66 H 308', class: 'axis', fill: 'none' }));
 		graph.append(svgElement('path', { d: 'M 234 12 V 116', class: 'key-off' }));
@@ -327,27 +368,55 @@ export function createVoiceControls(root, onEdit = () => {}) {
 		}
 		const list = document.createElement('dl');
 		const values = {};
-		for (const [fieldIndex, field] of fields.entries()) {
+		for (const field of displayFields) {
+			const fieldIndex = fields.indexOf(field);
 			const pair = document.createElement('div');
+			if (field === 'rr') { pair.className = 'single-parameter'; }
 			const term = document.createElement('dt');
 			term.textContent = field.toUpperCase();
 			const value = document.createElement('dd');
-			const input = document.createElement('input');
-			input.type = 'number';
-			input.min = 0;
-			input.max = limits[fieldIndex];
-			input.step = 1;
-			input.required = true;
+			const input = document.createElement(field === 'mul' || field === 'ks' || field === 'dt2' ? 'select' : 'input');
+			if (field === 'mul' || field === 'ks' || field === 'dt2') {
+				for (let optionValue = 0; optionValue <= limits[fieldIndex]; optionValue++) {
+					const option = document.createElement('option');
+					option.value = optionValue;
+					option.textContent = `${optionValue}: ${field === 'mul' ? `x${optionValue === 0 ? 0.5 : optionValue}`
+						: field === 'dt2' ? `${[0, 600, 781, 950][optionValue]}c` : ['Min', 'Low', 'Med', 'High'][optionValue]}`;
+					if (field === 'ks') { option.title = ['Minimal', 'Low', 'Medium', 'High'][optionValue]; }
+					if (field === 'dt2') { option.title = `${[0, 600, 781, 950][optionValue]} cents of coarse detune`; }
+					input.append(option);
+				}
+				input.title = field === 'mul' ? 'Frequency multiplier; 0 means half the base frequency'
+					: field === 'dt2' ? 'Coarse detune in cents (c); 100 cents = 1 semitone. 0: None, 1: +600, 2: +781, 3: +950 cents'
+						: 'Key scaling: higher notes speed up the envelope. 0: Minimal, 1: Low, 2: Medium, 3: High';
+			} else {
+				input.type = field === 'ame' ? 'checkbox' : 'number';
+				if (field === 'ame') {
+					input.setAttribute('role', 'switch');
+					input.title = 'LFO amplitude modulation for this operator; also depends on LFO and AMS settings';
+				} else {
+					input.min = 0;
+					input.max = limits[fieldIndex];
+					input.step = 1;
+					input.required = true;
+				}
+			}
 			input.setAttribute('aria-label', `OP ${index + 1} ${field.toUpperCase()}`);
 			bindInput(input, index * 11 + fieldIndex);
-			value.append(input);
+			if (field === 'ame') {
+				const label = document.createElement('label');
+				label.className = 'parameter-toggle';
+				label.title = input.title;
+				label.append(input, document.createElement('span'));
+				value.append(label);
+			} else { value.append(input); }
 			values[field] = input;
 			pair.append(term, value);
 			list.append(pair);
 		}
 		section.append(heading, graph, list);
 		operators.append(section);
-		elements.push({ section, enabled, curve, values, handles });
+		elements.push({ section, heading, enabled, badge, role, curve, values, handles });
 	}
 
 	function envelope(operator) {
@@ -369,7 +438,13 @@ export function createVoiceControls(root, onEdit = () => {}) {
 
 	function drawOperator(operator, index) {
 		const element = elements[index];
-		for (const field of fields) { element.values[field].value = operator[field]; }
+		for (const field of fields) {
+			const input = element.values[field];
+			if (input.type === 'checkbox') {
+				input.checked = operator[field] !== 0;
+				input.nextElementSibling.textContent = input.checked ? 'On' : 'Off';
+			} else { input.value = operator[field]; }
+		}
 		element.curve.setAttribute('d', envelope(operator));
 		const positions = envelopeHandlePositions(operator);
 		for (const [kind, handle] of Object.entries(element.handles)) {
@@ -383,10 +458,17 @@ export function createVoiceControls(root, onEdit = () => {}) {
 	function render(message) {
 		if (message?.type !== 'voice') { return; }
 		releaseDrag();
+		if (pendingVoice && message.editing && !message.error && !message.retained
+			&& message.source === pendingVoice.source && message.voice?.number === pendingVoice.voice.number) {
+			message = { ...message, voice: pendingVoice.voice };
+		} else { pendingVoice = undefined; }
 		snapshot = message;
 		const voice = message.voice;
+		const editing = !!voice && !!message.editing && !message.error && !message.retained;
+		voicePanel.classList.toggle('voice-editing', editing);
+		voicePanel.setAttribute('aria-busy', String(editing));
 		lockControls(!voice || !message.editable || !!message.retained || !!message.error);
-		root.querySelector('#status').textContent = message.error ? 'Unavailable' : message.editing ? 'Updating'
+		root.querySelector('#status').textContent = message.error ? 'Unavailable'
 			: voice ? (message.retained ? 'Retained' : '') : 'No voice selected';
 		const voiceName = root.querySelector('#voice-name');
 		voiceName.textContent = voice ? `@${voice.number}` : 'Move the cursor to a voice definition.';
@@ -398,7 +480,7 @@ export function createVoiceControls(root, onEdit = () => {}) {
 		if (!voice) { return; }
 		algorithm.value = voice.algorithm;
 		root.querySelector('#feedback').value = voice.feedback;
-		root.querySelector('#operator-mask').value = voice.operatorMask;
+		maskInputs.forEach((input, index) => { input.checked = (voice.operatorMask & (1 << index)) !== 0; });
 		diagrams.forEach((diagram, index) => {
 			const selected = index === voice.algorithm;
 			diagram.figure.classList.toggle('selected', selected);
@@ -412,8 +494,13 @@ export function createVoiceControls(root, onEdit = () => {}) {
 		voice.operators.forEach((operator, index) => {
 			const element = elements[index];
 			const enabled = (voice.operatorMask & (1 << index)) !== 0;
+			const carrier = algorithmConnections[voice.algorithm].carriers.includes(index);
 			element.section.classList.toggle('disabled', !enabled);
 			element.enabled.textContent = enabled ? '' : 'Off';
+			element.badge.classList.toggle('carrier', carrier);
+			element.role.textContent = carrier ? 'Carrier' : 'Modulator';
+			element.heading.setAttribute('aria-label', `OP ${index + 1} ${element.role.textContent}${enabled ? '' : ', Off'}`);
+			element.badge.classList.toggle('inactive', !enabled);
 			drawOperator(operator, index);
 		});
 	}

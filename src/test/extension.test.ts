@@ -848,6 +848,96 @@ suite('mmlx extension', () => {
 					check(messages.at(-1).type === 'emulationNote' && messages.at(-1).event === 'noteOn' && messages.at(-1).note === note, 'Lowest key must send its MIDI note');
 					lowest.dispatchEvent(new KeyboardEvent('keyup', { key: 'Enter' }));
 				}
+				const operator = { ar: 22, d1r: 0, d2r: 1, rr: 2, d1l: 1, tl: 47, ks: 2, mul: 12, dt1: 0, dt2: 0, ame: 0 };
+				const renderVoice = (operatorMask = 15, values = {}, state = {}) => send({ type: 'voice', editable: true, editToken: 42, source: 'test.mml',
+					voice: { number: 1, algorithm: 2, feedback: 7, operatorMask, operators: Array.from({ length: 4 }, () => ({ ...operator, ...values })) }, ...state });
+				renderVoice();
+				const sections = [...document.querySelectorAll('#operators .operator')];
+				for (const section of sections) {
+					check([...section.querySelectorAll('dt')].map(term => term.textContent).join(',') === 'MUL,TL,DT1,DT2,AR,D1R,D1L,D2R,RR,KS,AME', 'Parameter display order must be independent of MML order');
+					const releaseWidth = section.querySelector('input[aria-label$=" RR"]').getBoundingClientRect().width;
+					const levelWidth = section.querySelector('input[aria-label$=" TL"]').getBoundingClientRect().width;
+					check(Math.abs(releaseWidth - levelWidth) < 1, 'RR must have the same width as other numeric fields');
+					const multiplier = section.querySelector('select[aria-label$=" MUL"]');
+					check(multiplier.options.length === 16 && multiplier.options[0].textContent === '0: x0.5' && multiplier.options[15].textContent === '15: x15', 'MUL must show frequency multipliers including the zero special value');
+					const scaling = section.querySelector('select[aria-label$=" KS"]');
+					check([...scaling.options].map(option => option.textContent).join(',') === '0: Min,1: Low,2: Med,3: High', 'KS must show key scaling strength');
+					check(scaling.title.includes('0: Minimal'), 'KS zero must not be described as disabled');
+					const detune = section.querySelector('select[aria-label$=" DT2"]');
+					check([...detune.options].map(option => option.textContent).join(',') === '0: 0c,1: 600c,2: 781c,3: 950c', 'DT2 must show coarse detune in cents');
+					check(detune.title.includes('100 cents = 1 semitone'), 'DT2 must explain the cents unit');
+					const modulation = section.querySelector('[aria-label$=" AME"]');
+					check(modulation.type === 'checkbox' && modulation.getAttribute('role') === 'switch' && modulation.title.includes('AMS'), 'AME must be an amplitude modulation switch with its dependencies');
+				}
+				for (const [field, parameter, value] of [['MUL', 7, 0], ['MUL', 7, 15], ['KS', 6, 0], ['KS', 6, 3], ['DT2', 9, 0], ['DT2', 9, 1], ['DT2', 9, 2], ['DT2', 9, 3], ['AME', 10, 0], ['AME', 10, 1]]) {
+					renderVoice(15, { ame: field === 'AME' ? 1 - value : 0, dt2: value === 0 ? 1 : 0 });
+					const input = sections[1].querySelector('[aria-label="OP 2 ' + field + '"]');
+					if (input.type === 'checkbox') { input.checked = Boolean(value); } else { input.value = String(value); }
+					input.dispatchEvent(new Event('change'));
+					const edit = messages.at(-1);
+					check(edit.type === 'editVoice' && edit.token === 42 && edit.index === 11 + parameter && edit.value === value, 'Meaningful controls must preserve MML parameter indices and values');
+					const displayedValue = () => input.type === 'checkbox' ? Number(input.checked) : Number(input.value);
+					check(!input.disabled && input.getAttribute('aria-disabled') === 'true' && getComputedStyle(input).opacity === '1', 'Pending controls must lock without disabled styling');
+					check(displayedValue() === value, 'Pending edit must preserve its displayed value');
+					check(document.querySelector('#voice-controls').getAttribute('aria-busy') === 'true' && document.querySelector('#status').textContent === '', 'Pending edit must announce busy state without flashing status text');
+					renderVoice(15, {}, { editing: true, editable: false, editToken: null });
+					check(displayedValue() === value, 'Server busy snapshot must not reset the optimistic value');
+					const count = messages.filter(message => message.type === 'editVoice').length;
+					input.click();
+					input.dispatchEvent(new Event('change'));
+					check(messages.filter(message => message.type === 'editVoice').length === count && displayedValue() === value, 'Pending edits must block duplicate input');
+					if (field === 'MUL' && value === 0) {
+						const auditionKey = document.querySelector('#keyboard [data-midi-note="60"]');
+						auditionKey.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true }));
+						check(messages.at(-1).type === 'emulationNote' && messages.at(-1).event === 'noteOn', 'Voice edits must not block audition keyboard input');
+						auditionKey.dispatchEvent(new KeyboardEvent('keyup', { key: 'Enter', bubbles: true }));
+					}
+					renderVoice(15, { [field.toLowerCase()]: value });
+					check(displayedValue() === value && input.getAttribute('aria-disabled') === 'false' && document.querySelector('#voice-controls').getAttribute('aria-busy') === 'false', 'Confirmed edit must unlock without reverting');
+				}
+				const maskInputs = [...document.querySelectorAll('#operator-mask input')];
+				check(maskInputs.length === 4, 'OP must have four operator checkboxes');
+				for (let mask = 0; mask <= 15; mask++) {
+					for (let index = 0; index < 4; index++) {
+						renderVoice(mask);
+						check(maskInputs.every((input, bit) => input.checked === Boolean(mask & (1 << bit))), 'OP checkboxes must reflect every mask');
+						check(sections[index].classList.contains('disabled') === !(mask & (1 << index)), 'OP state must match the operator panel');
+						check(sections[index].querySelector('.operator-badge').classList.contains('inactive') === !(mask & (1 << index)), 'Disabled operator badges must match algorithm nodes');
+						const opacity = (mask & (1 << index)) ? '1' : '0.3';
+						check(getComputedStyle(sections[index].querySelector(':scope > svg')).opacity === opacity, 'Entire ADSR graph must dim and restore with its OP checkbox');
+						check(getComputedStyle(sections[index].querySelector('.envelope')).opacity === '1', 'Envelope must not be dimmed twice');
+						check([...document.querySelectorAll('#algorithms .algorithm-node[data-operator="' + (index + 1) + '"]')].every(node => getComputedStyle(node).opacity === opacity), 'Matching operator nodes must dim and restore in every algorithm');
+						check([...sections[index].querySelectorAll('input, select')].every(input => !input.disabled), 'Off operators must remain editable');
+						maskInputs[index].checked = !maskInputs[index].checked;
+						maskInputs[index].dispatchEvent(new Event('change'));
+						const edit = messages.at(-1);
+						check(edit.type === 'editVoice' && edit.index === 46 && edit.value === (mask ^ (1 << index)), 'OP edits must toggle only the selected bit');
+						check(maskInputs[index].checked === Boolean((mask ^ (1 << index)) & (1 << index)), 'OP checkbox must not flash back to its old state');
+						check(getComputedStyle(sections[index].querySelector(':scope > svg')).opacity === ((mask & (1 << index)) ? '0.3' : '1'), 'OP visual state must update immediately while pending');
+					}
+				}
+				renderVoice(9, { ame: 1 });
+				for (let algorithm = 0; algorithm < 8; algorithm++) {
+					send({ type: 'voice', editable: true, editToken: 42, source: 'test.mml', voice: { number: 1, algorithm, feedback: 7, operatorMask: 9, operators: Array.from({ length: 4 }, () => ({ ...operator, ame: 1 })) } });
+					for (let index = 0; index < 4; index++) {
+						const carrier = document.querySelector('[data-algorithm="' + algorithm + '"] [data-operator="' + (index + 1) + '"]').classList.contains('carrier');
+						check(sections[index].querySelector('.operator-badge').classList.contains('carrier') === carrier, 'Envelope badges must match algorithm carrier roles');
+						check(sections[index].querySelector('.operator-role').textContent === (carrier ? 'Carrier' : 'Modulator'), 'Envelope headings must name the operator role');
+						check(sections[index].querySelector('h2').getAttribute('aria-label') === 'OP ' + (index + 1) + ' ' + (carrier ? 'Carrier' : 'Modulator') + ((9 & (1 << index)) ? '' : ', Off'), 'Accessible headings must include operator numbers, roles and disabled state');
+					}
+				}
+				check(sections[1].querySelector('[aria-label="OP 2 AME"]').checked && sections[1].querySelector('.parameter-toggle span').textContent === 'On', 'AME must render the enabled state');
+				renderVoice();
+				const failedInput = sections[1].querySelector('[aria-label="OP 2 MUL"]');
+				failedInput.value = '15'; failedInput.dispatchEvent(new Event('change'));
+				renderVoice(15, {}, { editable: false, editing: true, error: true });
+				check(failedInput.value === '12' && failedInput.disabled && document.querySelector('#voice-controls').getAttribute('aria-busy') === 'false', 'Failed edits must restore authoritative values and genuine disabled styling');
+				renderVoice();
+				failedInput.value = '15'; failedInput.dispatchEvent(new Event('change'));
+				renderVoice(15, {}, { source: 'other.mml', editable: false, editing: true });
+				check(failedInput.value === '12', 'Switching sources must discard pending preview');
+				send({ type: 'voice', editable: false, editToken: 42, source: 'test.mml', voice: null });
+				check([...document.querySelectorAll('#operators input, #operators select, #operator-mask input')].every(input => input.disabled), 'Missing voice must disable all meaningful controls');
 				probeApi.postMessage({ type: 'keyboardResult' });
 			} catch (error) { probeApi.postMessage({ type: 'keyboardFailure', error: String(error) }); }
 		}

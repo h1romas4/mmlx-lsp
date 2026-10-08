@@ -95,6 +95,9 @@ input:focus, select:focus { outline: 1px solid var(--vscode-focusBorder, #39a9c7
 input:disabled, select:disabled { opacity: .6; }
 .summary input { width: 54px; }
 .summary select { width: 50px; }
+#operator-mask { display: flex; flex-wrap: wrap; align-items: center; gap: 6px 12px; min-width: 0; margin: 0; padding: 0; border: 0; }
+#operator-mask legend { float: left; margin-right: 6px; padding: 0; }
+#operator-mask input, .parameter-toggle input { width: 16px; height: 16px; padding: 0; margin: 0; accent-color: var(--vscode-panelTitle-activeBorder, #39a9c7); }
 .playback-options { margin-left: auto; }
 .playback-options select { width: 136px; }
 .output-controls { display: inline-flex; align-items: center; flex-wrap: nowrap; gap: 6px; min-width: 0; }
@@ -162,6 +165,14 @@ input:disabled, select:disabled { opacity: .6; }
 .operator:nth-child(4) { --operator-color: var(--op4); }
 .operator h2 { font-size: 13px; margin: 0 0 6px; color: var(--operator-color); display: flex; justify-content: space-between; gap: 8px; }
 .operator h2 span { color: var(--vscode-descriptionForeground, #666); font-weight: 400; }
+.operator h2 { align-items: center; flex-wrap: wrap; }
+.operator h2 .operator-identity { display: inline-flex; align-items: center; flex-wrap: wrap; gap: 5px; color: inherit; font-weight: 600; }
+.operator h2 .operator-badge { width: 22px; height: 22px; flex: 0 0 22px; }
+.operator-role { font-size: 11px; }
+.operator-badge circle { fill: var(--vscode-editor-background, #fafafa); stroke: var(--operator-color); stroke-width: 1.5; }
+.operator-badge.carrier circle { fill: var(--operator-color); fill-opacity: .3; }
+.operator-badge text { fill: var(--vscode-editor-foreground, #292929); font-size: 12px; font-weight: 600; }
+.operator-badge.inactive { opacity: .3; }
 .operator svg { width: 100%; height: 128px; display: block; overflow: hidden; }
 .axis { stroke: var(--vscode-descriptionForeground, #888); opacity: .35; }
 .key-off { stroke: var(--vscode-descriptionForeground, #888); stroke-dasharray: 4 4; opacity: .5; }
@@ -170,16 +181,22 @@ input:disabled, select:disabled { opacity: .6; }
 .handle-hit { fill: transparent; }
 .handle-dot { fill: var(--vscode-editor-background, #fafafa); stroke: var(--operator-color); stroke-width: 1.5; vector-effect: non-scaling-stroke; }
 .envelope-handle[aria-disabled="true"] { cursor: default; opacity: .45; }
+.voice-editing .envelope-handle.edit-locked { opacity: 1; }
 .envelope-handle.dragging { cursor: grabbing; opacity: 1; }
 .envelope-handle.dragging .handle-dot { fill: var(--operator-color); }
 .envelope-handle:focus-visible .handle-dot { stroke: var(--vscode-focusBorder, #39a9c7); stroke-width: 3; }
-.operator.disabled .envelope { stroke-dasharray: 5 4; opacity: .5; }
+.operator.disabled > svg { opacity: .3; }
+.operator.disabled .envelope { stroke-dasharray: 5 4; }
 svg text { fill: var(--vscode-descriptionForeground, #666); font: 11px var(--vscode-font-family, sans-serif); }
 dl { margin: 8px 0 0; display: grid; grid-template-columns: repeat(auto-fit, minmax(48px, 1fr)); gap: 9px 6px; }
 dl div { min-width: 0; }
 dt { font-size: 10px; color: var(--vscode-descriptionForeground, #666); }
 dd { margin: 2px 0 0; font-family: var(--vscode-editor-font-family, monospace); font-size: 13px; }
 dd input { display: block; width: 100%; }
+.operator dl { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+.single-parameter, .single-parameter + div { grid-column: 1; }
+dd select { display: block; width: 100%; padding: 2px; }
+.parameter-toggle { display: inline-flex; align-items: center; gap: 6px; height: 26px; }
 @media (max-width: 760px) {
 	.algorithm-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
 	#operators { grid-template-columns: repeat(2, minmax(0, 1fr)); }
