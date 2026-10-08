@@ -2,6 +2,15 @@
 
 All notable changes to the "mmlx-lsp" extension will be documented in this file.
 
+## [0.9.0] - 2026-10-08
+
+- See the sound of your FM voices with a live, note-synchronized oscilloscope and frequency spectrum above the keyboard when using Emulation output.
+- Adjust waveform visibility with saved x1/x4/x16 display gain; both monitors adapt to the panel width and show chords and release tails.
+- Choose MUL, KS, and DT2 values with meaningful labels, and switch AME on or off with a toggle.
+- Enable or disable each operator individually, see its Carrier or Modulator role, and identify disabled operators by their dimmed diagrams and envelopes.
+- Refine the attack curves shown in FM Voice envelopes and improve the parameter layout.
+- Keep edited values and operator states stable while source updates are pending, reducing flicker without interrupting keyboard audition.
+
 ## [0.8.1] - 2026-10-08
 
 - Fix FM Voice keyboard and MIDI-IN audition pitch to match standard MIDI notes.
