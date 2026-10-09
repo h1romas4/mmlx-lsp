@@ -9,9 +9,15 @@ export interface NanoDrivePort {
 }
 
 export type NanoDriveCommand = 'ping' | 'getInfo' | 'reset' | 'setClock';
+export type NanoDriveInput = { type: 'init' | 'voice'; voice: unknown }
+    | { type: 'noteOn'; source: number; channel: number; note: number; velocity: number }
+    | { type: 'noteOff'; source: number; channel: number; note: number }
+    | { type: 'allOff'; source?: number; channel?: number } | { type: 'stop' };
+export interface NanoDriveOutputState { connected: boolean; connecting: boolean; error: string; }
 export interface NanoDriveReply { status: number; model?: string; firmware?: string; }
 export type NanoDriveCodec = (params: { operation: 'encode'; command: NanoDriveCommand; requestId: number; payload: number[] }
-    | { operation: 'decode'; body: number[]; request: number[] }) => Promise<{ bytes: number[] } | NanoDriveReply | null>;
+    | { operation: 'decode'; body: number[]; request: number[] }
+    | { operation: 'audition'; session: number; requestId: number; command: NanoDriveInput }) => Promise<{ bytes: number[]; count?: number } | NanoDriveReply | null>;
 export interface NanoDriveState {
     port: string; connected: boolean; connecting: boolean; closing: boolean;
     phase: string; model: string; firmware: string; error: string;
@@ -44,12 +50,122 @@ export class NanoDriveConnection {
     private partialTimer?: ReturnType<typeof setTimeout>;
     private body: number[] = [];
     private discarding = true;
+    private output: NanoDriveOutputState = { connected: false, connecting: false, error: '' };
+    private outputGeneration = 0;
+    private session = 0;
+    private outputStarting = false;
+    private outputClosing?: Promise<void>;
+    private inputs: Promise<void> = Promise.resolve();
+    private queued = 0;
+    private voice = '';
 
     constructor(private readonly codec: NanoDriveCodec, private readonly onState: (state: NanoDriveState) => void,
         private readonly openPort: (path: string) => Promise<NanoDrivePort> = openNanoDrivePort,
-        private readonly responseTimeout = 1000) {}
+        private readonly responseTimeout = 1000,
+        private readonly onOutput: (state: NanoDriveOutputState) => void = () => {}) {}
 
     get state(): NanoDriveState { return { ...this.snapshot }; }
+    get outputState(): NanoDriveOutputState { return { ...this.output }; }
+
+    async connectOutput(voice: unknown): Promise<void> {
+        if (this.outputStarting || this.output.connected) { return; }
+        this.outputStarting = true;
+        const connection = this.generation;
+        const cancellation = this.outputGeneration;
+        try {
+            await this.outputClosing;
+            if (connection !== this.generation || cancellation !== this.outputGeneration) { return; }
+            if (!this.snapshot.connected) {
+                this.output = { connected: false, connecting: false, error: 'Connect NanoDrive8 in Settings first.' };
+                this.emitOutput(); return;
+            }
+            const generation = ++this.outputGeneration;
+            this.session = (this.session + 1) >>> 0;
+            this.voice = JSON.stringify(voice);
+            this.output = { connected: false, connecting: true, error: '' }; this.emitOutput();
+            try {
+                await this.input({ type: 'init', voice });
+                if (connection !== this.generation || generation !== this.outputGeneration) { return; }
+                await this.request('ping', [...randomBytes(8)]);
+                if (connection !== this.generation || generation !== this.outputGeneration) { return; }
+                this.output = { connected: true, connecting: false, error: '' }; this.emitOutput();
+            } catch (error) {
+                if (connection === this.generation && generation === this.outputGeneration) {
+                    await this.disconnect(error instanceof Error ? error.message : String(error));
+                }
+            }
+        } finally { this.outputStarting = false; }
+    }
+
+    disconnectOutput(): Promise<void> {
+        if (this.outputClosing) { return this.outputClosing; }
+        if (!this.output.connected && !this.output.connecting) {
+            if (this.outputStarting) { this.outputGeneration++; }
+            return Promise.resolve();
+        }
+        const generation = ++this.outputGeneration;
+        const connection = this.generation;
+        if (this.output.connecting) { this.pending?.reject(new Error('NanoDrive8 keyboard canceled.')); }
+        this.output = { connected: false, connecting: true, error: '' }; this.emitOutput();
+        const closing = (async () => {
+            try {
+                await this.input({ type: 'stop' });
+                if (connection === this.generation && generation === this.outputGeneration) {
+                    await this.request('ping', [...randomBytes(8)]);
+                }
+                if (generation === this.outputGeneration) {
+                    this.output = { connected: false, connecting: false, error: '' }; this.emitOutput();
+                }
+            } catch (error) {
+                if (connection === this.generation && generation === this.outputGeneration) {
+                    await this.disconnect(error instanceof Error ? error.message : String(error));
+                }
+            }
+        })();
+        this.outputClosing = closing;
+        return closing.finally(() => { if (this.outputClosing === closing) { this.outputClosing = undefined; } });
+    }
+
+    setVoice(voice: unknown): void {
+        const serialized = JSON.stringify(voice);
+        if (!this.output.connected || serialized === this.voice) { return; }
+        this.voice = serialized;
+        void this.input({ type: 'voice', voice }).catch(() => {});
+    }
+
+    note(command: Exclude<NanoDriveInput, { type: 'init' | 'voice' } | { type: 'stop' }>): void {
+        if (this.output.connected) { void this.input(command).catch(() => {}); }
+    }
+
+    private emitOutput(): void { this.onOutput(this.outputState); }
+
+    private input(command: NanoDriveInput): Promise<void> {
+        const connection = this.generation;
+        const generation = this.outputGeneration;
+        const session = this.session;
+        if (this.queued >= 256) {
+            void this.disconnect('NanoDrive8 command queue overflow.');
+            return Promise.reject(new Error('NanoDrive8 command queue overflow.'));
+        }
+        this.queued++;
+        const task = this.inputs.then(async () => {
+            if (connection !== this.generation || generation !== this.outputGeneration || !this.snapshot.connected) { return; }
+            const requestId = this.requestId & 0xffff;
+            this.requestId += 3;
+            const result = await this.codec({ operation: 'audition', session, requestId, command });
+            if (connection !== this.generation || generation !== this.outputGeneration) { return; }
+            if (!result || !('bytes' in result) || !Number.isInteger(result.count) || result.count! < 0 || result.count! > 3) {
+                throw new Error('Invalid NanoDrive8 keyboard response.');
+            }
+            if (result.bytes.length) { await this.write(result.bytes, connection); }
+        }).finally(() => { this.queued--; });
+        this.inputs = task.catch(error => {
+            if (connection === this.generation && generation === this.outputGeneration) {
+                void this.disconnect(error instanceof Error ? error.message : String(error));
+            }
+        });
+        return task;
+    }
 
     async connect(path: string): Promise<void> {
         if (this.starting || this.snapshot.connected || this.snapshot.closing) { return; }
@@ -108,6 +224,9 @@ export class NanoDriveConnection {
         if (this.closing) { return this.closing; }
         const wasConnected = this.snapshot.connected;
         this.generation++;
+        this.outputGeneration++;
+        this.voice = '';
+        this.output = { connected: false, connecting: false, error }; this.emitOutput();
         this.pending?.reject(new Error('NanoDrive8 connection canceled.'));
         this.snapshot.connected = false; this.snapshot.connecting = false;
         this.snapshot.closing = !!this.port || !!this.opening;

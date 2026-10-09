@@ -7,6 +7,12 @@ publish = false
 
 [features]
 emulation = ["dep:ymfm-sys", "dep:rubato"]
+nanodrive = ["dep:ndsif"]
+
+[[bin]]
+name = "mmlx-nanodrive"
+path = "src/bin/mmlx-nanodrive.rs"
+required-features = ["nanodrive"]
 
 [[bin]]
 name = "mmlx-emulator"
@@ -17,7 +23,7 @@ required-features = ["emulation"]
 lsp-server = "0.10"
 lsp-types = "0.97"
 mmlx = { version = "0.2.0", features = ["source-map"] }
-ndsif = { path = "../crates/ndsif" }
+ndsif = { path = "../crates/ndsif", optional = true }
 rust-i18n = "4"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"

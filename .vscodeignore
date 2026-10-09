@@ -26,6 +26,7 @@ wasi-sdk.tar.gz
 !server/target/wasm32-wasip1-threads/release/mmlx-lsp-server.wasm
 !server/target/wasm32-wasip1-threads/release/mmlx-build.wasm
 !server/target/wasm32-wasip1-threads/release/mmlx-emulator.wasm
+!server/target/wasm32-wasip1-threads/release/mmlx-nanodrive.wasm
 testbed/**
 native/helix/**
 native/tree-sitter/**

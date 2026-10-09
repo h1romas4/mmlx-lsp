@@ -5,12 +5,13 @@ import { randomUUID } from 'node:crypto';
 import { tmpdir } from 'node:os';
 import * as vscode from 'vscode';
 import { Wasm } from '@vscode/wasm-wasi/v1';
-import { createStdioOptions, createUriConverters, startServer } from '@vscode/wasm-wasi-lsp';
-import { LanguageClient } from 'vscode-languageclient/node';
+import { createUriConverters } from '@vscode/wasm-wasi-lsp';
+import type { LanguageClient } from 'vscode-languageclient/node';
 import { BuildTerminal, buildErrorLinkProvider } from '../tasks';
 import { listMidiInputPorts, VoiceViewProvider } from '../voiceView';
 import { MidiInputConnection } from '../midiInput';
 import { EmulationSession, type EmulationState, type PlaybackProgress } from '../emulation';
+import { NanoDriveWorker } from '../nanodriveWorker';
 import { Port as NanoDriveTestPort, codec as nanoDriveTestCodec } from './nanodrive.test';
 
 const playbackSource = '@1 = {\n' + '31,0,0,15,0,32,0,1,0,0,0,\n'.repeat(4) + '7,0,15\n}\nA t120 @1 o4 l8 cdef\n';
@@ -904,7 +905,7 @@ suite('mmlx extension', () => {
 		assert.ok((await vscode.languages.getLanguages()).includes('mmlx'));
 	});
 
-	test('output connections disable NanoDrive8 without locking mode selection', async () => {
+	test('output connections enable NanoDrive8 only with a Settings connection', async () => {
 		const extension = vscode.extensions.all.find(extension => extension.packageJSON.name === 'mmlx-lsp');
 		assert.ok(extension);
 		const { createOutputConnection } = await import(vscode.Uri.joinPath(extension.extensionUri, 'assets', 'webview', 'outputConnection.js').toString());
@@ -918,6 +919,12 @@ suite('mmlx extension', () => {
 		assert.strictEqual(button.disabled, true);
 		assert.strictEqual(mode.disabled, false);
 		button.dispatchEvent(new Event('click')); assert.strictEqual(requests.length, 0);
+		controls.setNanoDriveAvailable(true);
+		assert.strictEqual(button.disabled, false);
+		button.dispatchEvent(new Event('click'));
+		assert.deepStrictEqual(requests.pop(), { mode: 'nanodrive8', connected: true });
+		controls.setNanoDriveAvailable(false);
+		assert.strictEqual(button.disabled, true);
 		mode.value = 'emulation'; mode.dispatchEvent(new Event('change'));
 		assert.strictEqual(button.disabled, false);
 		button.dispatchEvent(new Event('click'));
@@ -932,6 +939,11 @@ suite('mmlx extension', () => {
 		assert.strictEqual(button.disabled, true); assert.strictEqual(mode.disabled, false);
 		controls.setState({ connected: false, connecting: false });
 		assert.strictEqual(button.disabled, true);
+		controls.setNanoDriveAvailable(true); assert.strictEqual(button.disabled, false);
+		controls.setState({ connected: true, connecting: false });
+		controls.setNanoDriveAvailable(false); assert.strictEqual(button.disabled, false);
+		button.dispatchEvent(new Event('click')); assert.deepStrictEqual(requests.pop(), { mode: 'nanodrive8', connected: false });
+		controls.setState({ connected: false, connecting: false }); assert.strictEqual(button.disabled, true);
 		const template = new TextDecoder().decode(await vscode.workspace.fs.readFile(vscode.Uri.joinPath(extension.extensionUri, 'assets', 'webview', 'voice.html')));
 		assert.strictEqual((template.match(/<option value="emulation">Emulation \(ymfm\)<\/option>/g) ?? []).length, 2);
 		assert.match(template, /<button\b[^>]*id="playback-play"[^>]*\sdisabled[^>]*>/);
@@ -1575,30 +1587,83 @@ suite('mmlx extension', () => {
 		}
 	});
 
-	test('NanoDrive8 WASM codec encodes and validates published handshake frames', async function () {
+	test('NanoDrive8 worker correlates split replies and cancels pending calls on shutdown or failure', async function () {
+		this.timeout(15000);
+		const extension = vscode.extensions.all.find(extension => extension.packageJSON.name === 'mmlx-lsp');
+		assert.ok(extension);
+		let creates = 0; let closes = 0; let mode = 'reply';
+		const stdout = new vscode.EventEmitter<Uint8Array>();
+		const stderr = new vscode.EventEmitter<Uint8Array>();
+		const requests: number[] = []; const errors: string[] = [];
+		let sent!: () => void;
+		const wasm = { createProcess: async () => {
+			creates++;
+			let exited!: (code: number) => void;
+			const finished = new Promise<number>(resolve => { exited = resolve; });
+			return { stdout: { onData: stdout.event }, stderr: { onData: stderr.event },
+				stdin: { write: async (input: string) => {
+					const request = JSON.parse(input);
+					if (mode === 'hang') { sent(); return; }
+					if (mode === 'oversized') { stdout.fire(Buffer.alloc(65537, 120)); return; }
+					requests.push(request.id);
+					if (requests.length !== 2) { return; }
+					const response = Buffer.from(`${JSON.stringify({ id: requests[1], result: null })}\n${JSON.stringify({ id: requests[0], result: { bytes: [42] } })}\n`);
+					stdout.fire(response.subarray(0, 7)); stdout.fire(response.subarray(7));
+				} }, run: () => finished, terminate: async () => { closes++; exited(0); return 0; } };
+		} } as unknown as Wasm;
+		const worker = new NanoDriveWorker(extension.extensionUri, wasm, error => errors.push(error));
+		const params = { operation: 'encode' as const, command: 'getInfo' as const, requestId: 0, payload: [] };
+		try {
+			assert.deepStrictEqual(await Promise.all([worker.request(params), worker.request(params)]), [{ bytes: [42] }, null]);
+			assert.strictEqual(creates, 1);
+			mode = 'hang'; const entered = new Promise<void>(resolve => { sent = resolve; });
+			const pending = worker.request(params); const canceled = assert.rejects(pending, /stopped/);
+			await entered; await worker.dispose(); await canceled;
+			assert.strictEqual(closes, 1); assert.deepStrictEqual(errors, []);
+			mode = 'oversized'; await assert.rejects(worker.request(params), /too large/);
+			assert.strictEqual(creates, 2); assert.strictEqual(closes, 2); assert.strictEqual(errors.length, 1);
+		} finally { await worker.dispose(); stdout.dispose(); stderr.dispose(); }
+	});
+
+	test('NanoDrive8 dedicated WASM encodes handshake and stateful keyboard frames without LSP', async function () {
 		this.timeout(20000);
 		const extension = vscode.extensions.all.find(extension => extension.packageJSON.name === 'mmlx-lsp');
 		assert.ok(extension);
 		const wasm = await Wasm.load();
-		const channel = vscode.window.createOutputChannel('NanoDrive8 codec test', { log: true });
-		const client = new LanguageClient('nanodrive-test', 'NanoDrive8 test', async () => {
-			const bytes = await vscode.workspace.fs.readFile(vscode.Uri.joinPath(extension.extensionUri,
-				'server', 'target', 'wasm32-wasip1-threads', 'release', 'mmlx-lsp-server.wasm'));
-			const module = await WebAssembly.compile(new Uint8Array(bytes).buffer);
-			const process = await wasm.createProcess('nanodrive-test', module, { initial: 160, maximum: 2048, shared: true },
-				{ stdio: createStdioOptions(), mountPoints: [{ kind: 'workspaceFolder' }] });
-			return startServer(process);
-		}, { documentSelector: [], outputChannel: channel, uriConverters: createUriConverters(), initializationOptions: { dialect: 'mdx' } });
+		const worker = new NanoDriveWorker(extension.extensionUri, wasm);
 		try {
-			await client.start();
 			const request = [0, 6, 0x4e, 0x44, 1, 1, 1, 2, 3, 6, 0x4e, 0x44, 0x38, 0x33, 0x96, 0];
 			const response = [6, 0x4e, 0x44, 1, 0x81, 1, 2, 4, 1, 6, 0x4e, 0x44, 0x38, 0xe4, 0x56];
-			assert.deepStrictEqual(await client.sendRequest('mmlx/nanodrive',
+			assert.deepStrictEqual(await worker.request(
 				{ operation: 'encode', command: 'ping', requestId: 1, payload: [0x4e, 0x44, 0x38] }), { bytes: request });
-			assert.deepStrictEqual(await client.sendRequest('mmlx/nanodrive', { operation: 'decode', body: response, request }), { status: 0 });
+			assert.deepStrictEqual(await worker.request({ operation: 'decode', body: response, request }), { status: 0 });
 			response[response.length - 1] ^= 1;
-			assert.strictEqual(await client.sendRequest('mmlx/nanodrive', { operation: 'decode', body: response, request }), null);
-		} finally { await client.stop(); channel.dispose(); }
+			assert.strictEqual(await worker.request({ operation: 'decode', body: response, request }), null);
+			const voice = { algorithm: 7, feedback: 0, operatorMask: 15,
+				operators: Array.from({ length: 4 }, () => ({ ar: 31, d1r: 0, d2r: 0, rr: 15, d1l: 0, tl: 32, ks: 0, mul: 1, dt1: 0, dt2: 0, ame: 0 })) };
+			const input = async (command: Parameters<typeof nanoDriveTestCodec>[0] & { operation: 'audition' }) => {
+				const result = await worker.request(command);
+				assert.ok(result && 'bytes' in result); return result;
+			};
+			const audition = (command: Extract<Parameters<typeof nanoDriveTestCodec>[0], { operation: 'audition' }>['command'], session = 5) =>
+				input({ operation: 'audition', session, requestId: 10, command });
+			const initialized = await audition({ type: 'init', voice });
+			assert.strictEqual(initialized.count, 3);
+			assert.strictEqual(initialized.bytes.filter(byte => byte === 0).length, 6);
+			const on = await audition({ type: 'noteOn', source: 0, channel: 0, note: 69, velocity: 127 });
+			assert.strictEqual(on.count, 1); assert.ok(on.bytes.length > 50);
+			const off = await audition({ type: 'noteOff', source: 0, channel: 0, note: 69 });
+			assert.strictEqual(off.count, 1); assert.ok(off.bytes.length < 20);
+			assert.deepStrictEqual(await audition({ type: 'noteOff', source: 0, channel: 0, note: 69 }), { bytes: [], count: 0 });
+			await assert.rejects(audition({ type: 'allOff' }, 6), /Stale/);
+			assert.strictEqual((await audition({ type: 'stop' })).count, 1);
+			await assert.rejects(audition({ type: 'noteOn', source: 0, channel: 0, note: 69, velocity: 127 }), /not initialized/);
+			await worker.dispose();
+			assert.deepStrictEqual(await worker.request({ operation: 'encode', command: 'ping', requestId: 1, payload: [0x4e, 0x44, 0x38] }), { bytes: request });
+			const pending = worker.request({ operation: 'encode', command: 'getInfo', requestId: 1, payload: [] });
+			const canceled = assert.rejects(pending, /stopped/);
+			await worker.dispose(); await canceled;
+		} finally { await worker.dispose(); }
 	});
 
 	test('NanoDrive8 Settings connect, lock configuration and release ports on changes or disposal', async function () {
@@ -1611,30 +1676,30 @@ suite('mmlx extension', () => {
 		const previous = vscode.workspace.workspaceFile ? setting?.workspaceFolderValue : setting?.workspaceValue;
 		const context = { extensionUri: extension.extensionUri, subscriptions: [] as vscode.Disposable[] };
 		const events = new vscode.EventEmitter<void>(); const messages = new vscode.EventEmitter<unknown>();
+		const visibility = new vscode.EventEmitter<void>();
 		type SerialState = { type: string; folder: string; connection: string; connected: boolean; connecting: boolean;
-			closing: boolean; loading: boolean; editable: boolean; canConnect: boolean; firmware: string; error: string };
+			closing: boolean; loading: boolean; editable: boolean; canConnect: boolean; firmware: string; error: string; id?: number };
 		const updates = new vscode.EventEmitter<SerialState>(); let latest: SerialState | undefined;
+		const outputs: SerialState[] = [];
 		const opened: NanoDriveTestPort[] = []; let available = [{ path: '/dev/nanodrive-test' }];
-		const client = { isRunning: () => true,
-			code2ProtocolConverter: { asTextDocumentPositionParams: () => ({}) },
-			sendRequest: async (method: string, params: Parameters<typeof nanoDriveTestCodec>[0]) =>
-				method === 'mmlx/nanodrive' ? nanoDriveTestCodec(params) : null } as unknown as LanguageClient;
-		const provider = new VoiceViewProvider(context as unknown as vscode.ExtensionContext, () => client,
+		const provider = new VoiceViewProvider(context as unknown as vscode.ExtensionContext, () => undefined,
 			async () => available, async () => [], undefined, undefined, async () => {
 				const port = new NanoDriveTestPort(); opened.push(port); return port;
-			});
-		const view = { visible: true, onDidChangeVisibility: events.event, onDidDispose: events.event,
+			}, nanoDriveTestCodec);
+		const view = { visible: true, onDidChangeVisibility: visibility.event, onDidDispose: events.event,
 			webview: { cspSource: 'https://test.invalid', asWebviewUri: (uri: vscode.Uri) => uri,
 				onDidReceiveMessage: messages.event, postMessage: (message: SerialState) => {
 					if (message.type === 'serialSettings') { latest = message; updates.fire(message); }
+					if (message.type === 'outputConnection') { outputs.push(message); updates.fire(message); }
 					return Promise.resolve(true);
 				} }
 		} as unknown as vscode.WebviewView;
-		function waitFor(predicate: (state: SerialState) => boolean): Promise<SerialState> {
-			if (latest && predicate(latest)) { return Promise.resolve(latest); }
+		function waitFor(predicate: (state: SerialState) => boolean, type = 'serialSettings'): Promise<SerialState> {
+			const existing = type === 'serialSettings' ? latest : outputs.at(-1);
+			if (existing && predicate(existing)) { return Promise.resolve(existing); }
 			return new Promise((resolve, reject) => {
 				const subscription = updates.event(state => {
-					if (predicate(state)) { clearTimeout(timer); subscription.dispose(); resolve(state); }
+					if (state.type === type && predicate(state)) { clearTimeout(timer); subscription.dispose(); resolve(state); }
 				});
 				const timer = setTimeout(() => { subscription.dispose(); reject(new Error(`NanoDrive8 settings timed out: ${predicate}; ${JSON.stringify(latest)}; ${JSON.stringify(opened.map(port => port.commands))}`)); }, 4000);
 			});
@@ -1649,6 +1714,25 @@ suite('mmlx extension', () => {
 			const connected = await waitFor(state => state.connected);
 			assert.strictEqual(connected.firmware, '1.0b8'); assert.ok(!connected.editable);
 			assert.match(view.title!, /Connected/); assert.match(view.badge!.tooltip, /NanoDrive8/);
+			messages.fire({ type: 'setOutputConnection', target: 'keyboard', mode: 'nanodrive8', id: 1, connected: true });
+			await waitFor(state => state.id === 1 && state.connected, 'outputConnection');
+			assert.strictEqual(opened[0].commands.at(-2)?.input?.type, 'init');
+			const count = opened[0].commands.length;
+			messages.fire({ type: 'emulationNote', event: 'noteOn', note: 69, velocity: 100, id: 0 });
+			messages.fire({ type: 'emulationNote', event: 'noteOn', note: 128, velocity: 100, id: 1 });
+			await new Promise<void>(resolve => setImmediate(resolve)); assert.strictEqual(opened[0].commands.length, count);
+			messages.fire({ type: 'emulationNote', event: 'noteOn', note: 69, velocity: 100, id: 1 });
+			messages.fire({ type: 'emulationNote', event: 'noteOff', note: 69, velocity: 0, id: 1 });
+			await new Promise<void>(resolve => setImmediate(resolve));
+			assert.deepStrictEqual(opened[0].commands.slice(count).map(request => request.input?.type), ['noteOn', 'noteOff']);
+			Object.assign(view, { visible: false }); visibility.fire();
+			await new Promise<void>(resolve => setImmediate(resolve));
+			assert.deepStrictEqual(opened[0].commands.at(-1)?.input, { type: 'allOff', source: 0 });
+			Object.assign(view, { visible: true });
+			messages.fire({ type: 'setOutputConnection', target: 'keyboard', mode: 'nanodrive8', id: 1, connected: false });
+			await waitFor(state => state.id === 1 && !state.connected && !state.connecting, 'outputConnection');
+			assert.ok(opened[0].isOpen && latest?.connected);
+			assert.strictEqual(opened[0].commands.at(-2)?.input?.type, 'stop');
 			messages.fire({ type: 'updateSerialConnection', folder: folder.uri.toString(), value: '' });
 			assert.strictEqual(vscode.workspace.getConfiguration('mmlx', folder.uri).get('serial.connection'), '/dev/nanodrive-test');
 			messages.fire({ type: 'setSerialConnection', folder: folder.uri.toString(), connected: false });
@@ -1656,9 +1740,12 @@ suite('mmlx extension', () => {
 			assert.ok(!opened[0].isOpen); assert.strictEqual(opened[0].commands.at(-1)?.command, 'reset');
 			messages.fire({ type: 'setSerialConnection', folder: folder.uri.toString(), connected: true });
 			await waitFor(state => state.connected);
+			messages.fire({ type: 'setOutputConnection', target: 'keyboard', mode: 'nanodrive8', id: 2, connected: true });
+			await waitFor(state => state.id === 2 && state.connected, 'outputConnection');
 			available = []; messages.fire({ type: 'getSerialPorts' });
 			await waitFor(state => !state.loading && !state.closing && /no longer available/.test(state.error));
 			assert.ok(!opened[1].isOpen);
+			assert.strictEqual(outputs.at(-1)?.connected, false);
 			available = [{ path: '/dev/nanodrive-test' }]; messages.fire({ type: 'getSerialPorts' });
 			await waitFor(state => state.canConnect);
 			messages.fire({ type: 'setSerialConnection', folder: folder.uri.toString(), connected: true });
@@ -1680,8 +1767,76 @@ suite('mmlx extension', () => {
 		} finally {
 			provider.dispose(); for (const subscription of context.subscriptions) { subscription.dispose(); }
 			await configuration.update('serial.connection', previous, vscode.ConfigurationTarget.WorkspaceFolder);
-			events.dispose(); messages.dispose(); updates.dispose();
+			events.dispose(); visibility.dispose(); messages.dispose(); updates.dispose();
 		}
+	});
+
+	test('NanoDrive8 Keyboard Webview uses serial availability without browser audio', async function () {
+		this.timeout(15000);
+		const extension = vscode.extensions.all.find(extension => extension.packageJSON.name === 'mmlx-lsp');
+		assert.ok(extension);
+		const media = vscode.Uri.joinPath(extension.extensionUri, 'assets', 'webview');
+		const icons = vscode.Uri.joinPath(extension.extensionUri, 'assets', 'icon');
+		const panel = vscode.window.createWebviewPanel('nanodrive-keyboard-test', 'NanoDrive8 Keyboard test', vscode.ViewColumn.Active,
+			{ enableScripts: true, localResourceRoots: [media, icons] });
+		const nonce = randomUUID();
+		let listener: vscode.Disposable | undefined;
+		try {
+			const result = new Promise<void>((resolve, reject) => {
+				listener = panel.webview.onDidReceiveMessage(message => {
+					if (message.type === 'ready') { void panel.webview.postMessage({ type: 'nanodriveProbe' }); }
+					else if (message.type === 'nanodriveResult') { clearTimeout(timer); resolve(); }
+					else if (message.type === 'nanodriveFailure') { clearTimeout(timer); reject(new Error(message.error)); }
+				});
+				const timer = setTimeout(() => reject(new Error('NanoDrive8 Keyboard Webview timed out')), 10000);
+			});
+			const template = new TextDecoder().decode(await vscode.workspace.fs.readFile(vscode.Uri.joinPath(media, 'voice.html')));
+			panel.webview.html = template.replaceAll('{{cspSource}}', panel.webview.cspSource).replaceAll('{{nonce}}', nonce)
+				.replaceAll('{{iconUri}}', panel.webview.asWebviewUri(vscode.Uri.joinPath(icons, 'mmlx.png')).toString())
+				.replaceAll('{{styleUri}}', panel.webview.asWebviewUri(vscode.Uri.joinPath(media, 'voice.css')).toString())
+				.replaceAll('{{scriptUri}}', panel.webview.asWebviewUri(vscode.Uri.joinPath(media, 'voice.js')).toString())
+				.replace('</head>', `<script nonce="${nonce}">
+					const nativeAcquire = acquireVsCodeApi; const messages = []; let api; let audioContexts = 0;
+					window.acquireVsCodeApi = () => {
+						api = nativeAcquire();
+						return { ...api, postMessage: message => { messages.push(message); api.postMessage(message); } };
+					};
+					window.AudioContext = class { constructor() { audioContexts++; throw new Error('Unexpected browser audio'); } };
+					const send = data => window.dispatchEvent(new MessageEvent('message', { data }));
+					const check = (condition, message) => { if (!condition) throw new Error(message); };
+					window.addEventListener('message', event => {
+						if (event.data?.type !== 'nanodriveProbe') return;
+						const run = () => { try {
+							document.getElementById('voice-tab').click();
+							const mode = document.querySelector('.keyboard-output select');
+							const button = document.querySelector('.keyboard-output .output-connection');
+							const key = document.querySelector('#keyboard [data-midi-note="69"]');
+							if (!key) { requestAnimationFrame(run); return; }
+							mode.value = 'nanodrive8'; mode.dispatchEvent(new Event('change'));
+							check(button.disabled && !mode.disabled, 'Settings connection required');
+							const serial = { type: 'serialSettings', folder: 'test', connection: '/dev/test', ports: [{ path: '/dev/test' }], connected: true, firmware: '1.0b8', model: 'NanoDrive 8' };
+							send(serial); check(!button.disabled, 'Settings connection must enable output');
+							button.click();
+							const request = messages.find(message => message.type === 'setOutputConnection');
+							check(request?.mode === 'nanodrive8' && request.connected && button.disabled && mode.disabled, 'Keyboard connect request and busy state');
+							send({ type: 'outputConnection', target: 'keyboard', id: request.id, mode: 'nanodrive8', connected: true, connecting: false });
+							check(key.getAttribute('aria-disabled') === 'false' && button.getAttribute('aria-pressed') === 'true', 'Connected keyboard');
+							key.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter' }));
+							key.dispatchEvent(new KeyboardEvent('keyup', { key: 'Enter' }));
+							check(messages.some(message => message.type === 'emulationNote' && message.event === 'noteOn' && message.note === 69 && message.id === request.id), 'Key-on routing');
+							check(messages.some(message => message.type === 'emulationNote' && message.event === 'noteOff' && message.note === 69), 'Key-off routing');
+							button.click(); check(messages.at(-1).type === 'setOutputConnection' && !messages.at(-1).connected, 'Keyboard disconnect');
+							send({ type: 'outputConnection', target: 'keyboard', id: request.id, mode: 'nanodrive8', connected: false, connecting: false });
+							check(!button.disabled && key.getAttribute('aria-disabled') === 'true', 'Settings remains connected');
+							send({ ...serial, connected: false }); check(button.disabled && !mode.disabled, 'Port loss disables output');
+							check(audioContexts === 0, 'NanoDrive8 must not initialize AudioContext');
+							api.postMessage({ type: 'nanodriveResult' });
+						} catch (error) { api.postMessage({ type: 'nanodriveFailure', error: String(error) }); } };
+						run();
+					});
+				</script></head>`);
+			await result;
+		} finally { listener?.dispose(); panel.dispose(); }
 	});
 
 	test('NanoDrive8 Settings Webview toggles connect and disconnect with firmware and busy states', async function () {

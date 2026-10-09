@@ -1,88 +1,55 @@
 mod audio;
 pub mod playback;
-pub mod polyphony;
 pub mod protocol;
-pub mod voice;
 mod ym2151;
 
+use crate::audition::{Audition, CLOCK};
+pub use crate::audition::{polyphony, voice};
 use audio::Audio;
-use polyphony::{Note, Polyphony};
+use polyphony::Note;
 use voice::Voice;
 use ym2151::Ym2151;
 
 pub struct Emulation {
     chip: Ym2151,
     audio: Audio,
-    voices: Polyphony,
-    voice: Option<Voice>,
+    audition: Audition,
 }
 
 impl Emulation {
     pub fn new(sample_rate: u32) -> Result<Self, String> {
-        let chip = Ym2151::new(3_579_545);
+        let chip = Ym2151::new(CLOCK);
         Ok(Self {
             audio: Audio::new(chip.sample_rate(), sample_rate)?,
             chip,
-            voices: Polyphony::default(),
-            voice: None,
+            audition: Audition::default(),
         })
     }
 
     pub fn set_voice(&mut self, voice: Option<Voice>) -> Result<(), String> {
-        if voice.as_ref().is_some_and(|voice| !voice.validate()) {
-            return Err("Invalid voice".into());
-        }
-        if self.voice == voice {
-            return Ok(());
-        }
-        self.all_off(None, None);
-        if let Some(voice) = &voice {
-            for channel in 0..8 {
-                self.chip.voice(voice, channel, 0);
-            }
-        }
-        self.voice = voice;
+        let writes = self.audition.set_voice(voice)?;
+        self.write(writes);
         Ok(())
     }
 
     pub fn note_on(&mut self, note: Note, velocity: u8) {
-        if velocity == 0 {
-            self.note_off(note);
-            return;
-        }
-        if !(13..=108).contains(&note.note) || note.channel > 15 || velocity > 127 {
-            return;
-        }
-        let Some(voice) = &self.voice else {
-            return;
-        };
-        let channel = self.voices.allocate(note, velocity);
-        self.chip.key_off(channel as u8);
-        self.chip
-            .voice(voice, channel as u8, self.voices.slots[channel].attenuation);
-        let mask = if voice.operator_mask == 0 {
-            [8, 8, 8, 8, 10, 14, 14, 15][voice.algorithm as usize]
-        } else {
-            voice.operator_mask
-        };
-        self.chip.key_on(channel as u8, note, mask);
+        let writes = self.audition.note_on(note, velocity);
+        self.write(writes);
     }
 
     pub fn note_off(&mut self, note: Note) {
-        if let Some(channel) = self.voices.release(note) {
-            self.chip.key_off(channel as u8);
-        }
+        let writes = self.audition.note_off(note);
+        self.write(writes);
     }
 
     pub fn all_off(&mut self, source: Option<u8>, midi_channel: Option<u8>) {
-        for (channel, slot) in self.voices.slots.iter_mut().enumerate() {
-            if slot.note.is_some_and(|note| {
-                source.is_none_or(|source| source == note.source)
-                    && midi_channel.is_none_or(|channel| channel == note.channel)
-            }) {
-                self.chip.key_off(channel as u8);
-                slot.note = None;
-            }
+        let writes = self.audition.all_off(source, midi_channel);
+        self.write(writes);
+    }
+
+    fn write(&mut self, writes: Vec<(u8, u8)>) {
+        for (address, value) in writes {
+            self.chip.write(address, value);
         }
     }
 

@@ -8,7 +8,8 @@ import type { LanguageClient } from 'vscode-languageclient/node';
 import type { Wasm } from '@vscode/wasm-wasi/v1';
 import { EmulationSession } from './emulation';
 import { createMidiInput, MidiInputConnection, type MidiInputPort } from './midiInput';
-import { NanoDriveConnection, openNanoDrivePort, type NanoDriveCodec, type NanoDrivePort } from './nanodrive';
+import { NanoDriveConnection, openNanoDrivePort, type NanoDriveCodec, type NanoDriveInput, type NanoDrivePort } from './nanodrive';
+import { NanoDriveWorker } from './nanodriveWorker';
 
 interface VoiceDefinition {
 	number: number;
@@ -79,6 +80,8 @@ export class VoiceViewProvider implements WebviewViewProvider {
 	private serialLoading = false;
 	private serialError = '';
 	private readonly nanodrive: NanoDriveConnection;
+	private readonly nanodriveWorker?: NanoDriveWorker;
+	private readonly nanodriveAvailable: boolean;
 	private serialFolder = '';
 	private midiPorts: string[] = [];
 	private midiLoading = false;
@@ -92,6 +95,7 @@ export class VoiceViewProvider implements WebviewViewProvider {
 	private playbackId = 0;
 	private playbackState = { playing: false, paused: false, loading: false, position: 0, finished: false, error: '' };
 	private outputId = 0;
+	private keyboardOutputMode = 'emulation';
 	private midiFolder = '';
 	private editTarget: { document: TextDocument; version: number; token: number; voice: VoiceDefinition } | undefined;
 	private snapshot: { voice: VoiceDefinition | null; source: string; retained: boolean; error: boolean } = {
@@ -102,17 +106,26 @@ export class VoiceViewProvider implements WebviewViewProvider {
 		private readonly getSerialPorts: () => Promise<SerialPortInfo[]> = listSerialPorts,
 		private readonly getMidiInputPorts: () => Promise<string[]> = listMidiInputPorts,
 		createInput: () => Promise<MidiInputPort> = createMidiInput, wasm?: Wasm,
-		openSerial: (path: string) => Promise<NanoDrivePort> = openNanoDrivePort) {
+		openSerial: (path: string) => Promise<NanoDrivePort> = openNanoDrivePort, codec?: NanoDriveCodec) {
+		this.nanodriveWorker = wasm ? new NanoDriveWorker(context.extensionUri, wasm,
+			error => { void this.nanodrive.disconnect(error); }) : undefined;
+		this.nanodriveAvailable = !!codec || !!this.nanodriveWorker;
 		this.nanodrive = new NanoDriveConnection(async params => {
-			const client = this.getClient();
-			if (!client) { throw new Error('Language server is not available.'); }
-			return client.sendRequest<Awaited<ReturnType<NanoDriveCodec>>>('mmlx/nanodrive', params);
-		}, () => { this.updateConnectionMarker(); this.sendSerialSettings(); }, openSerial);
+			if (codec) { return codec(params); }
+			if (!this.nanodriveWorker) { throw new Error('NanoDrive8 engine is not available.'); }
+			return this.nanodriveWorker.request(params);
+		}, () => { this.updateConnectionMarker(); this.sendSerialSettings(); }, openSerial, undefined, state => {
+			if (this.keyboardOutputMode !== 'nanodrive8') { return; }
+			if (state.connected) { this.nanodrive.setVoice(this.snapshot.voice); }
+			void this.view?.webview.postMessage({ type: 'outputConnection', target: 'keyboard', mode: 'nanodrive8', id: this.outputId, ...state });
+		});
 		this.emulation = wasm ? new EmulationSession(context.extensionUri, wasm,
 			state => {
 				this.emulationConnected = state.connected;
 				this.updateConnectionMarker();
-				void this.view?.webview.postMessage({ type: 'outputConnection', target: 'keyboard', id: this.outputId, ...state });
+				if (this.keyboardOutputMode === 'emulation') {
+					void this.view?.webview.postMessage({ type: 'outputConnection', target: 'keyboard', mode: 'emulation', id: this.outputId, ...state });
+				}
 			},
 			pcm => { void this.view?.webview.postMessage({ type: 'emulationPcm', id: this.outputId, pcm }); }) : undefined;
 		this.playback = wasm ? new EmulationSession(context.extensionUri, wasm,
@@ -135,7 +148,7 @@ export class VoiceViewProvider implements WebviewViewProvider {
 		this.midiInput = new MidiInputConnection(() => this.sendMidiSettings(), createInput,
 			notes => { void this.view?.webview.postMessage({ type: 'midiNotes', notes }); },
 			event => {
-				this.emulation?.note({ ...event, source: 1 });
+				this.note({ ...event, source: 1 });
 				void this.view?.webview.postMessage({ type: 'midiNote', event });
 			});
 		context.subscriptions.push(
@@ -171,6 +184,8 @@ export class VoiceViewProvider implements WebviewViewProvider {
 		this.context.subscriptions.push(
 			view.webview.onDidReceiveMessage(message => {
 				if (message?.type === 'ready') {
+					this.outputId = 0;
+					this.keyboardOutputMode = 'emulation';
 					void this.nanodrive.disconnect();
 					this.emulation?.disconnect();
 					this.stopPlayback();
@@ -192,21 +207,21 @@ export class VoiceViewProvider implements WebviewViewProvider {
 				else if (message?.type === 'playbackAction') { void this.playbackAction(message); }
 				else if (message?.type === 'playbackRender' && message.id === this.playbackId
 					&& (this.playbackState.playing || this.playbackState.paused) && !this.playbackState.finished) { this.playback?.request(message.blocks); }
-				else if (message?.type === 'emulationRender' && message.id === this.outputId) { this.emulation?.request(message.blocks); }
+				else if (message?.type === 'emulationRender' && message.id === this.outputId && this.keyboardOutputMode === 'emulation') { this.emulation?.request(message.blocks); }
 				else if (message?.type === 'emulationNote' && message.id === this.outputId) {
 					if (['noteOn', 'noteOff'].includes(message.event) && Number.isInteger(message.note)
 						&& message.note >= 0 && message.note <= 127 && Number.isInteger(message.velocity)
 						&& message.velocity >= 0 && message.velocity <= 127) {
-						this.emulation?.note({ type: message.event, source: 0, channel: 0, note: message.note, velocity: message.velocity });
+						this.note({ type: message.event, source: 0, channel: 0, note: message.note, velocity: message.velocity });
 					}
 				}
 			}),
 			view.onDidChangeVisibility(() => {
 				if (view.visible) { this.schedule(); }
-				else { this.emulation?.note({ type: 'allOff', source: 0 }); }
+				else { this.note({ type: 'allOff', source: 0 }); }
 			}),
 			view.onDidDispose(() => {
-				if (this.view === view) { this.view = undefined; void this.nanodrive.disconnect(); this.emulation?.disconnect(); this.stopPlayback(); this.sequence++; this.midiInput.disconnect(); }
+				if (this.view === view) { this.view = undefined; void this.disconnectNanoDrive(); this.emulation?.disconnect(); this.stopPlayback(); this.sequence++; this.midiInput.disconnect(); }
 			})
 		);
 		const template = new TextDecoder().decode(await workspace.fs.readFile(Uri.joinPath(media, 'voice.html')));
@@ -236,16 +251,32 @@ export class VoiceViewProvider implements WebviewViewProvider {
 		if (!['keyboard', 'playback'].includes(String(message.target)) || typeof message.connected !== 'boolean') { return; }
 		if (message.target === 'keyboard' && Number.isInteger(message.id)) { this.outputId = message.id as number; }
 		if (!message.connected) {
-			if (message.target === 'keyboard') { this.emulation?.disconnect(); }
+			if (message.target === 'keyboard') { this.emulation?.disconnect(); await this.nanodrive.disconnectOutput(); }
 			else { void this.view?.webview.postMessage({ type: 'outputConnection', target: 'playback', connected: false, connecting: false }); }
 			return;
 		}
-		if (message.target !== 'keyboard' || message.mode !== 'emulation' || !this.emulation || !workspace.isTrusted) {
+		if (message.target !== 'keyboard' || !workspace.isTrusted || !['emulation', 'nanodrive8'].includes(String(message.mode))
+			|| (message.mode === 'emulation' && !this.emulation) || (message.mode === 'nanodrive8' && (!this.nanodriveAvailable || !this.nanodrive.state.connected))) {
 			void this.view?.webview.postMessage({ type: 'outputConnection', target: message.target, id: message.id,
 				connected: false, connecting: false, error: 'This output is not available.' });
 			return;
 		}
-		await this.emulation.connect(message.sampleRate as number, this.snapshot.voice);
+		this.keyboardOutputMode = message.mode as string;
+		if (message.mode === 'nanodrive8') {
+			this.emulation?.disconnect();
+			await this.nanodrive.connectOutput(this.snapshot.voice);
+		} else {
+			const id = this.outputId;
+			await this.nanodrive.disconnectOutput();
+			if (id === this.outputId && this.keyboardOutputMode === 'emulation') {
+				await this.emulation!.connect(message.sampleRate as number, this.snapshot.voice);
+			}
+		}
+	}
+
+	private note(command: Exclude<NanoDriveInput, { type: 'init' | 'voice' } | { type: 'stop' }>): void {
+		if (this.keyboardOutputMode === 'nanodrive8') { this.nanodrive.note(command); }
+		else { this.emulation?.note(command); }
 	}
 
 	private sendPlayback(): void {
@@ -352,7 +383,7 @@ export class VoiceViewProvider implements WebviewViewProvider {
 				&& !state.connected && !state.connecting && !state.closing,
 			connected: state.connected, connecting: state.connecting, closing: state.closing, phase: state.phase,
 			model: state.model, firmware: state.firmware,
-			canConnect: !!folder && workspace.isTrusted && !!this.getClient() && !this.savingSettings && !this.serialLoading
+			canConnect: !!folder && workspace.isTrusted && this.nanodriveAvailable && !this.savingSettings && !this.serialLoading
 				&& !state.closing && !!connection && this.serialPorts.some(port => port.path === connection),
 			saving: this.savingSettings, loading: this.serialLoading,
 			error: error || state.error || this.serialError || (folder ? '' : 'Open a workspace folder to edit connection settings.') });
@@ -365,7 +396,7 @@ export class VoiceViewProvider implements WebviewViewProvider {
 		}
 		if (!message.connected) { await this.nanodrive.disconnect(); return; }
 		const state = this.nanodrive.state;
-		if (!workspace.isTrusted || this.savingSettings || this.serialLoading || state.connected || state.connecting || state.closing) {
+		if (!workspace.isTrusted || !this.nanodriveAvailable || this.savingSettings || this.serialLoading || state.connected || state.connecting || state.closing) {
 			this.sendSerialSettings(); return;
 		}
 		const connection = workspace.getConfiguration('mmlx', folder.uri).get<string>('serial.connection', '');
@@ -629,7 +660,7 @@ export class VoiceViewProvider implements WebviewViewProvider {
 	}
 
 	private send(): void {
-		if (!this.snapshot.error) { this.emulation?.setVoice(this.snapshot.voice); }
+		if (!this.snapshot.error) { this.emulation?.setVoice(this.snapshot.voice); this.nanodrive.setVoice(this.snapshot.voice); }
 		const target = this.editTarget;
 		const editable = !!target && !this.editing && !this.snapshot.retained && !this.snapshot.error
 			&& !target.document.isClosed && target.document.version === target.version;
@@ -637,11 +668,14 @@ export class VoiceViewProvider implements WebviewViewProvider {
 			editable, editToken: editable ? target.token : null });
 	}
 
-	disconnectNanoDrive(): Promise<void> { return this.nanodrive.disconnect(); }
+	async disconnectNanoDrive(): Promise<void> {
+		await this.nanodrive.disconnect();
+		await this.nanodriveWorker?.dispose();
+	}
 
 	dispose(): void {
 		this.view = undefined;
-		void this.nanodrive.disconnect();
+		void this.disconnectNanoDrive();
 		this.emulation?.dispose();
 		this.playback?.dispose();
 		this.midiInput.disconnect();

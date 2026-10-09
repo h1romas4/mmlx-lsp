@@ -52,11 +52,12 @@ const outputConnections = {
 		}
 		outputId++;
 		const id = outputId;
+		outputConnections.keyboard.setState({ connected: false, connecting: true });
 		if (request.mode !== 'emulation') {
+			emulationAudio.disconnect(); audioMonitors.setConnected(false);
 			vscode.postMessage({ type: 'setOutputConnection', target: 'keyboard', id, ...request });
 			return;
 		}
-		outputConnections.keyboard.setState({ connected: false, connecting: true });
 		try {
 			const sampleRate = await emulationAudio.connect();
 			if (id === outputId) { vscode.postMessage({ type: 'setOutputConnection', target: 'keyboard', id, ...request, sampleRate }); }
@@ -170,7 +171,8 @@ window.addEventListener('message', event => {
 		if (message.target === 'keyboard') {
 			if (message.id !== outputId) { return; }
 			keyboardControls.setConnected(message.connected);
-			if (message.connected) { emulationAudio.start(); audioMonitors.setConnected(true); }
+			if (message.connected && message.mode !== 'nanodrive8') { emulationAudio.start(); audioMonitors.setConnected(true); }
+			else if (message.connected) { emulationAudio.disconnect(); audioMonitors.setConnected(false); }
 			else if (!message.connecting) { keyboardControls.releaseAll(); emulationAudio.disconnect(); audioMonitors.setConnected(false); }
 		}
 		outputConnections.keyboard.setState(message);
@@ -178,6 +180,7 @@ window.addEventListener('message', event => {
 		emulationAudio.pcm(message.pcm);
 	} else if (message?.type === 'buildSettings' || message?.type === 'serialSettings' || message?.type === 'midiSettings') {
 		settingsControls.render(message);
+		if (message.type === 'serialSettings') { outputConnections.keyboard.setNanoDriveAvailable(message.connected && !message.closing); }
 		if (message.type === 'midiSettings') { keyboardControls.setMidiState(message); }
 	}
 });

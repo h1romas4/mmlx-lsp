@@ -1,4 +1,3 @@
-use super::{polyphony::Note, voice::Voice};
 use std::collections::VecDeque;
 use ymfm_sys::{ChipPtr, ffi};
 
@@ -40,27 +39,6 @@ impl Ym2151 {
         }
         self.chip.pin_mut().write(0, address);
         self.chip.pin_mut().write(1, value);
-    }
-
-    pub fn voice(&mut self, voice: &Voice, channel: u8, attenuation: u8) {
-        for (address, value) in voice.registers(channel, attenuation) {
-            self.write(address, value);
-        }
-    }
-
-    pub fn key_on(&mut self, channel: u8, note: Note, mask: u8) {
-        let pitch = note.note - 13;
-        let keys = [0_u8, 1, 2, 4, 5, 6, 8, 9, 10, 12, 13, 14];
-        self.write(
-            0x28 + channel,
-            (pitch / 12) << 4 | keys[(pitch % 12) as usize],
-        );
-        self.write(0x30 + channel, 0);
-        self.write(0x08, (mask << 3) | channel);
-    }
-
-    pub fn key_off(&mut self, channel: u8) {
-        self.write(0x08, channel);
     }
 
     pub fn generate(&mut self, frames: usize) -> Vec<Vec<f32>> {

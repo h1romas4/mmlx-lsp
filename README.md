@@ -111,7 +111,7 @@ the native language server.
     it does not open the port or transmit data. In remote workspaces, the list shows
     ports on the remote extension host.
     Put NanoDrive8 in serial mode and use the connection button (firmware `1.0`, including betas).
-    Experimental connection only; sound output is not yet supported.
+    Experimental Keyboard output is available after connecting; Playback is not supported.
 - `mmlx.midi.input`: empty by default. Select a port under **Settings > Connection > MIDI-IN**
     and use the connection button to connect or disconnect. Incoming notes highlight
     the FM Voice keyboard. The selected port is saved; connections are not restored
@@ -132,6 +132,7 @@ command palette. Diagnostic messages are not translated.
 - **Playback** of the current MML through MDX, soundlog's lazy callback stream, and ymfm, with play/pause, stop, volume, elapsed time, and optional MML loop points.
 
 Select **Emulation** under **FM Voice > Keyboard > Output** to play up to eight notes with the on-screen keyboard or MIDI-IN.
+For hardware output, connect NanoDrive8 in Settings, then select **NanoDrive8** and connect under **Keyboard > Output**.
 Connections stay active while the panel is hidden; on-screen notes stop. `[Connected]` and the badge show active connections.
 Disconnect manually when finished. Connections are not restored after a reload.
 
