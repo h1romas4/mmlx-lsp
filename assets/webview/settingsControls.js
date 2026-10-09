@@ -29,6 +29,7 @@ export function createSettingsControls(root, onChange = () => {}) {
 			status.textContent = message.error || message.phase || (message.loading ? `Loading ${label} ports` : message.saving ? 'Saving'
 				: message.connected ? (prefix === 'midi' ? '' : `${message.model} / FW ${message.firmware}`)
 				: message.ports.length === 0 ? `No ${label} ports found` : '');
+			status.title = status.textContent;
 			const ports = message.ports.map(option);
 			const options = [new Option('Not selected', ''), ...ports.map(port => new Option(port.label, port.value))];
 			if (message.connection && !ports.some(port => port.value === message.connection)) {

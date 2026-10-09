@@ -111,6 +111,7 @@ input:disabled, select:disabled { opacity: .6; }
 .build-field input, .build-field select { width: 100%; }
 .build-field.checkbox input { width: 16px; height: 16px; margin: 0; accent-color: var(--vscode-panelTitle-activeBorder, #39a9c7); }
 .connection-settings { margin-top: 20px; }
+.connection-settings fieldset { container-type: inline-size; }
 .connection-port-controls { display: flex; align-items: center; gap: 6px; min-width: 0; }
 .connection-port-controls select { flex: 1; width: 0; }
 .refresh-ports, .output-connection { width: 26px; height: 26px; flex: 0 0 26px; display: grid; place-items: center; border: 1px solid var(--vscode-input-border, #ccc); border-radius: 2px; background: var(--vscode-input-background, #fff); color: var(--vscode-input-foreground, #292929); cursor: pointer; }
@@ -120,7 +121,10 @@ input:disabled, select:disabled { opacity: .6; }
 .refresh-ports:hover, .output-connection:hover { background: var(--vscode-toolbar-hoverBackground, #eee); }
 .refresh-ports:focus-visible, .output-connection:focus-visible { outline: 1px solid var(--vscode-focusBorder, #39a9c7); }
 .refresh-ports:disabled, .output-connection:disabled { opacity: .6; cursor: default; }
-#serial-settings-status, #midi-settings-status { min-height: 1lh; margin: 0; color: var(--vscode-descriptionForeground, #666); overflow-wrap: anywhere; }
+#serial-settings-status, #midi-settings-status { flex: 0 0 38%; min-width: 0; height: 1.5em; line-height: 1.5; margin: 0; color: var(--vscode-descriptionForeground, #666); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+@container (max-width: 460px) {
+	.connection-settings .build-field { grid-template-columns: minmax(0, 1fr); gap: 4px; }
+}
 @media (max-width: 460px) {
 	.playback-volume { width: 100%; margin-left: 0; padding-top: 10px; border-top: 1px solid var(--vscode-panel-border, #d7dce1); }
 	.build-field { grid-template-columns: minmax(0, 1fr); gap: 4px; }

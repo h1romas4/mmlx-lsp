@@ -100,6 +100,7 @@
 							<select id="serial-connection" disabled><option value="">Not selected</option></select>
 							<button id="refresh-serial-ports" class="refresh-ports" type="button" title="Refresh serial ports" aria-label="Refresh serial ports" disabled></button>
 							<button id="connect-serial" class="output-connection" type="button" title="Connect NanoDrive8" aria-label="Connect NanoDrive8" aria-pressed="false" disabled></button>
+							<span id="serial-settings-status" role="status">Loading</span>
 						</div>
 					</div>
 					<div class="build-field">
@@ -108,11 +109,10 @@
 							<select id="midi-connection" disabled><option value="">Not selected</option></select>
 							<button id="refresh-midi-ports" class="refresh-ports" type="button" title="Refresh MIDI input ports" aria-label="Refresh MIDI input ports" disabled></button>
 							<button id="connect-midi" class="output-connection" type="button" title="Connect MIDI input" aria-label="Connect MIDI input" aria-pressed="false" disabled></button>
+							<span id="midi-settings-status" role="status">Loading</span>
 						</div>
 					</div>
 				</fieldset>
-				<p id="serial-settings-status" role="status">Loading</p>
-				<p id="midi-settings-status" role="status">Loading</p>
 			</section>
 			<section class="build-settings" aria-labelledby="build-settings-heading">
 				<h2 id="build-settings-heading">Build</h2>

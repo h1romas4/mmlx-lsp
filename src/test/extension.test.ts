@@ -1963,6 +1963,40 @@ suite('mmlx extension', () => {
 						assert(button.disabled && select.disabled, 'Closing state');
 						controls.render({ ...base, canConnect: false, error: 'Unsupported firmware' });
 						assert(button.disabled && status.textContent === 'Unsupported firmware', 'Error state');
+						for (const width of [120, 320, 640]) {
+							const root = document.getElementById('settings-controls');
+							root.style.width = width + 'px';
+							for (const [prefix, settings, refreshType] of [
+								['serial', base, 'getSerialPorts'],
+								['midi', { ...base, type: 'midiSettings', connection: 'test', ports: ['test'] }, 'getMidiInputPorts'],
+							]) {
+								controls.render(settings);
+								const message = document.getElementById(prefix + '-settings-status');
+								const height = message.getBoundingClientRect().height;
+								const connect = document.getElementById('connect-' + prefix);
+								const select = document.getElementById(prefix + '-connection');
+								const bounds = message.getBoundingClientRect();
+								const buttonBounds = connect.getBoundingClientRect();
+								const selectBounds = select.getBoundingClientRect();
+								assert(message.parentElement === connect.parentElement && bounds.left >= buttonBounds.right, prefix + ' message must be right of its controls');
+								assert(bounds.top >= buttonBounds.top && bounds.bottom <= buttonBounds.bottom, prefix + ' message must stay on the control row');
+								const build = document.querySelector('[aria-labelledby="build-settings-heading"]');
+								const top = build.getBoundingClientRect().top;
+								document.getElementById('refresh-' + prefix + '-ports').click();
+								assert(messages.at(-1).type === refreshType && message.textContent.startsWith('Loading'), prefix + ' refresh');
+								assert(Math.abs(message.getBoundingClientRect().height - height) < 0.5, prefix + ' message height changed while refreshing at ' + width);
+								assert(Math.abs(build.getBoundingClientRect().top - top) < 0.5, prefix + ' refresh moved Build at ' + width);
+								assert(Math.abs(message.getBoundingClientRect().left - bounds.left) < 0.5 && Math.abs(select.getBoundingClientRect().width - selectBounds.width) < 0.5, prefix + ' refresh moved controls at ' + width);
+								controls.render(settings);
+								assert(Math.abs(build.getBoundingClientRect().top - top) < 0.5, prefix + ' completed refresh moved Build at ' + width);
+								const error = 'Connection error '.repeat(20);
+								controls.render({ ...settings, error });
+								assert(message.textContent === error && message.title === error, prefix + ' must preserve the full error');
+								assert(Math.abs(message.getBoundingClientRect().height - height) < 0.5, prefix + ' long error resized the message at ' + width);
+								assert(Math.abs(build.getBoundingClientRect().top - top) < 0.5, prefix + ' long error moved Build at ' + width);
+								assert(Math.abs(message.getBoundingClientRect().left - bounds.left) < 0.5 && Math.abs(select.getBoundingClientRect().width - selectBounds.width) < 0.5, prefix + ' long error moved controls at ' + width);
+							}
+						}
 						api.postMessage({});
 					} catch (error) { api.postMessage({ error: String(error) }); }
 				</script></body>`);
