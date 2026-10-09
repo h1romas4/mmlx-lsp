@@ -17,17 +17,17 @@ export function createSettingsControls(root, onChange = () => {}) {
 		let current;
 		function renderPorts(message) {
 			current = message;
-			connection.disabled = !message.editable || !!message.connected || !!message.connecting;
-			refresh.disabled = !message.folder || message.saving || message.loading || !!message.connecting;
+			connection.disabled = !message.editable || !!message.connected || !!message.connecting || !!message.closing;
+			refresh.disabled = !message.folder || message.saving || message.loading || !!message.connecting || !!message.closing;
 			if (connect) {
-				connect.disabled = prefix !== 'midi' || !!message.connecting || (!message.connected && !message.canConnect);
-				connect.title = prefix === 'midi' ? (message.connected ? 'Disconnect MIDI input' : 'Connect MIDI input')
-					: 'Connect NanoDrive8 (not yet supported)';
+				connect.disabled = !!message.connecting || !!message.closing || (!message.connected && !message.canConnect);
+				const device = prefix === 'midi' ? 'MIDI input' : 'NanoDrive8';
+				connect.title = `${message.closing ? 'Disconnecting' : message.connecting ? 'Connecting' : message.connected ? 'Disconnect' : 'Connect'} ${device}`;
 				connect.setAttribute('aria-label', connect.title);
-				connect.setAttribute('aria-pressed', String(prefix === 'midi' && !!message.connected));
+				connect.setAttribute('aria-pressed', String(!!message.connected));
 			}
-			status.textContent = message.error || (message.loading ? `Loading ${label} ports` : message.saving ? 'Saving'
-				: message.connected ? (prefix === 'midi' ? '' : `Connected: ${message.connection}`)
+			status.textContent = message.error || message.phase || (message.loading ? `Loading ${label} ports` : message.saving ? 'Saving'
+				: message.connected ? (prefix === 'midi' ? '' : `${message.model} / FW ${message.firmware}`)
 				: message.ports.length === 0 ? `No ${label} ports found` : '');
 			const ports = message.ports.map(option);
 			const options = [new Option('Not selected', ''), ...ports.map(port => new Option(port.label, port.value))];
@@ -43,8 +43,8 @@ export function createSettingsControls(root, onChange = () => {}) {
 			onChange({ type: refreshType });
 		});
 		connect?.addEventListener('click', () => {
-			if (prefix !== 'midi' || !current?.folder || current.connecting || (!current.connected && !current.canConnect)) { return; }
-			onChange({ type: 'setMidiInputConnection', folder: current.folder, connected: !current.connected });
+			if (!current?.folder || current.connecting || current.closing || (!current.connected && !current.canConnect)) { return; }
+			onChange({ type: prefix === 'midi' ? 'setMidiInputConnection' : 'setSerialConnection', folder: current.folder, connected: !current.connected });
 		});
 		connection.addEventListener('change', () => {
 			if (!current?.editable || !current.folder || connection.value === current.connection) { return; }

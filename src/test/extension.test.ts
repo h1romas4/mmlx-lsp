@@ -5,12 +5,13 @@ import { randomUUID } from 'node:crypto';
 import { tmpdir } from 'node:os';
 import * as vscode from 'vscode';
 import { Wasm } from '@vscode/wasm-wasi/v1';
-import { createUriConverters } from '@vscode/wasm-wasi-lsp';
-import type { LanguageClient } from 'vscode-languageclient/node';
+import { createStdioOptions, createUriConverters, startServer } from '@vscode/wasm-wasi-lsp';
+import { LanguageClient } from 'vscode-languageclient/node';
 import { BuildTerminal, buildErrorLinkProvider } from '../tasks';
 import { listMidiInputPorts, VoiceViewProvider } from '../voiceView';
 import { MidiInputConnection } from '../midiInput';
 import { EmulationSession, type EmulationState, type PlaybackProgress } from '../emulation';
+import { Port as NanoDriveTestPort, codec as nanoDriveTestCodec } from './nanodrive.test';
 
 const playbackSource = '@1 = {\n' + '31,0,0,15,0,32,0,1,0,0,0,\n'.repeat(4) + '7,0,15\n}\nA t120 @1 o4 l8 cdef\n';
 
@@ -1572,6 +1573,170 @@ suite('mmlx extension', () => {
 			await configuration.update('midi.input', previous, vscode.ConfigurationTarget.WorkspaceFolder);
 			events.dispose(); messages.dispose(); updates.dispose();
 		}
+	});
+
+	test('NanoDrive8 WASM codec encodes and validates published handshake frames', async function () {
+		this.timeout(20000);
+		const extension = vscode.extensions.all.find(extension => extension.packageJSON.name === 'mmlx-lsp');
+		assert.ok(extension);
+		const wasm = await Wasm.load();
+		const channel = vscode.window.createOutputChannel('NanoDrive8 codec test', { log: true });
+		const client = new LanguageClient('nanodrive-test', 'NanoDrive8 test', async () => {
+			const bytes = await vscode.workspace.fs.readFile(vscode.Uri.joinPath(extension.extensionUri,
+				'server', 'target', 'wasm32-wasip1-threads', 'release', 'mmlx-lsp-server.wasm'));
+			const module = await WebAssembly.compile(new Uint8Array(bytes).buffer);
+			const process = await wasm.createProcess('nanodrive-test', module, { initial: 160, maximum: 2048, shared: true },
+				{ stdio: createStdioOptions(), mountPoints: [{ kind: 'workspaceFolder' }] });
+			return startServer(process);
+		}, { documentSelector: [], outputChannel: channel, uriConverters: createUriConverters(), initializationOptions: { dialect: 'mdx' } });
+		try {
+			await client.start();
+			const request = [0, 6, 0x4e, 0x44, 1, 1, 1, 2, 3, 6, 0x4e, 0x44, 0x38, 0x33, 0x96, 0];
+			const response = [6, 0x4e, 0x44, 1, 0x81, 1, 2, 4, 1, 6, 0x4e, 0x44, 0x38, 0xe4, 0x56];
+			assert.deepStrictEqual(await client.sendRequest('mmlx/nanodrive',
+				{ operation: 'encode', command: 'ping', requestId: 1, payload: [0x4e, 0x44, 0x38] }), { bytes: request });
+			assert.deepStrictEqual(await client.sendRequest('mmlx/nanodrive', { operation: 'decode', body: response, request }), { status: 0 });
+			response[response.length - 1] ^= 1;
+			assert.strictEqual(await client.sendRequest('mmlx/nanodrive', { operation: 'decode', body: response, request }), null);
+		} finally { await client.stop(); channel.dispose(); }
+	});
+
+	test('NanoDrive8 Settings connect, lock configuration and release ports on changes or disposal', async function () {
+		this.timeout(20000);
+		const extension = vscode.extensions.all.find(extension => extension.packageJSON.name === 'mmlx-lsp');
+		assert.ok(extension);
+		const folder = vscode.workspace.workspaceFolders![0];
+		const configuration = vscode.workspace.getConfiguration('mmlx', folder.uri);
+		const setting = configuration.inspect<string>('serial.connection');
+		const previous = vscode.workspace.workspaceFile ? setting?.workspaceFolderValue : setting?.workspaceValue;
+		const context = { extensionUri: extension.extensionUri, subscriptions: [] as vscode.Disposable[] };
+		const events = new vscode.EventEmitter<void>(); const messages = new vscode.EventEmitter<unknown>();
+		type SerialState = { type: string; folder: string; connection: string; connected: boolean; connecting: boolean;
+			closing: boolean; loading: boolean; editable: boolean; canConnect: boolean; firmware: string; error: string };
+		const updates = new vscode.EventEmitter<SerialState>(); let latest: SerialState | undefined;
+		const opened: NanoDriveTestPort[] = []; let available = [{ path: '/dev/nanodrive-test' }];
+		const client = { isRunning: () => true,
+			code2ProtocolConverter: { asTextDocumentPositionParams: () => ({}) },
+			sendRequest: async (method: string, params: Parameters<typeof nanoDriveTestCodec>[0]) =>
+				method === 'mmlx/nanodrive' ? nanoDriveTestCodec(params) : null } as unknown as LanguageClient;
+		const provider = new VoiceViewProvider(context as unknown as vscode.ExtensionContext, () => client,
+			async () => available, async () => [], undefined, undefined, async () => {
+				const port = new NanoDriveTestPort(); opened.push(port); return port;
+			});
+		const view = { visible: true, onDidChangeVisibility: events.event, onDidDispose: events.event,
+			webview: { cspSource: 'https://test.invalid', asWebviewUri: (uri: vscode.Uri) => uri,
+				onDidReceiveMessage: messages.event, postMessage: (message: SerialState) => {
+					if (message.type === 'serialSettings') { latest = message; updates.fire(message); }
+					return Promise.resolve(true);
+				} }
+		} as unknown as vscode.WebviewView;
+		function waitFor(predicate: (state: SerialState) => boolean): Promise<SerialState> {
+			if (latest && predicate(latest)) { return Promise.resolve(latest); }
+			return new Promise((resolve, reject) => {
+				const subscription = updates.event(state => {
+					if (predicate(state)) { clearTimeout(timer); subscription.dispose(); resolve(state); }
+				});
+				const timer = setTimeout(() => { subscription.dispose(); reject(new Error(`NanoDrive8 settings timed out: ${predicate}; ${JSON.stringify(latest)}; ${JSON.stringify(opened.map(port => port.commands))}`)); }, 4000);
+			});
+		}
+		try {
+			await configuration.update('serial.connection', '/dev/nanodrive-test', vscode.ConfigurationTarget.WorkspaceFolder);
+			await provider.resolveWebviewView(view); messages.fire({ type: 'ready' });
+			await waitFor(state => state.canConnect); assert.strictEqual(opened.length, 0);
+			messages.fire({ type: 'setSerialConnection', folder: 'file:///wrong', connected: true });
+			assert.strictEqual(opened.length, 0);
+			messages.fire({ type: 'setSerialConnection', folder: folder.uri.toString(), connected: true });
+			const connected = await waitFor(state => state.connected);
+			assert.strictEqual(connected.firmware, '1.0b8'); assert.ok(!connected.editable);
+			assert.match(view.title!, /Connected/); assert.match(view.badge!.tooltip, /NanoDrive8/);
+			messages.fire({ type: 'updateSerialConnection', folder: folder.uri.toString(), value: '' });
+			assert.strictEqual(vscode.workspace.getConfiguration('mmlx', folder.uri).get('serial.connection'), '/dev/nanodrive-test');
+			messages.fire({ type: 'setSerialConnection', folder: folder.uri.toString(), connected: false });
+			await waitFor(state => !state.connected && !state.closing && state.canConnect);
+			assert.ok(!opened[0].isOpen); assert.strictEqual(opened[0].commands.at(-1)?.command, 'reset');
+			messages.fire({ type: 'setSerialConnection', folder: folder.uri.toString(), connected: true });
+			await waitFor(state => state.connected);
+			available = []; messages.fire({ type: 'getSerialPorts' });
+			await waitFor(state => !state.loading && !state.closing && /no longer available/.test(state.error));
+			assert.ok(!opened[1].isOpen);
+			available = [{ path: '/dev/nanodrive-test' }]; messages.fire({ type: 'getSerialPorts' });
+			await waitFor(state => state.canConnect);
+			messages.fire({ type: 'setSerialConnection', folder: folder.uri.toString(), connected: true });
+			await waitFor(state => state.connected);
+			await configuration.update('serial.connection', '/dev/changed', vscode.ConfigurationTarget.WorkspaceFolder);
+			await waitFor(state => !state.closing && !state.connected && state.connection === '/dev/changed');
+			assert.ok(!opened[2].isOpen);
+			await configuration.update('serial.connection', '/dev/nanodrive-test', vscode.ConfigurationTarget.WorkspaceFolder);
+			await waitFor(state => state.canConnect);
+			messages.fire({ type: 'setSerialConnection', folder: folder.uri.toString(), connected: true });
+			await waitFor(state => state.connected);
+			const close = opened[3].close.bind(opened[3]);
+			const closed = new Promise<void>(resolve => { opened[3].close = async () => { await close(); resolve(); }; });
+			for (const property of ['title', 'badge']) {
+				Object.defineProperty(view, property, { set: () => { throw new Error('Disposed view marker must not be updated'); } });
+			}
+			events.fire(); await closed;
+			assert.ok(!opened[3].isOpen);
+		} finally {
+			provider.dispose(); for (const subscription of context.subscriptions) { subscription.dispose(); }
+			await configuration.update('serial.connection', previous, vscode.ConfigurationTarget.WorkspaceFolder);
+			events.dispose(); messages.dispose(); updates.dispose();
+		}
+	});
+
+	test('NanoDrive8 Settings Webview toggles connect and disconnect with firmware and busy states', async function () {
+		this.timeout(15000);
+		const extension = vscode.extensions.all.find(extension => extension.packageJSON.name === 'mmlx-lsp');
+		assert.ok(extension);
+		const media = vscode.Uri.joinPath(extension.extensionUri, 'assets', 'webview');
+		const icons = vscode.Uri.joinPath(extension.extensionUri, 'assets', 'icon');
+		const panel = vscode.window.createWebviewPanel('nanodrive-settings-test', 'NanoDrive8 Settings test', vscode.ViewColumn.Active,
+			{ enableScripts: true, localResourceRoots: [media, icons] });
+		const nonce = randomUUID();
+		try {
+			const result = new Promise<{ error?: string }>((resolve, reject) => {
+				const subscription = panel.webview.onDidReceiveMessage(message => {
+					clearTimeout(timer); subscription.dispose(); resolve(message);
+				});
+				const timer = setTimeout(() => { subscription.dispose(); reject(new Error('NanoDrive8 Webview timed out')); }, 10000);
+			});
+			const template = new TextDecoder().decode(await vscode.workspace.fs.readFile(vscode.Uri.joinPath(media, 'voice.html')));
+			const module = panel.webview.asWebviewUri(vscode.Uri.joinPath(media, 'settingsControls.js'));
+			panel.webview.html = template.replaceAll('{{cspSource}}', panel.webview.cspSource).replaceAll('{{nonce}}', nonce)
+				.replaceAll('{{iconUri}}', panel.webview.asWebviewUri(vscode.Uri.joinPath(icons, 'mmlx.png')).toString())
+				.replaceAll('{{styleUri}}', panel.webview.asWebviewUri(vscode.Uri.joinPath(media, 'voice.css')).toString())
+				.replaceAll('{{scriptUri}}', module.toString())
+				.replace('</body>', `<script type="module" nonce="${nonce}">
+					import { createSettingsControls } from '${module}';
+					const api = acquireVsCodeApi();
+					try {
+						for (const section of document.querySelectorAll('[role="tabpanel"]')) section.hidden = section.id !== 'settings-controls';
+						const messages = [];
+						const controls = createSettingsControls(document.getElementById('settings-controls'), message => messages.push(message));
+						const button = document.getElementById('connect-serial');
+						const select = document.getElementById('serial-connection');
+						const status = document.getElementById('serial-settings-status');
+						const assert = (condition, message) => { if (!condition) throw new Error(message); };
+						const base = { type: 'serialSettings', folder: 'test', connection: '/dev/test', ports: [{ path: '/dev/test' }], editable: true, canConnect: true };
+						controls.render(base);
+						assert(!button.disabled && !select.disabled, 'Available port must enable connection');
+						button.click();
+						assert(messages[0].type === 'setSerialConnection' && messages[0].connected === true, 'Connect click');
+						controls.render({ ...base, connecting: true, phase: 'Checking connection' });
+						assert(button.disabled && select.disabled && status.textContent === 'Checking connection', 'Probe state');
+						controls.render({ ...base, connected: true, model: 'NanoDrive 8', firmware: '1.0b8' });
+						assert(!button.disabled && select.disabled && button.getAttribute('aria-pressed') === 'true', 'Connected state');
+						assert(status.textContent === 'NanoDrive 8 / FW 1.0b8' && button.title === 'Disconnect NanoDrive8', 'Device identity');
+						button.click(); assert(messages[1].connected === false, 'Disconnect click');
+						controls.render({ ...base, closing: true, phase: 'Disconnecting' });
+						assert(button.disabled && select.disabled, 'Closing state');
+						controls.render({ ...base, canConnect: false, error: 'Unsupported firmware' });
+						assert(button.disabled && status.textContent === 'Unsupported firmware', 'Error state');
+						api.postMessage({});
+					} catch (error) { api.postMessage({ error: String(error) }); }
+				</script></body>`);
+			assert.strictEqual((await result).error, undefined);
+		} finally { panel.dispose(); }
 	});
 
 	test('Connection settings list serial ports, save folder configuration and handle refresh failures', async function () {

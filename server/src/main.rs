@@ -1,6 +1,7 @@
 mod completion;
 mod dialect;
 mod i18n;
+mod nanodrive;
 mod semantic;
 mod voice;
 
@@ -109,6 +110,12 @@ fn handle_request(
     language: i18n::Language,
     dialect: Dialect,
 ) -> Response {
+    if request.method == "mmlx/nanodrive" {
+        return match nanodrive::handle(request.params) {
+            Ok(result) => Response::new_ok(request.id, result),
+            Err(error) => Response::new_err(request.id, ErrorCode::InvalidParams as i32, error),
+        };
+    }
     if request.method == "mmlx/voiceAtPosition" {
         return match serde_json::from_value::<TextDocumentPositionParams>(request.params) {
             Ok(params) => {

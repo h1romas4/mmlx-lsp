@@ -3,9 +3,10 @@ import { LanguageClient, ServerOptions } from 'vscode-languageclient/node';
 import { Wasm } from '@vscode/wasm-wasi/v1';
 import { createStdioOptions, createUriConverters, startServer } from '@vscode/wasm-wasi-lsp';
 import { registerBuildTasks } from './tasks';
-import { registerVoiceView } from './voiceView';
+import { registerVoiceView, type VoiceViewProvider } from './voiceView';
 
 let client: LanguageClient | undefined;
+let voiceView: VoiceViewProvider | undefined;
 
 export async function activate(context: ExtensionContext): Promise<void> {
 	const channel = window.createOutputChannel('mmlx Language Server', { log: true });
@@ -58,7 +59,7 @@ export async function activate(context: ExtensionContext): Promise<void> {
 		}
 	});
 	await client.start();
-	registerVoiceView(context, () => client, wasm);
+	voiceView = registerVoiceView(context, () => client, wasm);
 	context.subscriptions.push(commands.registerCommand('mmlx.restartLanguageServer', async () => {
 		await client?.stop();
 		await client?.start();
@@ -67,6 +68,8 @@ export async function activate(context: ExtensionContext): Promise<void> {
 }
 
 export async function deactivate(): Promise<void> {
+	await voiceView?.disconnectNanoDrive();
+	voiceView = undefined;
 	await client?.stop();
 	client = undefined;
 }

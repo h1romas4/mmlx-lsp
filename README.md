@@ -110,6 +110,8 @@ the native language server.
     such as `/dev/ttyUSB0` or `COM3`. The selection is saved to the workspace settings;
     it does not open the port or transmit data. In remote workspaces, the list shows
     ports on the remote extension host.
+    Put NanoDrive8 in serial mode and use the connection button (firmware `1.0`, including betas).
+    Experimental connection only; sound output is not yet supported.
 - `mmlx.midi.input`: empty by default. Select a port under **Settings > Connection > MIDI-IN**
     and use the connection button to connect or disconnect. Incoming notes highlight
     the FM Voice keyboard. The selected port is saved; connections are not restored
@@ -123,7 +125,7 @@ command palette. Diagnostic messages are not translated.
 - **Dedicated bottom panel** opened with **mmlx: Show mmlx Panel**.
 - **Get Started** opens an editable example `.mml` in a new, unsaved editor.
 - **FM Voice editing** for parameters, algorithms, and envelopes directly in the source by placing the cursor in an `@` definition.
-- **Settings** for MDX/VGM builds, NanoDrive8 port selection, and MIDI-IN selection, saved to `.vscode/settings.json`.
+- **Settings** for MDX/VGM builds, NanoDrive8 port selection and experimental connection, and MIDI-IN selection, saved to `.vscode/settings.json`.
 - **MIDI-IN** connection and note reception, with pressed-key feedback in the FM Voice keyboard.
 - **YM2151 emulation** with up to eight simultaneous notes from the keyboard or MIDI-IN.
 - **Audio monitors** above the FM Voice keyboard: a note-synchronized oscilloscope and a logarithmic frequency spectrum for Emulation output.
