@@ -2,7 +2,7 @@
 
 All notable changes to the "mmlx-lsp" extension will be documented in this file.
 
-## [Unreleased]
+## [0.10.0] - 2026-10-09
 
 - Add experimental NanoDrive8 support.
 
