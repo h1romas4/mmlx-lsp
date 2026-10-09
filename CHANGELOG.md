@@ -2,6 +2,10 @@
 
 All notable changes to the "mmlx-lsp" extension will be documented in this file.
 
+## [Unreleased]
+
+- Add experimental NanoDrive8 support.
+
 ## [0.9.0] - 2026-10-08
 
 - See the sound of your FM voices with a live, note-synchronized oscilloscope and frequency spectrum above the keyboard when using Emulation output.
