@@ -168,6 +168,7 @@ export class NanoDriveConnection {
         let resetting = false;
         let lastStatus: NanoDriveReply | undefined;
         let maxGenerationMs = 0; let maxWriteMs = 0; let maxStatusRttMs = 0;
+        let maxSupplyGapMs = 0;
         let minPending: number | undefined;
         let produced = 0; let submitted = 0; let generationEnded = false;
         const buffered: NanoDriveChunk[] = [];
@@ -195,7 +196,7 @@ export class NanoDriveConnection {
             const prefetch = () => {
                 if (producing || generationEnded || productionFailure) { return; }
                 producing = (async () => {
-                    while (buffered.length < 12 && !generationEnded) {
+                    while (buffered.length < 24 && !generationEnded) {
                         check(); const requestId = this.requestId & 0xffff; this.requestId += 8192;
                         const generationStarted = performance.now();
                         const chunk = await this.codec({ operation: 'playbackNext', requestId }); check();
@@ -220,15 +221,17 @@ export class NanoDriveConnection {
                 maxWriteMs = Math.max(maxWriteMs, performance.now() - writeStarted);
                 sent = chunk.position!; ended = chunk.ended!;
             };
-            while (sent < 625 && !ended) { await submit(); }
+            while (sent < 1600 && !ended) { await submit(); }
             await this.request('ping', [...randomBytes(8)]); check();
             await this.send('audioStart'); check();
             const startedAt = performance.now(); observedAt = startedAt; polledAt = startedAt - 100;
+            let suppliedAt = startedAt;
             this.hardwarePlayback.loading = false; this.hardwarePlayback.playing = true; this.onPlayback(this.playbackState);
             let confirmed = false; let endDeadline = Infinity;
             while (true) {
                 check(); if (failure) { throw failure; }
                 const now = performance.now();
+                maxSupplyGapMs = Math.max(maxSupplyGapMs, now - suppliedAt); suppliedAt = now;
                 if (!poll && now - polledAt >= 80) {
                     polledAt = now;
                     poll = this.request('audioStatus').then(status => {
@@ -255,7 +258,7 @@ export class NanoDriveConnection {
                     if (endDeadline === Infinity) { endDeadline = now + (sent - observed.played!) / 7.8125 + 1000; }
                     if (observed.ended && observed.played === sent && observed.accepted === sent) { break; }
                     if (now > endDeadline) { throw new Error('NanoDrive8 playback did not reach END.'); }
-                } else if (sent < played + 625 && sent - observed.played! < 1800) { await submit(); continue; }
+                } else if (sent < played + 1600 && sent - observed.played! + 160 <= 3072) { await submit(); continue; }
                 await new Promise<void>(resolve => setTimeout(resolve, 2));
             }
             if (token === this.playbackGeneration) { await this.stopPlayback('', true); }
@@ -266,7 +269,7 @@ export class NanoDriveConnection {
                     this.onDiagnostic(`NanoDrive8 playback failed: ${message}\n${JSON.stringify({
                         model: this.snapshot.model, firmware: this.snapshot.firmware, port: this.snapshot.port, adpcmMode: options.adpcmMode ?? 'resample',
                         clockHz: 8000000, divider: 512, produced, submitted, sent, bufferedChunks: buffered.length, ended, status: lastStatus, minPending,
-                        maxGenerationMs, maxWriteMs, maxStatusRttMs, serial: { ...this.serialWrites }
+                        maxGenerationMs, maxWriteMs, maxStatusRttMs, maxSupplyGapMs, serial: { ...this.serialWrites }
                     })}`);
                 } catch {}
                 if (resetting) { await this.disconnect(message, false); }
