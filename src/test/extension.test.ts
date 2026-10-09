@@ -1761,6 +1761,8 @@ suite('mmlx extension', () => {
 		const states = new Map<string, Record<string, unknown>>();
 		const captured: Parameters<typeof nanoDriveTestCodec>[0][] = [];
 		const port = new NanoDriveTestPort();
+		const diagnostics: string[] = [];
+		let diagnosticChannel: vscode.OutputChannel | undefined;
 		let pdxName: string | null = 'drums';
 		const provider = new VoiceViewProvider(context as unknown as vscode.ExtensionContext, () => undefined,
 			async () => [{ path: '/dev/nanodrive-test' }], async () => [], undefined, undefined, async () => port, async params => {
@@ -1817,7 +1819,17 @@ suite('mmlx extension', () => {
 				assert.deepStrictEqual(captured.slice(start).filter(request => request.operation === 'upload' && request.asset === 'pdx').at(-1), {
 					operation: 'upload', asset: 'pdx', offset: 0, bytes: scenario.bytes
 				});
+				if (!diagnosticChannel) {
+					diagnosticChannel = context.subscriptions.find(subscription => 'name' in subscription && subscription.name === 'mmlx NanoDrive8') as vscode.OutputChannel | undefined;
+					assert.ok(diagnosticChannel);
+					const append = diagnosticChannel.appendLine.bind(diagnosticChannel);
+					diagnosticChannel.appendLine = message => { diagnostics.push(message); append(message); };
+				} else {
+					assert.match(diagnostics.at(-1)!, /NanoDrive8 playback failed: Playback initialization captured/);
+					assert.ok(diagnostics.at(-1)!.includes(`"adpcmMode":"${scenario.mode}"`));
+				}
 			}
+			assert.strictEqual(diagnostics.length, 2);
 		} finally {
 			provider.dispose(); for (const subscription of context.subscriptions) { subscription.dispose(); }
 			for (let index = 0; index < keys.length; index++) { await configuration.update(keys[index], previous[index], vscode.ConfigurationTarget.WorkspaceFolder); }

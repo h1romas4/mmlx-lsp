@@ -2,6 +2,10 @@
 
 All notable changes to the "mmlx-lsp" extension will be documented in this file.
 
+## [0.11.1] - 2026-10-09
+
+- Record detailed NanoDrive8 playback faults before RESET and prefetch PCM on the host to absorb temporary generation delays without increasing device buffering.
+
 ## [0.11.0] - 2026-10-09
 
 - Add a +/-2-semitone pitch-bend wheel with spring return and MIDI-IN synchronization for Emulation and NanoDrive8.

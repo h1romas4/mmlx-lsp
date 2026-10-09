@@ -2,7 +2,7 @@ import { randomBytes } from 'node:crypto';
 import { basename } from 'node:path';
 import {
 	commands, ConfigurationTarget, ExtensionContext, Position, Range, TextDocument, TextEditor, Uri, WebviewView, WebviewViewProvider,
-	window, workspace, WorkspaceEdit
+	window, workspace, WorkspaceEdit, type OutputChannel
 } from 'vscode';
 import type { LanguageClient } from 'vscode-languageclient/node';
 import type { Wasm } from '@vscode/wasm-wasi/v1';
@@ -83,6 +83,7 @@ export class VoiceViewProvider implements WebviewViewProvider {
 	private readonly nanodrive: NanoDriveConnection;
 	private readonly nanodriveWorker?: NanoDriveWorker;
 	private readonly nanodriveAvailable: boolean;
+	private nanodriveLog?: OutputChannel;
 	private serialFolder = '';
 	private midiPorts: string[] = [];
 	private midiLoading = false;
@@ -128,6 +129,12 @@ export class VoiceViewProvider implements WebviewViewProvider {
 			if (this.playbackMode !== 'nanodrive8') { return; }
 			Object.assign(this.playbackState, state, { paused: false });
 			this.sendPlayback();
+		}, message => {
+			if (!this.nanodriveLog) {
+				this.nanodriveLog = window.createOutputChannel('mmlx NanoDrive8');
+				context.subscriptions.push(this.nanodriveLog);
+			}
+			this.nanodriveLog.appendLine(`${new Date().toISOString()} ${message}`);
 		});
 		this.emulation = wasm ? new EmulationSession(context.extensionUri, wasm,
 			state => {

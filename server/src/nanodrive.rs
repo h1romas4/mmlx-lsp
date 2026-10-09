@@ -190,6 +190,10 @@ impl Bridge {
                     result["underflows"] = json!(status.underflows);
                     result["overflows"] = json!(status.overflows);
                     result["rejected"] = json!(status.rejected);
+                    result["flags"] = json!(status.flags.bits());
+                    result["maxPending"] = json!(status.max_pending);
+                    result["lateEvents"] = json!(status.late_events);
+                    result["maxEventLag"] = json!(status.max_event_lag);
                 }
                 Ok(Output::Json(result))
             }
@@ -359,7 +363,38 @@ impl Bridge {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use ndsif::DeviceInfo;
+    use ndsif::{AudioStatus, DeviceInfo, StatusFlags};
+
+    #[test]
+    fn audio_status_preserves_fault_reasons_and_diagnostics() {
+        let request = Command::AudioStatus.to_frame(42).unwrap();
+        for flags in [1, 0x15, 0x45, 0x105] {
+            let response = Response::for_request(
+                &request,
+                Reply::AudioStatus(AudioStatus {
+                    accepted: 1000,
+                    played: 600,
+                    pending: 400,
+                    underflows: 0,
+                    overflows: 0,
+                    rejected: 0,
+                    max_pending: 640,
+                    flags: StatusFlags::from_bits_retain(flags),
+                    late_events: 3,
+                    max_event_lag: 12,
+                }),
+            )
+            .unwrap()
+            .encode()
+            .unwrap();
+            let bytes = response.as_bytes();
+            assert_eq!(
+                handle(json!({"operation":"decode", "body":&bytes[1..bytes.len()-1], "request":request.encode().as_bytes()})).unwrap(),
+                json!({"status":0,"accepted":1000,"played":600,"pending":400,"running":true,"ended":false,"fault":flags & 4 != 0,
+                    "underflows":0,"overflows":0,"rejected":0,"flags":flags,"maxPending":640,"lateEvents":3,"maxEventLag":12})
+            );
+        }
+    }
 
     #[test]
     fn playback_controls_set_mdx_clock_and_fixed_oki_cadence() {

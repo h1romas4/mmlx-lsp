@@ -18,6 +18,7 @@ export interface NanoDriveOutputState { connected: boolean; connecting: boolean;
 export interface NanoDriveReply { status: number; model?: string; firmware?: string;
     accepted?: number; played?: number; pending?: number; running?: boolean; ended?: boolean; fault?: boolean;
     underflows?: number; overflows?: number; rejected?: number;
+    flags?: number; maxPending?: number; lateEvents?: number; maxEventLag?: number;
 }
 export interface NanoDrivePlaybackState { busy: boolean; playing: boolean; loading: boolean; position: number; finished: boolean; error: string; }
 export type NanoDriveAdpcmMode = 'through' | 'resample' | 'lpf';
@@ -28,6 +29,7 @@ export type NanoDriveCodec = (params: { operation: 'encode'; command: NanoDriveC
     | { operation: 'playbackInfo' | 'playbackStop' }
     | { operation: 'playbackInit'; looped: boolean; adpcmMode?: NanoDriveAdpcmMode }
     | { operation: 'playbackNext'; requestId: number }) => Promise<{ bytes: number[] | Uint8Array; count?: number; position?: number; ended?: boolean; fm?: boolean; synchronize?: boolean } | { pdxName?: string | null; audio?: boolean } | NanoDriveReply | null>;
+type NanoDriveChunk = Extract<Awaited<ReturnType<NanoDriveCodec>>, { bytes: number[] | Uint8Array }>;
 export interface NanoDriveState {
     port: string; connected: boolean; connecting: boolean; closing: boolean;
     phase: string; model: string; firmware: string; error: string;
@@ -47,6 +49,18 @@ class ResponseTimeout extends Error {}
 const emptyState = (): NanoDriveState => ({ port: '', connected: false, connecting: false, closing: false,
     phase: '', model: '', firmware: '', error: '' });
 
+function playbackFaultReasons(status: NanoDriveReply): string {
+    const reasons = [
+        [0x008, 'USB bus reset'], [0x010, 'USB receive overflow'], [0x020, 'USB receive discarded'],
+        [0x040, 'PCM underflow'], [0x080, 'PCM overflow'], [0x100, 'event queue overflow'], [0x200, 'argument/position rejected']
+    ] as const;
+    const names: string[] = reasons.filter(([mask]) => ((status.flags ?? 0) & mask) !== 0).map(([, name]) => name);
+    if (status.underflows && !names.includes('PCM underflow')) { names.push('PCM underflow'); }
+    if (status.overflows && !names.includes('PCM overflow') && !names.includes('event queue overflow')) { names.push('PCM/event overflow'); }
+    if (status.rejected && !names.includes('argument/position rejected')) { names.push('argument/position rejected'); }
+    return names.join(', ') || 'device fault (reason unavailable)';
+}
+
 export class NanoDriveConnection {
     private snapshot = emptyState();
     private port?: NanoDrivePort;
@@ -56,6 +70,7 @@ export class NanoDriveConnection {
     private starting = false;
     private requestId = 0;
     private writes: Promise<void> = Promise.resolve();
+    private serialWrites = { queuedBytes: 0, queuedWrites: 0, maxQueuedBytes: 0, maxQueuedWrites: 0, totalBytes: 0, maxWriteMs: 0, maxDrainMs: 0 };
     private pending?: { request: number[]; resolve: (reply: NanoDriveReply) => void; reject: (error: Error) => void };
     private partialTimer?: ReturnType<typeof setTimeout>;
     private body: number[] = [];
@@ -76,7 +91,8 @@ export class NanoDriveConnection {
         private readonly openPort: (path: string) => Promise<NanoDrivePort> = openNanoDrivePort,
         private readonly responseTimeout = 1000,
         private readonly onOutput: (state: NanoDriveOutputState) => void = () => {},
-        private readonly onPlayback: (state: NanoDrivePlaybackState) => void = () => {}) {}
+        private readonly onPlayback: (state: NanoDrivePlaybackState) => void = () => {},
+        private readonly onDiagnostic: (message: string) => void = () => {}) {}
 
     get state(): NanoDriveState { return { ...this.snapshot }; }
     get outputState(): NanoDriveOutputState { return { ...this.output }; }
@@ -102,6 +118,12 @@ export class NanoDriveConnection {
         let observed: NanoDriveReply = { status: 0, accepted: 0, played: 0, pending: 0 };
         let observedAt = 0; let polledAt = 0; let sent = 0; let ended = false;
         let resetting = false;
+        let lastStatus: NanoDriveReply | undefined;
+        let maxGenerationMs = 0; let maxWriteMs = 0; let maxStatusRttMs = 0;
+        let minPending: number | undefined;
+        let produced = 0; let submitted = 0; let generationEnded = false;
+        const buffered: NanoDriveChunk[] = [];
+        let producing: Promise<void> | undefined; let productionFailure: unknown;
         try {
             await this.disconnectOutput(); check();
             await upload('source', new TextEncoder().encode(source));
@@ -122,13 +144,33 @@ export class NanoDriveConnection {
             const reset = await this.request('audioStatus'); check();
             if (reset.accepted !== 0 || reset.played !== 0 || reset.pending !== 0 || reset.running !== false || reset.fault !== false) { throw new Error('Invalid NanoDrive8 reset status.'); }
             await this.send('setPlaybackClock'); check();
+            const prefetch = () => {
+                if (producing || generationEnded || productionFailure) { return; }
+                producing = (async () => {
+                    while (buffered.length < 12 && !generationEnded) {
+                        check(); const requestId = this.requestId & 0xffff; this.requestId += 8192;
+                        const generationStarted = performance.now();
+                        const chunk = await this.codec({ operation: 'playbackNext', requestId }); check();
+                        maxGenerationMs = Math.max(maxGenerationMs, performance.now() - generationStarted);
+                        if (!chunk || !('bytes' in chunk) || !Number.isInteger(chunk.count) || chunk.count! < 1 || chunk.count! > 8192
+                            || !Number.isSafeInteger(chunk.position) || chunk.position! <= produced || chunk.position! - produced > 160 || typeof chunk.ended !== 'boolean') { throw new Error('Invalid NanoDrive8 playback chunk.'); }
+                        produced = chunk.position!; generationEnded = chunk.ended;
+                        buffered.push(chunk);
+                    }
+                })().catch(error => { productionFailure = error; }).finally(() => { producing = undefined; });
+            };
             const submit = async () => {
-                check(); const requestId = this.requestId & 0xffff; this.requestId += 8192;
-                const chunk = await this.codec({ operation: 'playbackNext', requestId }); check();
-                if (!chunk || !('bytes' in chunk) || !Number.isInteger(chunk.count) || chunk.count! < 1 || chunk.count! > 8192
-                    || !Number.isSafeInteger(chunk.position) || chunk.position! <= sent || chunk.position! - sent > 160 || typeof chunk.ended !== 'boolean') { throw new Error('Invalid NanoDrive8 playback chunk.'); }
+                check(); prefetch();
+                if (!buffered.length) { await producing; check(); }
+                if (productionFailure) { throw productionFailure; }
+                const chunk = buffered.shift();
+                if (!chunk) { throw new Error('NanoDrive8 PCM prefetch exhausted.'); }
+                prefetch();
+                submitted = chunk.position!;
+                const writeStarted = performance.now();
                 await this.write(chunk.bytes, connection, false, token); check();
-                sent = chunk.position!; ended = chunk.ended;
+                maxWriteMs = Math.max(maxWriteMs, performance.now() - writeStarted);
+                sent = chunk.position!; ended = chunk.ended!;
             };
             while (sent < 625 && !ended) { await submit(); }
             await this.request('ping', [...randomBytes(8)]); check();
@@ -143,11 +185,18 @@ export class NanoDriveConnection {
                     polledAt = now;
                     poll = this.request('audioStatus').then(status => {
                         check();
+                        lastStatus = status;
+                        maxStatusRttMs = Math.max(maxStatusRttMs, performance.now() - polledAt);
+                        if (Number.isSafeInteger(status.pending)) { minPending = Math.min(minPending ?? status.pending!, status.pending!); }
+                        const detail = `flags=${status.flags === undefined ? 'unavailable' : '0x' + status.flags.toString(16)}, accepted=${status.accepted}, played=${status.played}, pending=${status.pending}, sent=${sent}, submitted=${submitted}, underflows=${status.underflows}, overflows=${status.overflows}, rejected=${status.rejected}`;
+                        if (status.fault || status.underflows || status.overflows || status.rejected) {
+                            throw new Error(`NanoDrive8 playback fault: ${playbackFaultReasons(status)} (${detail}).`);
+                        }
                         if (!Number.isSafeInteger(status.played) || !Number.isSafeInteger(status.accepted) || !Number.isSafeInteger(status.pending)
-                            || status.played! < observed.played! || status.played! > status.accepted! || status.accepted! > sent
+                            || status.played! < observed.played! || status.played! > status.accepted! || status.accepted! > submitted
                             || status.pending !== status.accepted! - status.played! || status.fault !== false || status.underflows !== 0 || status.overflows !== 0 || status.rejected !== 0
-                            || (!status.running && !status.ended)) { throw new Error('NanoDrive8 playback status reported a fault.'); }
-                        observed = status; observedAt = performance.now(); confirmed = true;
+                            || (!status.running && !status.ended)) { throw new Error(`NanoDrive8 playback status mismatch (${detail}).`); }
+                        observed = status; observedAt = polledAt; confirmed = true;
                     }).catch(error => { failure = error; }).finally(() => { poll = undefined; });
                 }
                 if ((!confirmed && now - startedAt > 250) || (poll && now - polledAt > 200)) { throw new Error('NanoDrive8 playback status timed out.'); }
@@ -165,6 +214,13 @@ export class NanoDriveConnection {
         } catch (error) {
             if (token === this.playbackGeneration) {
                 const message = error instanceof Error ? error.message : String(error);
+                try {
+                    this.onDiagnostic(`NanoDrive8 playback failed: ${message}\n${JSON.stringify({
+                        model: this.snapshot.model, firmware: this.snapshot.firmware, port: this.snapshot.port, adpcmMode: options.adpcmMode ?? 'resample',
+                        clockHz: 8000000, divider: 512, produced, submitted, sent, bufferedChunks: buffered.length, ended, status: lastStatus, minPending,
+                        maxGenerationMs, maxWriteMs, maxStatusRttMs, serial: { ...this.serialWrites }
+                    })}`);
+                } catch {}
                 if (resetting) { await this.disconnect(message, false); }
                 else { await this.stopPlayback(message); }
             }
@@ -425,12 +481,22 @@ export class NanoDriveConnection {
 
     private write(bytes: number[] | Uint8Array, generation: number, drain = true, playback?: number): Promise<void> {
         const port = this.port;
+        const stats = this.serialWrites;
+        stats.queuedBytes += bytes.length; stats.queuedWrites++;
+        stats.maxQueuedBytes = Math.max(stats.maxQueuedBytes, stats.queuedBytes);
+        stats.maxQueuedWrites = Math.max(stats.maxQueuedWrites, stats.queuedWrites);
         this.writes = this.writes.catch(() => {}).then(async () => {
             if (!port || port !== this.port || generation !== this.generation) { throw new Error('NanoDrive8 connection canceled.'); }
             if (playback !== undefined && playback !== this.playbackGeneration) { throw new Error('NanoDrive8 playback canceled.'); }
+            const started = performance.now();
             await port.write(bytes instanceof Uint8Array ? Buffer.from(bytes.buffer, bytes.byteOffset, bytes.byteLength) : Buffer.from(bytes));
-            if (drain) { await port.drain(); }
-        });
+            stats.totalBytes += bytes.length;
+            stats.maxWriteMs = Math.max(stats.maxWriteMs, performance.now() - started);
+            if (drain) {
+                const draining = performance.now(); await port.drain();
+                stats.maxDrainMs = Math.max(stats.maxDrainMs, performance.now() - draining);
+            }
+        }).finally(() => { stats.queuedBytes -= bytes.length; stats.queuedWrites--; });
         return this.writes;
     }
 
