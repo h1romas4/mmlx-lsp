@@ -341,7 +341,15 @@ dd select { display: block; width: 100%; padding: 2px; }
 .keyboard-output label { flex: 1; }
 .keyboard-output select { width: 136px; flex-shrink: 1; }
 .is-disconnected .p-keyboard__body { opacity: 0.42; filter: grayscale(1); cursor: not-allowed; }
-.is-disconnected .p-keyboard__white, .is-disconnected .p-keyboard__black { pointer-events: none; }
+.is-disconnected .p-keyboard__white, .is-disconnected .p-keyboard__black, .is-busy .p-keyboard__white, .is-busy .p-keyboard__black { pointer-events: none; }
+.is-busy .p-keyboard__body { cursor: not-allowed; }
+.is-busy #voice-test-mml:disabled, .is-busy .output-reset:disabled, .is-busy .output-connection:disabled, .voice-test .transport-button.is-busy:disabled { opacity: 1; }
 .p-keyboard__white { width: calc(100% / var(--keyboard-white-count, 22)); flex-shrink: 0; min-width: 0; font-size: var(--keyboard-label-size, 13px); }
 .p-keyboard__black { width: calc(100% / var(--keyboard-white-count, 22) * 20 / 33.2); margin-left: calc(-100% / var(--keyboard-white-count, 22) * 20 / 33.2); flex-shrink: 0; min-width: 0; }
 .p-keyboard__white:focus-visible, .p-keyboard__black:focus-visible { outline: 2px solid var(--vscode-focusBorder, #39a9c7); outline-offset: -2px; }
+.voice-test { display: flex; align-items: center; gap: 6px; margin: 8px 0; min-width: 0; }
+.voice-test label { flex: 0 0 auto; max-width: 90px; font-size: 11px; line-height: 14px; color: var(--vscode-descriptionForeground, #666); }
+.voice-test input { flex: 1 1 0; width: 0; min-width: 0; height: 28px; box-sizing: border-box; font-family: var(--vscode-editor-font-family, monospace); }
+.voice-test .transport-button { width: 28px; height: 28px; flex: 0 0 28px; padding: 0; }
+.voice-test .transport-button::before { width: 14px; height: 14px; }
+.voice-test .transport-button.is-error { background: var(--vscode-inputValidation-errorBackground, #5a1d1d); color: var(--vscode-errorForeground, #f48771); border-color: var(--vscode-inputValidation-errorBorder, #be1100); }

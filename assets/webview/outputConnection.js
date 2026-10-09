@@ -1,19 +1,30 @@
 export function createOutputConnection(root, onRequest = () => {}) {
 	const mode = root.querySelector('select');
 	const button = root.querySelector('.output-connection');
+	const reset = root.querySelector('.output-reset');
 	const available = !button.disabled;
 	let connected = false;
 	let connecting = false;
+	let resetting = false;
 	let nanoDriveAvailable = false;
 	let nanoDriveBusy = false;
 	function render() {
-		button.disabled = !available || connecting || (mode.value === 'nanodrive8' && (nanoDriveBusy || (!nanoDriveAvailable && !connected)));
-		mode.disabled = connected || connecting;
+		button.disabled = !available || connecting || resetting || (mode.value === 'nanodrive8' && (nanoDriveBusy || (!nanoDriveAvailable && !connected)));
+		mode.disabled = connected || connecting || resetting;
+		if (reset) {
+			reset.disabled = !available || !connected || connecting || resetting || (mode.value === 'nanodrive8' && nanoDriveBusy);
+			reset.setAttribute('aria-busy', String(resetting));
+			reset.title = resetting ? 'Resetting sound chip' : 'Reset sound chip';
+		}
 		button.title = connected ? 'Disconnect' : 'Connect';
 		button.setAttribute('aria-label', button.title);
 		button.setAttribute('aria-pressed', String(connected));
 	}
 	mode.addEventListener('change', render);
+	reset?.addEventListener('click', event => {
+		event.preventDefault(); event.stopPropagation();
+		if (!reset.disabled) { onRequest({ mode: mode.value, connected, reset: true }); }
+	});
 	button.addEventListener('click', event => {
 		event.preventDefault();
 		event.stopPropagation();
@@ -22,6 +33,7 @@ export function createOutputConnection(root, onRequest = () => {}) {
 	});
 	render();
 	return {
+		setResetting(value) { resetting = value === true; render(); },
 		setNanoDriveBusy(value) { nanoDriveBusy = value === true; render(); },
 		setNanoDriveAvailable(value) {
 			nanoDriveAvailable = value === true;

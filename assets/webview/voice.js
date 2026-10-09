@@ -8,6 +8,7 @@ import { createAudioMonitors } from './audioMonitors.js';
 
 const vscode = acquireVsCodeApi();
 let outputId = 0;
+let resettingOutput = false;
 let playbackId = 0;
 let playbackOperation = 0;
 let playbackState = null;
@@ -42,9 +43,22 @@ const settingsControls = createSettingsControls(document.getElementById('setting
 const keyboardControls = createKeyboardControls(document.getElementById('keyboard'), mode => {
 	keyboardMode = mode;
 	saveState();
-	}, note => { if (note.event !== 'pitchBend') { audioMonitors.setNote(note); } vscode.postMessage({ type: 'emulationNote', id: outputId, ...note }); });
+	}, note => { if (note.event !== 'pitchBend') { audioMonitors.setNote(note); } vscode.postMessage({ type: 'emulationNote', id: outputId, ...note }); },
+	(action, mml) => {
+		keyboardControls.releaseAll();
+		if (action === 'play') { keyboardControls.setVoiceTest(true); }
+		saveState();
+		vscode.postMessage({ type: 'voiceTestAction', id: outputId, action, mml });
+	});
 const outputConnections = {
 	keyboard: createOutputConnection(document.querySelector('.keyboard-output'), async request => {
+		if (request.reset) {
+			resettingOutput = true;
+			keyboardControls.releaseAll(); keyboardControls.setResetting(true); keyboardControls.setVoiceTest(false);
+			emulationAudio.clear(); outputConnections.keyboard.setResetting(true);
+			vscode.postMessage({ type: 'resetOutput', id: outputId, mode: request.mode });
+			return;
+		}
 		if (!request.connected) {
 			keyboardControls.setConnected(false); emulationAudio.disconnect();
 			audioMonitors.setConnected(false);
@@ -70,6 +84,27 @@ const outputConnections = {
 		}
 	})
 };
+for (const id of ['keyboard-reset', 'voice-test-play']) {
+	const button = document.getElementById(id);
+	button.addEventListener('click', () => {
+		if (button.disabled) { return; }
+		for (const animation of button.getAnimations({ subtree: true })) {
+			if (animation.id.startsWith('chip-action-')) { animation.cancel(); }
+		}
+		const reducedMotion = window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+		const accent = 'var(--vscode-focusBorder, #39a9c7)';
+		const ring = button.animate(reducedMotion
+			? [{ boxShadow: `0 0 0 2px ${accent}` }, { boxShadow: `0 0 0 2px ${accent}` }]
+			: [{ boxShadow: `0 0 0 0 ${accent}` }, { boxShadow: `0 0 0 2px ${accent}`, offset: .25 }, { boxShadow: '0 0 0 5px transparent' }],
+			{ duration: 600, easing: 'ease-out' });
+		ring.id = 'chip-action-ring';
+		if (id === 'keyboard-reset' && !reducedMotion) {
+			const turn = button.animate([{ transform: 'rotate(0deg)' }, { transform: 'rotate(360deg)' }],
+				{ duration: 600, easing: 'cubic-bezier(.22, 1, .36, 1)', pseudoElement: '::before' });
+			turn.id = 'chip-action-turn';
+		}
+	}, { capture: true });
+}
 document.getElementById('open-starter').addEventListener('click', () => vscode.postMessage({ type: 'openStarter' }));
 const tabs = ['start', 'voice', 'playback', 'settings'];
 const saved = vscode.getState();
@@ -87,7 +122,7 @@ keyboard.addEventListener('toggle', () => saveState());
 
 function saveState() {
 	vscode.setState({ ...snapshot, activeTab, algorithmsOpen: algorithms.open, playbackMode,
-		playbackLooped: playbackControls.looped, playbackVolume: playbackControls.volume * 100, keyboardOpen: keyboard.open, keyboardMode, monitorGain: audioMonitors.gain });
+		playbackLooped: playbackControls.looped, playbackVolume: playbackControls.volume * 100, keyboardOpen: keyboard.open, keyboardMode, monitorGain: audioMonitors.gain, voiceTestMml: keyboardControls.testMml });
 }
 
 async function playbackAction(action) {
@@ -152,7 +187,16 @@ window.addEventListener('message', event => {
 	if (message?.type === 'voice') {
 		snapshot = message;
 		voiceControls.render(message);
+		keyboardControls.setVoiceAvailable(!!message.voice && !message.error);
 		saveState();
+	} else if (message?.type === 'voiceTest' && message.id === outputId) {
+		keyboardControls.setVoiceTest(message.playing, message.error);
+	} else if (message?.type === 'outputReset' && message.id === outputId) {
+		resettingOutput = false;
+		emulationAudio.clear(); outputConnections.keyboard.setState({ connected: message.connected, connecting: false });
+		outputConnections.keyboard.setResetting(false);
+		keyboardControls.setVoiceTest(false); keyboardControls.setConnected(message.connected); keyboardControls.setResetting(false);
+		if (!message.connected) { emulationAudio.disconnect(); audioMonitors.setConnected(false); }
 	} else if (message?.type === 'playback') {
 		const changed = message.document !== playbackState?.document;
 		if (!changed && message.id !== playbackId) { return; }
@@ -176,8 +220,8 @@ window.addEventListener('message', event => {
 	} else if (message?.type === 'outputConnection' && message.target === 'keyboard'
 		&& typeof message.connected === 'boolean') {
 		if (message.target === 'keyboard') {
-			if (message.id !== outputId) { return; }
-			keyboardControls.setConnected(message.connected);
+			if (message.id !== outputId || resettingOutput) { return; }
+			keyboardControls.setConnected(message.connected && !message.connecting);
 			if (message.connected && message.mode !== 'nanodrive8') { emulationAudio.start(); audioMonitors.setConnected(true); }
 			else if (message.connected) { emulationAudio.disconnect(); audioMonitors.setConnected(false); }
 			else if (!message.connecting) { keyboardControls.releaseAll(); emulationAudio.disconnect(); audioMonitors.setConnected(false); }
@@ -202,6 +246,9 @@ window.addEventListener('message', event => {
 });
 window.addEventListener('pagehide', () => { audioMonitors.dispose(); emulationAudio.disconnect(); playbackAudio.disconnect(); });
 voiceControls.render(snapshot);
+keyboardControls.setVoiceAvailable(!!snapshot.voice && !snapshot.error);
+keyboardControls.setTestMml(saved?.voiceTestMml);
+document.getElementById('voice-test-mml').addEventListener('input', saveState);
 playbackControls.setMode(playbackMode);
 playbackControls.setOptions(saved?.playbackLooped, saved?.playbackVolume ?? 100);
 playbackAudio.setVolume(playbackControls.volume);

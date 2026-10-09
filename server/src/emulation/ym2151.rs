@@ -26,6 +26,16 @@ impl Ym2151 {
         self.chip.sample_rate()
     }
 
+    pub fn silence(&mut self) {
+        for address in 0x60..=0x7f {
+            self.write(address, 127);
+        }
+        for channel in 0..8 {
+            self.write(0x08, channel);
+        }
+        self.buffered_samples.clear();
+    }
+
     pub fn write(&mut self, address: u8, value: u8) {
         if address == 0x08 {
             let channel = usize::from(value & 7);

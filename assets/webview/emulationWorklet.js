@@ -12,6 +12,7 @@ class EmulationProcessor extends AudioWorkletProcessor {
 		this.ended = false;
 		this.port.onmessage = event => {
 			if (event.data?.type === 'start') { this.started = true; this.request(); }
+			else if (event.data?.type === 'clear') { this.read = 0; this.write = 0; this.frames = 0; this.playing = false; this.request(); }
 			else if (event.data?.type === 'finish') { this.finishing = true; }
 			else if (event.data?.type === 'pcm' && event.data.pcm instanceof ArrayBuffer && event.data.pcm.byteLength === 4096 && this.pending > 0) {
 				const block = new Float32Array(event.data.pcm);

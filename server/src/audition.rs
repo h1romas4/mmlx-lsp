@@ -4,19 +4,89 @@ pub mod polyphony;
 pub mod voice;
 
 use polyphony::{Note, Polyphony};
-use std::collections::BTreeMap;
+use std::{cell::RefCell, collections::BTreeMap, rc::Rc};
 use voice::Voice;
 
 pub const CLOCK: u32 = 3_579_545;
+
+#[derive(Default)]
+pub struct VoiceTestRegisters {
+    values: BTreeMap<u8, u8>,
+}
+
+impl VoiceTestRegisters {
+    pub fn forward(&mut self, address: u8, value: u8, mut write: impl FnMut(u8, u8)) {
+        if address >= 0x20 {
+            if address & 7 != 0 {
+                return;
+            }
+            for channel in 0..8 {
+                let address = address | channel;
+                self.capture(address, value);
+                write(address, value);
+            }
+        } else if self.capture(address, value) {
+            write(address, value);
+        }
+    }
+
+    pub fn capture(&mut self, address: u8, value: u8) -> bool {
+        if address >= 0x20 {
+            self.values.insert(address, value);
+        }
+        address != 0x08 || value & 7 == 0
+    }
+}
 
 #[derive(Default)]
 pub struct Audition {
     voices: Polyphony,
     voice: Option<Voice>,
     bends: BTreeMap<(u8, u8), i32>,
+    test_registers: Rc<RefCell<VoiceTestRegisters>>,
 }
 
 impl Audition {
+    pub fn restore_voice(&mut self) -> Vec<(u8, u8)> {
+        let mut writes = self.all_off(None, None);
+        if let Some(voice) = &self.voice {
+            for channel in 0..8 {
+                writes.extend(self.voice_registers(voice, channel, 0));
+            }
+        }
+        writes
+    }
+
+    pub fn begin_voice_test(&mut self) -> Rc<RefCell<VoiceTestRegisters>> {
+        self.test_registers.borrow_mut().values.clear();
+        Rc::clone(&self.test_registers)
+    }
+
+    fn voice_registers(&self, voice: &Voice, channel: u8, attenuation: u8) -> Vec<(u8, u8)> {
+        let settings = self.test_registers.borrow();
+        let algorithm = settings
+            .values
+            .get(&(0x20 + channel))
+            .map_or(voice.algorithm, |value| value & 7);
+        let carriers = [8_u8, 8, 8, 8, 12, 14, 14, 15][algorithm as usize];
+        voice
+            .registers(channel, attenuation)
+            .into_iter()
+            .map(|(address, original)| {
+                let value = settings.values.get(&address).map_or(original, |value| {
+                    if (0x60..=0x7f).contains(&address)
+                        && carriers & (1 << ((address - 0x60) / 8)) != 0
+                    {
+                        value.saturating_add(attenuation).min(127)
+                    } else {
+                        *value
+                    }
+                });
+                (address, value)
+            })
+            .collect()
+    }
+
     pub fn set_voice(&mut self, voice: Option<Voice>) -> Result<Vec<(u8, u8)>, String> {
         if voice.as_ref().is_some_and(|voice| !voice.validate()) {
             return Err("Invalid voice".into());
@@ -24,6 +94,7 @@ impl Audition {
         if self.voice == voice {
             return Ok(Vec::new());
         }
+        self.test_registers.borrow_mut().values.clear();
         let mut writes = self.all_off(None, None);
         if let Some(voice) = &voice {
             for channel in 0..8 {
@@ -48,9 +119,14 @@ impl Audition {
         let attenuation = self.voices.slots[channel].attenuation;
         let channel = channel as u8;
         let mut writes = vec![(0x08, channel)];
-        writes.extend(voice.registers(channel, attenuation));
+        writes.extend(self.voice_registers(voice, channel, attenuation));
         let mask = if voice.operator_mask == 0 {
-            [8, 8, 8, 8, 10, 14, 14, 15][voice.algorithm as usize]
+            let settings = self.test_registers.borrow();
+            let algorithm = settings
+                .values
+                .get(&(0x20 + channel))
+                .map_or(voice.algorithm, |value| value & 7);
+            [8, 8, 8, 8, 10, 14, 14, 15][algorithm as usize]
         } else {
             voice.operator_mask
         };
@@ -130,6 +206,56 @@ impl Audition {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn voice_test_settings_survive_restore_and_all_eight_keyboard_notes() {
+        let mut audition = Audition::default();
+        let mut voice = Voice {
+            algorithm: 7,
+            feedback: 0,
+            operator_mask: 15,
+            operators: std::array::from_fn(|_| voice::Operator {
+                ar: 31,
+                d1r: 0,
+                d2r: 0,
+                rr: 15,
+                d1l: 0,
+                tl: 32,
+                ks: 0,
+                mul: 1,
+                dt1: 0,
+                dt2: 0,
+                ame: 1,
+            }),
+        };
+        audition.set_voice(Some(voice.clone())).unwrap();
+        let registers = audition.begin_voice_test();
+        for channel in 0..8 {
+            assert!(registers.borrow_mut().capture(0x38 + channel, 0x52));
+            registers.borrow_mut().capture(0x20 + channel, 0x47);
+            registers.borrow_mut().capture(0x60 + channel, 20);
+        }
+        assert!(!registers.borrow_mut().capture(0x08, 0x79));
+        let restored = audition.restore_voice();
+        for channel in 0..8 {
+            assert!(restored.contains(&(0x38 + channel, 0x52)));
+            let writes = audition.note_on(
+                Note {
+                    source: 0,
+                    channel: 0,
+                    note: 60 + channel,
+                },
+                127,
+            );
+            assert!(writes.contains(&(0x38 + channel, 0x52)));
+            assert!(writes.contains(&(0x20 + channel, 0x47)));
+            assert!(writes.contains(&(0x60 + channel, 20)));
+        }
+        voice.feedback = 1;
+        let writes = audition.set_voice(Some(voice)).unwrap();
+        assert!(writes.contains(&(0x38, 0)));
+        assert!(registers.borrow().values.is_empty());
+    }
 
     #[test]
     fn bend_updates_only_matching_voices_without_key_on() {

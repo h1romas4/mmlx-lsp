@@ -12,6 +12,9 @@ enum Command {
     Voice {
         voice: Option<Voice>,
     },
+    Reset {
+        voice: Option<Voice>,
+    },
     NoteOn {
         source: u8,
         channel: u8,
@@ -38,6 +41,11 @@ enum Command {
         looped: bool,
         cursor: Option<usize>,
     },
+    VoiceTest {
+        mml: String,
+        voice: Voice,
+    },
+    VoiceTestStop,
     Render,
 }
 
@@ -79,6 +87,12 @@ pub fn run(input: impl BufRead, mut output: impl Write) -> Result<(), String> {
         let engine = engine.as_mut().ok_or("Emulator not initialized")?;
         match command {
             Command::Voice { voice } => engine.set_voice(voice)?,
+            Command::Reset { voice } => {
+                playback = None;
+                engine.reset(voice)?;
+                voice_test_state(&mut output, false, false)?;
+                frame(&mut output, 4, &[]).map_err(|error| error.to_string())?;
+            }
             Command::NoteOn {
                 source,
                 channel,
@@ -115,7 +129,19 @@ pub fn run(input: impl BufRead, mut output: impl Write) -> Result<(), String> {
                 playback = Some(Playback::with_cursor(&source, output_rate, looped, cursor)?);
                 playback_state(&mut output, playback.as_ref().unwrap())?;
             }
+            Command::VoiceTest { mml, voice } => {
+                let failed = engine.start_voice_test(&mml, voice).is_err();
+                if failed {
+                    engine.stop_voice_test();
+                }
+                voice_test_state(&mut output, engine.voice_test_active(), failed)?;
+            }
+            Command::VoiceTestStop => {
+                engine.stop_voice_test();
+                voice_test_state(&mut output, false, false)?;
+            }
             Command::Render => {
+                let testing = engine.voice_test_active();
                 let pcm = if let Some(playback) = playback.as_mut() {
                     playback.render()?
                 } else {
@@ -125,10 +151,23 @@ pub fn run(input: impl BufRead, mut output: impl Write) -> Result<(), String> {
                 if let Some(playback) = playback.as_ref() {
                     playback_state(&mut output, playback)?;
                 }
+                if testing {
+                    voice_test_state(
+                        &mut output,
+                        engine.voice_test_active(),
+                        engine.voice_test_failed(),
+                    )?;
+                }
             }
             Command::Init { .. } => unreachable!(),
         }
     }
+}
+
+fn voice_test_state(output: &mut impl Write, active: bool, failed: bool) -> Result<(), String> {
+    let mut state = 0_f64.to_le_bytes().to_vec();
+    state.push(if failed { 2 } else { u8::from(!active) });
+    frame(output, 3, &state).map_err(|error| error.to_string())
 }
 
 fn playback_state(output: &mut impl Write, playback: &Playback) -> Result<(), String> {

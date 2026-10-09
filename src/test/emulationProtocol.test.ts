@@ -33,7 +33,14 @@ suite('Emulation frame protocol', () => {
 		}
 	});
 	test('rejects unbounded, unexpected and truncated frames', () => {
-		for (const bytes of [[3, 4, 0, 0, 0], [2, 255, 255, 255, 255], [1, 0, 0, 0, 0]]) {
+		for (let split = 0; split <= 5; split++) {
+			const received: number[] = [];
+			const reset = Uint8Array.from([4, 0, 0, 0, 0]);
+			const decoder = new EmulationFrameDecoder((kind, bytes) => { received.push(kind); assert.strictEqual(bytes.length, 0); });
+			decoder.push(reset.subarray(0, split)); decoder.push(reset.subarray(split)); decoder.push(reset); decoder.finish();
+			assert.deepStrictEqual(received, [4, 4]);
+		}
+		for (const bytes of [[3, 4, 0, 0, 0], [2, 255, 255, 255, 255], [1, 0, 0, 0, 0], [4, 1, 0, 0, 0]]) {
 			assert.throws(() => new EmulationFrameDecoder(() => {}).push(new Uint8Array(bytes)));
 		}
 		const decoder = new EmulationFrameDecoder(() => {});

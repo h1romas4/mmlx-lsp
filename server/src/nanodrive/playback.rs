@@ -1,3 +1,4 @@
+use mmlx_lsp_server::audition::VoiceTestRegisters;
 use ndsif::{
     AudioEvent, AudioSampleConverter, AudioTiming, BytePosition, Command, CommandEncoder, Divider,
     MAX_YM2151_EVENT_WRITES, OkiClock, Pan, RegisterWrite, ZeroPair,
@@ -148,7 +149,22 @@ pub struct FmPlayback {
     ended: bool,
 }
 impl FmPlayback {
-    fn new(package: MdxPackage, looped: bool) -> Self {
+    pub(super) fn new(package: MdxPackage, looped: bool) -> Self {
+        Self::with_registers(package, looped, None)
+    }
+
+    pub(super) fn voice_test(
+        package: MdxPackage,
+        registers: Rc<RefCell<VoiceTestRegisters>>,
+    ) -> Self {
+        Self::with_registers(package, false, Some(registers))
+    }
+
+    fn with_registers(
+        package: MdxPackage,
+        looped: bool,
+        settings: Option<Rc<RefCell<VoiceTestRegisters>>>,
+    ) -> Self {
         let options = MdxToVgmOptions {
             loop_count: if looped { None } else { Some(1) },
             ..Default::default()
@@ -157,9 +173,19 @@ impl FmPlayback {
         let writes = Rc::new(RefCell::new(Vec::new()));
         let registers = Rc::clone(&writes);
         stream.on_write(move |_, spec: Ym2151Spec, _, _| {
-            registers
-                .borrow_mut()
-                .push(RegisterWrite::new(spec.register, spec.value))
+            if let Some(settings) = &settings {
+                settings
+                    .borrow_mut()
+                    .forward(spec.register, spec.value, |address, value| {
+                        registers
+                            .borrow_mut()
+                            .push(RegisterWrite::new(address, value))
+                    });
+            } else {
+                registers
+                    .borrow_mut()
+                    .push(RegisterWrite::new(spec.register, spec.value));
+            }
         });
         Self {
             stream,
@@ -170,7 +196,7 @@ impl FmPlayback {
             ended: false,
         }
     }
-    fn next(&mut self, request_id: u16) -> Result<Chunk, String> {
+    pub(super) fn next(&mut self, request_id: u16) -> Result<Chunk, String> {
         if self.ended {
             return Err("NanoDrive8 playback has ended".into());
         }

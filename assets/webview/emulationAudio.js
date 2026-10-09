@@ -42,6 +42,7 @@ export function createEmulationAudio(onRequest, onFailure, onEnded = () => {}) {
 			return audio.sampleRate;
 		},
 		start() { node?.port.postMessage({ type: 'start' }); },
+		clear() { node?.port.postMessage({ type: 'clear' }); },
 		finish() { node?.port.postMessage({ type: 'finish' }); },
 		async pause() { paused = true; await context?.suspend(); },
 		async resume() { paused = false; await context?.resume(); },

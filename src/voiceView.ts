@@ -99,6 +99,9 @@ export class VoiceViewProvider implements WebviewViewProvider {
 	private playbackState = { playing: false, paused: false, loading: false, position: 0, finished: false, error: '' };
 	private outputId = 0;
 	private keyboardOutputMode = 'emulation';
+	private voiceTesting = false;
+	private resettingOutput = false;
+	private voiceTestVoice = '';
 	private pitchBendValue = 8192;
 	private bendTimer: ReturnType<typeof setTimeout> | undefined;
 	private pendingBends = new Map<string, Extract<NanoDriveInput, { type: 'pitchBend' }>>();
@@ -135,7 +138,7 @@ export class VoiceViewProvider implements WebviewViewProvider {
 				context.subscriptions.push(this.nanodriveLog);
 			}
 			this.nanodriveLog.appendLine(`${new Date().toISOString()} ${message}`);
-		});
+		}, (playing, error) => { if (this.keyboardOutputMode === 'nanodrive8') { this.setVoiceTesting(playing, error); } });
 		this.emulation = wasm ? new EmulationSession(context.extensionUri, wasm,
 			state => {
 				this.emulationConnected = state.connected;
@@ -145,7 +148,8 @@ export class VoiceViewProvider implements WebviewViewProvider {
 					void this.view?.webview.postMessage({ type: 'outputConnection', target: 'keyboard', mode: 'emulation', id: this.outputId, ...state });
 				}
 			},
-			pcm => { void this.view?.webview.postMessage({ type: 'emulationPcm', id: this.outputId, pcm }); }) : undefined;
+			pcm => { void this.view?.webview.postMessage({ type: 'emulationPcm', id: this.outputId, pcm }); }, undefined,
+			(playing, error) => { if (this.keyboardOutputMode === 'emulation') { this.setVoiceTesting(playing, error); } }) : undefined;
 		this.playback = wasm ? new EmulationSession(context.extensionUri, wasm,
 			state => {
 				this.playbackConnected = state.connected;
@@ -229,6 +233,8 @@ export class VoiceViewProvider implements WebviewViewProvider {
 				else if (message?.type === 'updateMidiInput') { void this.updateMidiInput(message); }
 				else if (message?.type === 'setMidiInputConnection') { void this.setMidiInputConnection(message); }
 				else if (message?.type === 'setOutputConnection') { void this.setOutputConnection(message); }
+				else if (message?.type === 'resetOutput') { void this.resetOutput(message); }
+				else if (message?.type === 'voiceTestAction') { void this.voiceTestAction(message); }
 				else if (message?.type === 'playbackAction') { void this.playbackAction(message); }
 				else if (message?.type === 'playbackRender' && message.id === this.playbackId
 					&& (this.playbackState.playing || this.playbackState.paused) && !this.playbackState.finished) { this.playback?.request(message.blocks); }
@@ -279,6 +285,9 @@ export class VoiceViewProvider implements WebviewViewProvider {
 	}
 
 	private async setOutputConnection(message: { target: unknown; mode: unknown; connected: unknown; sampleRate?: unknown; id?: unknown }): Promise<void> {
+		if (message.target === 'keyboard' && this.voiceTesting) {
+			this.emulation?.stopVoiceTest(); await this.nanodrive.stopVoiceTest();
+		}
 		this.flushPitchBends();
 		if (!['keyboard', 'playback'].includes(String(message.target)) || typeof message.connected !== 'boolean') { return; }
 		if (message.target === 'keyboard' && Number.isInteger(message.id)) { this.outputId = message.id as number; }
@@ -302,6 +311,23 @@ export class VoiceViewProvider implements WebviewViewProvider {
 			await this.nanodrive.disconnectOutput();
 			if (id === this.outputId && this.keyboardOutputMode === 'emulation') {
 				await this.emulation!.connect(message.sampleRate as number, this.snapshot.voice);
+			}
+		}
+	}
+
+	private async resetOutput(message: { id: unknown; mode: unknown }): Promise<void> {
+		if (message.id !== this.outputId || message.mode !== this.keyboardOutputMode || this.resettingOutput || !workspace.isTrusted) { return; }
+		const id = this.outputId;
+		this.resettingOutput = true;
+		clearTimeout(this.bendTimer); this.bendTimer = undefined; this.pendingBends.clear();
+		try {
+			if (this.keyboardOutputMode === 'nanodrive8') { await this.nanodrive.resetOutput(this.snapshot.voice); }
+			else { await this.emulation?.reset(this.snapshot.voice); }
+		} finally {
+			this.resettingOutput = false;
+			if (id === this.outputId) {
+				this.setVoiceTesting(false); this.restorePitchBends();
+				void this.view?.webview.postMessage({ type: 'outputReset', id, connected: this.keyboardOutputMode === 'nanodrive8' ? this.nanodrive.outputState.connected : this.emulationConnected });
 			}
 		}
 	}
@@ -331,8 +357,32 @@ export class VoiceViewProvider implements WebviewViewProvider {
 	}
 
 	private sendNote(command: Exclude<NanoDriveInput, { type: 'init' | 'voice' } | { type: 'stop' }>): void {
+		if (this.voiceTesting || this.resettingOutput) { return; }
 		if (this.keyboardOutputMode === 'nanodrive8') { this.nanodrive.note(command); }
 		else { this.emulation?.note(command); }
+	}
+
+	private setVoiceTesting(playing: boolean, error = false): void {
+		this.voiceTesting = playing;
+		this.voiceTestVoice = playing ? JSON.stringify(this.snapshot.voice) : '';
+		void this.view?.webview.postMessage({ type: 'voiceTest', id: this.outputId, playing, error });
+	}
+
+	private async voiceTestAction(message: { id: unknown; action: unknown; mml: unknown }): Promise<void> {
+		if (message.id !== this.outputId) { return; }
+		if (message.action === 'stop') {
+			this.emulation?.stopVoiceTest(); await this.nanodrive.stopVoiceTest(); return;
+		}
+		if (message.action !== 'play' || !workspace.isTrusted || !this.snapshot.voice || this.snapshot.error
+			|| typeof message.mml !== 'string' || !message.mml.trim() || message.mml.length > 8192 || /[\r\n]/.test(message.mml)) {
+			this.setVoiceTesting(false, true); return;
+		}
+		this.voiceTestVoice = JSON.stringify(this.snapshot.voice);
+		if (this.keyboardOutputMode === 'nanodrive8' && this.nanodrive.outputState.connected) {
+			await this.nanodrive.startVoiceTest(message.mml, this.snapshot.voice);
+		} else if (this.keyboardOutputMode === 'emulation' && this.emulationConnected) {
+			this.emulation?.startVoiceTest(message.mml, this.snapshot.voice);
+		} else { this.setVoiceTesting(false); }
 	}
 
 	private sendPlayback(): void {
@@ -731,6 +781,9 @@ export class VoiceViewProvider implements WebviewViewProvider {
 	}
 
 	private send(): void {
+		if (this.voiceTesting && (this.snapshot.error || this.voiceTestVoice !== JSON.stringify(this.snapshot.voice))) {
+			this.emulation?.stopVoiceTest(); void this.nanodrive.stopVoiceTest();
+		}
 		if (!this.snapshot.error) { this.emulation?.setVoice(this.snapshot.voice); this.nanodrive.setVoice(this.snapshot.voice); }
 		const target = this.editTarget;
 		const editable = !!target && !this.editing && !this.snapshot.retained && !this.snapshot.error

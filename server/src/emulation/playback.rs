@@ -1,8 +1,9 @@
 use super::{audio::Audio, ym2151::Ym2151};
+use crate::audition::VoiceTestRegisters;
 use mmlx::mdx::frontend::{self, MdxLocation};
 use soundlog::chip::Ym2151Spec;
 use soundlog::mdx::command::MdxCommand;
-use soundlog::mdx::{convert::MdxToVgmOptions, package::MdxPackage};
+use soundlog::mdx::{convert::MdxToVgmOptions, document::MdxDocument, package::MdxPackage};
 use soundlog::vgm::{VgmCallbackStream, command::VgmCommand, stream::StreamResult};
 use std::{cell::RefCell, rc::Rc};
 
@@ -127,6 +128,22 @@ impl Playback {
         looped: bool,
         cursor: Option<usize>,
     ) -> Result<Self, String> {
+        Self::with_chip(
+            source,
+            sample_rate,
+            looped,
+            cursor,
+            Rc::new(RefCell::new(Ym2151::default())),
+        )
+    }
+
+    pub(super) fn with_chip(
+        source: &str,
+        sample_rate: u32,
+        looped: bool,
+        cursor: Option<usize>,
+        chip: Rc<RefCell<Ym2151>>,
+    ) -> Result<Self, String> {
         let parsed = mmlx::mdx::parse(source).map_err(|error| error.to_string())?;
         let mdx = mmlx::mdx::compile(&parsed).map_err(|error| error.to_string())?;
         let options = MdxToVgmOptions {
@@ -136,13 +153,44 @@ impl Playback {
         let target = cursor
             .map(|offset| cursor_sample(source, offset, options))
             .transpose()?;
+        Self::with_document(mdx, sample_rate, looped, target, chip, None)
+    }
+
+    pub(super) fn voice_test(
+        mdx: MdxDocument,
+        sample_rate: u32,
+        chip: Rc<RefCell<Ym2151>>,
+        registers: Rc<RefCell<VoiceTestRegisters>>,
+    ) -> Result<Self, String> {
+        Self::with_document(mdx, sample_rate, false, None, chip, Some(registers))
+    }
+
+    fn with_document(
+        mdx: MdxDocument,
+        sample_rate: u32,
+        looped: bool,
+        target: Option<u64>,
+        chip: Rc<RefCell<Ym2151>>,
+        registers: Option<Rc<RefCell<VoiceTestRegisters>>>,
+    ) -> Result<Self, String> {
+        let options = MdxToVgmOptions {
+            loop_count: if looped { None } else { Some(1) },
+            ..MdxToVgmOptions::default()
+        };
         let mut stream =
             VgmCallbackStream::from_generator((MdxPackage { mdx, pdx: None }, options).into());
-        let chip = Rc::new(RefCell::new(Ym2151::default()));
         let native_rate = chip.borrow().sample_rate();
         let writes = Rc::clone(&chip);
         stream.on_write(move |_instance, spec: Ym2151Spec, _sample, _events| {
-            writes.borrow_mut().write(spec.register, spec.value);
+            if let Some(registers) = &registers {
+                registers
+                    .borrow_mut()
+                    .forward(spec.register, spec.value, |address, value| {
+                        writes.borrow_mut().write(address, value)
+                    });
+            } else {
+                writes.borrow_mut().write(spec.register, spec.value);
+            }
         });
         let mut playback = Self {
             audio: Audio::new(native_rate, sample_rate)?,

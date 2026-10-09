@@ -27,6 +27,10 @@ impl Audio {
         self.render_with(|frames| Ok(chip.generate(frames)))
     }
 
+    pub fn reset(&mut self) {
+        self.resampler.reset();
+    }
+
     pub fn render_with(
         &mut self,
         generate: impl FnOnce(usize) -> Result<Vec<Vec<f32>>, String>,

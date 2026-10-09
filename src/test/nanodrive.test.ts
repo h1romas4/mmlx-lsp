@@ -156,6 +156,53 @@ suite('NanoDrive8 connection', () => {
             return codec(params);
         };
     };
+    test('voice test preserves Keyboard Output after end, Stop, immediate cancellation, invalid MML and pending PING', async () => {
+        for (const scenario of ['end', 'stop', 'immediate', 'invalid', 'runtime', 'ping']) {
+            const port = new Port(); const base = fmCodec(); const states: boolean[] = [];
+            const errors: boolean[] = [];
+            let initialized = 0;
+            const connection = new NanoDriveConnection(async params => {
+                if (params.operation === 'voiceTestInit') {
+                    initialized++;
+                    if (scenario === 'invalid') { throw new Error('Invalid MML'); }
+                    await base({ operation: 'playbackInit', looped: false }); return null;
+                }
+                if (params.operation === 'voiceTestNext') {
+                    if (scenario === 'runtime') { throw new Error('Undefined MML voice'); }
+                    return base({ operation: 'playbackNext', requestId: params.requestId });
+                }
+                if (params.operation === 'voiceTestStop') {
+                    return codec({ operation: 'audition', session: params.session, requestId: params.requestId, command: { type: 'allOff' } });
+                }
+                return codec(params);
+            }, () => {}, async () => port, 500, undefined, undefined, undefined, (playing, error) => { states.push(playing); errors.push(error === true); });
+            try {
+                await connection.connect('test'); await connection.connectOutput(null);
+                const start = port.commands.length;
+                if (scenario === 'ping') { port.ignore = 'ping'; }
+                const playing = connection.startVoiceTest('t120 o4 c4', null);
+                if (scenario === 'immediate') { await connection.stopVoiceTest(); }
+                if (scenario === 'stop' || scenario === 'ping') {
+                    const expected = scenario === 'ping' ? 1 : 2;
+                    for (let count = 0; count < 100 && port.commands.filter(command => command.command === 'fmBurst').length < expected; count++) {
+                        await new Promise(resolve => setTimeout(resolve, 2));
+                    }
+                    assert.strictEqual(port.commands.filter(command => command.command === 'fmBurst').length, expected);
+                    port.ignore = ''; await connection.stopVoiceTest();
+                }
+                await playing;
+                assert.ok(connection.state.connected && connection.outputState.connected && port.isOpen);
+                assert.ok(port.commands.slice(start).every(command => !['reset', 'setPlaybackClock', 'audioStart', 'audioData'].includes(command.command)));
+                if (scenario === 'immediate') { assert.strictEqual(initialized, 0); }
+                else { assert.ok(states.includes(true)); assert.strictEqual(states.at(-1), false); }
+                assert.strictEqual(errors.includes(true), scenario === 'invalid' || scenario === 'runtime', 'Only MML failures report an error, not end or cancellation');
+                if (scenario === 'stop') { assert.strictEqual(port.commands.filter(command => command.command === 'fmBurst').length, 2); }
+                connection.note({ type: 'noteOn', source: 0, channel: 0, note: 60, velocity: 127 });
+                await new Promise<void>(resolve => setImmediate(resolve));
+                assert.strictEqual(port.commands.at(-1)?.input?.type, 'noteOn');
+            } finally { await connection.disconnect(); }
+        }
+    });
     const waitForStart = async (port: Port) => {
         for (let count = 0; count < 100 && !port.commands.some(command => command.command === 'audioStart'); count++) { await new Promise(resolve => setTimeout(resolve, 2)); }
         assert.ok(port.commands.some(command => command.command === 'audioStart'));
@@ -320,6 +367,37 @@ suite('NanoDrive8 connection', () => {
         await connection.connectOutput(null);
         assert.notStrictEqual(port.commands.at(-2)?.session, port.commands[5].session);
         await connection.disconnect(); assert.ok(!connection.outputState.connected && !port.isOpen);
+    });
+
+    test('keyboard reset sends RESET and reinitializes without closing Settings or the port', async () => {
+        const port = new Port();
+        const connection = new NanoDriveConnection(codec, () => {}, async () => port, 100);
+        try {
+            await connection.connect('test'); await connection.connectOutput(null);
+            const session = port.commands.at(-2)?.session;
+            const start = port.commands.length;
+            await connection.resetOutput(null);
+            assert.deepStrictEqual(port.commands.slice(start).map(request => request.command), ['audition', 'ping', 'reset', 'audition', 'ping']);
+            assert.strictEqual(port.commands.at(-2)?.input?.type, 'init');
+            assert.notStrictEqual(port.commands.at(-2)?.session, session);
+            assert.ok(connection.state.connected && connection.outputState.connected && port.isOpen);
+            connection.note({ type: 'noteOn', source: 0, channel: 0, note: 69, velocity: 127 });
+            await new Promise<void>(resolve => setImmediate(resolve));
+            assert.strictEqual(port.commands.at(-1)?.input?.type, 'noteOn');
+        } finally { await connection.disconnect(); }
+    });
+
+    test('keyboard RESET failure closes the port without retrying RESET', async () => {
+        const port = new Port();
+        const connection = new NanoDriveConnection(codec, () => {}, async () => port, 100);
+        try {
+            await connection.connect('test'); await connection.connectOutput(null);
+            const start = port.commands.length;
+            port.ignore = 'reset'; await connection.resetOutput(null);
+            assert.ok(!connection.state.connected && !connection.outputState.connected && !port.isOpen);
+            assert.strictEqual(port.commands.slice(start).filter(request => request.command === 'reset').length, 1);
+            assert.ok(!port.commands.slice(start).some(request => request.input?.type === 'init'));
+        } finally { await connection.disconnect(); }
     });
 
     test('canceling delayed keyboard initialization cannot enable or send stale notes', async () => {

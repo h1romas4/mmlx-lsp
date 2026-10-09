@@ -28,7 +28,9 @@ export type NanoDriveCodec = (params: { operation: 'encode'; command: NanoDriveC
     | { operation: 'upload'; asset: 'source' | 'pdx'; offset: number; bytes: number[] }
     | { operation: 'playbackInfo' | 'playbackStop' }
     | { operation: 'playbackInit'; looped: boolean; adpcmMode?: NanoDriveAdpcmMode }
-    | { operation: 'playbackNext'; requestId: number }) => Promise<{ bytes: number[] | Uint8Array; count?: number; position?: number; ended?: boolean; fm?: boolean; synchronize?: boolean } | { pdxName?: string | null; audio?: boolean } | NanoDriveReply | null>;
+    | { operation: 'playbackNext'; requestId: number }
+    | { operation: 'voiceTestInit'; session: number; mml: string; voice: unknown }
+    | { operation: 'voiceTestNext' | 'voiceTestStop'; session: number; requestId: number }) => Promise<{ bytes: number[] | Uint8Array; count?: number; position?: number; ended?: boolean; fm?: boolean; synchronize?: boolean } | { pdxName?: string | null; audio?: boolean } | NanoDriveReply | null>;
 type NanoDriveChunk = Extract<Awaited<ReturnType<NanoDriveCodec>>, { bytes: number[] | Uint8Array }>;
 export interface NanoDriveState {
     port: string; connected: boolean; connecting: boolean; closing: boolean;
@@ -80,6 +82,9 @@ export class NanoDriveConnection {
     private session = 0;
     private outputStarting = false;
     private outputClosing?: Promise<void>;
+    private voiceTesting = false;
+    private voiceTestGeneration = 0;
+    private voiceTestStopping?: Promise<void>;
     private inputs: Promise<void> = Promise.resolve();
     private queued = 0;
     private voice = '';
@@ -92,11 +97,54 @@ export class NanoDriveConnection {
         private readonly responseTimeout = 1000,
         private readonly onOutput: (state: NanoDriveOutputState) => void = () => {},
         private readonly onPlayback: (state: NanoDrivePlaybackState) => void = () => {},
-        private readonly onDiagnostic: (message: string) => void = () => {}) {}
+        private readonly onDiagnostic: (message: string) => void = () => {},
+        private readonly onVoiceTest: (playing: boolean, error?: boolean) => void = () => {}) {}
 
     get state(): NanoDriveState { return { ...this.snapshot }; }
     get outputState(): NanoDriveOutputState { return { ...this.output }; }
     get playbackState(): NanoDrivePlaybackState { return { ...this.hardwarePlayback }; }
+
+    async startVoiceTest(mml: string, voice: unknown): Promise<void> {
+        const stopping = this.stopVoiceTest(); const token = ++this.voiceTestGeneration;
+        await stopping;
+        if (token !== this.voiceTestGeneration || !this.output.connected || this.hardwarePlayback.busy) { return; }
+        const connection = this.generation;
+        const output = this.outputGeneration; const session = this.session;
+        const check = () => {
+            if (token !== this.voiceTestGeneration || connection !== this.generation || output !== this.outputGeneration) { throw new Error('Voice test canceled.'); }
+        };
+        this.voiceTesting = true; this.onVoiceTest(true);
+        let failed = false;
+        try {
+            await this.input({ type: 'allOff' }); check();
+            await this.codec({ operation: 'voiceTestInit', session, mml, voice }); check();
+            await this.playFm(connection, token, check, session); check();
+        } catch { failed = true; }
+        if (token === this.voiceTestGeneration) { await this.stopVoiceTest(failed); }
+    }
+
+    stopVoiceTest(failed = false): Promise<void> {
+        this.voiceTestGeneration++;
+        if (this.voiceTestStopping) { return this.voiceTestStopping; }
+        if (!this.voiceTesting) { return Promise.resolve(); }
+        this.pending?.reject(new Error('Voice test canceled.'));
+        const connection = this.generation; const session = this.session;
+        const stopping = (async () => {
+            try {
+                await this.inputs;
+                const requestId = this.requestId & 0xffff; this.requestId += 3;
+                const result = await this.codec({ operation: 'voiceTestStop', session, requestId });
+                if (connection !== this.generation) { return; }
+                if (!result || !('bytes' in result)) { throw new Error('Invalid voice test stop.'); }
+                await this.write(result.bytes, connection, false);
+                await this.request('ping', [...randomBytes(8)]);
+            } catch (error) {
+                if (connection === this.generation) { await this.disconnect(String(error)); }
+            } finally { this.voiceTesting = false; this.onVoiceTest(false, failed); }
+        })();
+        this.voiceTestStopping = stopping;
+        return stopping.finally(() => { if (this.voiceTestStopping === stopping) { this.voiceTestStopping = undefined; } });
+    }
 
     async startPlayback(source: string, looped: boolean, loadPdx: (name: string) => Promise<Uint8Array>,
         options: { adpcmMode?: NanoDriveAdpcmMode; pdxConfigured?: boolean } = {}): Promise<void> {
@@ -227,13 +275,14 @@ export class NanoDriveConnection {
         }
     }
 
-    private async playFm(connection: number, token: number, check: () => void): Promise<void> {
+    private async playFm(connection: number, token: number, check: () => void, voiceTestSession?: number): Promise<void> {
         let origin = performance.now();
         let position = 0;
-        this.hardwarePlayback.loading = false; this.hardwarePlayback.playing = true; this.onPlayback(this.playbackState);
+        if (voiceTestSession === undefined) { this.hardwarePlayback.loading = false; this.hardwarePlayback.playing = true; this.onPlayback(this.playbackState); }
         while (true) {
             check(); const requestId = this.requestId & 0xffff; this.requestId += 8192;
-            const chunk = await this.codec({ operation: 'playbackNext', requestId }); check();
+            const chunk = await this.codec(voiceTestSession === undefined ? { operation: 'playbackNext', requestId }
+                : { operation: 'voiceTestNext', session: voiceTestSession, requestId }); check();
             if (!chunk || !('bytes' in chunk) || chunk.fm !== true || !Number.isInteger(chunk.count) || chunk.count! < 0 || chunk.count! > 8192
                 || !Number.isSafeInteger(chunk.position) || chunk.position! < position || typeof chunk.ended !== 'boolean' || typeof chunk.synchronize !== 'boolean'
                 || ((chunk.count === 0) !== (chunk.bytes.length === 0))) { throw new Error('Invalid NanoDrive8 FM chunk.'); }
@@ -242,17 +291,17 @@ export class NanoDriveConnection {
                 check();
                 const now = performance.now();
                 const elapsed = Math.max(0, (now - origin) / 1000);
-                if (Math.floor(elapsed * 10) !== Math.floor(this.hardwarePlayback.position * 10)) { this.hardwarePlayback.position = elapsed; this.onPlayback(this.playbackState); }
+                if (voiceTestSession === undefined && Math.floor(elapsed * 10) !== Math.floor(this.hardwarePlayback.position * 10)) { this.hardwarePlayback.position = elapsed; this.onPlayback(this.playbackState); }
                 await new Promise<void>(resolve => setTimeout(resolve, Math.max(1, Math.min(10, deadline - now))));
             }
             check();
-            if (chunk.bytes.length) { await this.write(chunk.bytes, connection, false, token); check(); }
+            if (chunk.bytes.length) { await this.write(chunk.bytes, connection, false, voiceTestSession === undefined ? token : undefined); check(); }
             if (chunk.synchronize) {
-                await this.request('ping', [...randomBytes(8)]); check();
+                await this.request('ping', [...randomBytes(8)], check); check();
                 origin = performance.now() - chunk.position! / 44.1;
             }
             position = chunk.position!;
-            this.hardwarePlayback.position = position / 44100;
+            if (voiceTestSession === undefined) { this.hardwarePlayback.position = position / 44100; }
             if (chunk.ended) { return; }
         }
     }
@@ -277,7 +326,14 @@ export class NanoDriveConnection {
         return stopping.finally(() => { if (this.playbackStopping === stopping) { this.playbackStopping = undefined; } });
     }
 
-    async connectOutput(voice: unknown): Promise<void> {
+    async resetOutput(voice: unknown): Promise<void> {
+        if (!this.output.connected || this.hardwarePlayback.busy || this.outputStarting) { return; }
+        const connection = this.generation;
+        await this.disconnectOutput();
+        if (connection === this.generation && this.snapshot.connected) { await this.connectOutput(voice, true); }
+    }
+
+    async connectOutput(voice: unknown, reset = false): Promise<void> {
         if (this.hardwarePlayback.busy) { return; }
         if (this.outputStarting || this.output.connected) { return; }
         this.outputStarting = true;
@@ -295,6 +351,10 @@ export class NanoDriveConnection {
             this.voice = JSON.stringify(voice);
             this.output = { connected: false, connecting: true, error: '' }; this.emitOutput();
             try {
+                if (reset) {
+                    await this.request('reset');
+                    if (connection !== this.generation || generation !== this.outputGeneration) { return; }
+                }
                 await this.input({ type: 'init', voice });
                 if (connection !== this.generation || generation !== this.outputGeneration) { return; }
                 await this.request('ping', [...randomBytes(8)]);
@@ -302,13 +362,14 @@ export class NanoDriveConnection {
                 this.output = { connected: true, connecting: false, error: '' }; this.emitOutput();
             } catch (error) {
                 if (connection === this.generation && generation === this.outputGeneration) {
-                    await this.disconnect(error instanceof Error ? error.message : String(error));
+                    await this.disconnect(error instanceof Error ? error.message : String(error), !reset);
                 }
             }
         } finally { this.outputStarting = false; }
     }
 
     disconnectOutput(): Promise<void> {
+        if (this.voiceTesting || this.voiceTestStopping) { return this.stopVoiceTest().then(() => this.disconnectOutput()); }
         if (this.outputClosing) { return this.outputClosing; }
         if (!this.output.connected && !this.output.connecting) {
             if (this.outputStarting) { this.outputGeneration++; }
@@ -345,7 +406,7 @@ export class NanoDriveConnection {
     }
 
     note(command: Exclude<NanoDriveInput, { type: 'init' | 'voice' } | { type: 'stop' }>): void {
-        if (this.output.connected) { void this.input(command).catch(() => {}); }
+        if (this.output.connected && !this.voiceTesting) { void this.input(command).catch(() => {}); }
     }
 
     private emitOutput(): void { this.onOutput(this.outputState); }
@@ -435,6 +496,7 @@ export class NanoDriveConnection {
         if (this.closing) { return this.closing; }
         const wasConnected = this.snapshot.connected;
         this.generation++;
+        this.voiceTestGeneration++; this.voiceTesting = false; this.onVoiceTest(false);
         this.playbackGeneration++;
         if (this.hardwarePlayback.busy) {
             this.hardwarePlayback = { busy: false, playing: false, loading: false, position: 0, finished: false, error };
@@ -506,9 +568,10 @@ export class NanoDriveConnection {
         await this.write(bytes, generation);
     }
 
-    private async request(command: NanoDriveCommand, payload: number[] = []): Promise<NanoDriveReply> {
+    private async request(command: NanoDriveCommand, payload: number[] = [], check?: () => void): Promise<NanoDriveReply> {
         const generation = this.generation;
         const bytes = await this.encode(command, payload);
+        check?.();
         if (generation !== this.generation || !this.port) { throw new Error('NanoDrive8 connection canceled.'); }
         if (this.pending) { throw new Error('An NDSIF request is already pending.'); }
         return new Promise<NanoDriveReply>((resolve, reject) => {

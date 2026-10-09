@@ -1,9 +1,36 @@
-export function createKeyboardControls(root, onModeChange = () => {}, onNote = () => {}) {
+export function createKeyboardControls(root, onModeChange = () => {}, onNote = () => {}, onVoiceTest = () => {}) {
 	const body = root.querySelector('.p-keyboard__body');
 	const wrapper = root.querySelector('.p-keyboard__wrapper');
 	const mode = root.querySelector('#keyboard-mode');
 	const midiStatus = root.querySelector('#keyboard-midi-status');
 	const bend = root.querySelector('#keyboard-pitch-bend');
+	const testInput = root.querySelector('#voice-test-mml');
+	const testPlay = root.querySelector('#voice-test-play');
+	let outputConnected = false;
+	let resetting = false;
+	let testPlaying = false;
+	let testError = false;
+	let voiceAvailable = false;
+	function updateTestControls() {
+		if (!testInput) { return; }
+		testInput.disabled = testPlaying || resetting;
+		testPlay.disabled = resetting || !testPlaying && (!outputConnected || !voiceAvailable || !testInput.value.trim());
+		testPlay.classList.toggle('is-busy', resetting && outputConnected && voiceAvailable && !!testInput.value.trim());
+		testPlay.classList.toggle('transport-play', !testPlaying);
+		testPlay.classList.toggle('transport-stop', testPlaying);
+		testPlay.classList.toggle('is-error', testError);
+		testPlay.title = testError ? 'MML error' : testPlaying ? 'Stop voice test' : 'Play voice test';
+		testPlay.setAttribute('aria-label', testPlaying ? 'Stop voice test' : 'Play voice test');
+		testPlay.setAttribute('aria-pressed', String(testPlaying));
+		testInput.setAttribute('aria-invalid', String(testError));
+	}
+	testInput?.addEventListener('input', () => { testError = false; updateTestControls(); });
+	testInput?.addEventListener('keydown', event => {
+		if (event.key !== 'Enter' || event.isComposing || event.keyCode === 229 || event.repeat || testInput.disabled || testPlaying) { return; }
+		event.preventDefault(); event.stopPropagation();
+		testPlay.click();
+	});
+	testPlay?.addEventListener('click', () => { if (!testPlay.disabled) { testError = false; updateTestControls(); onVoiceTest(testPlaying ? 'stop' : 'play', testInput.value); } });
 	let bendValue = 8192;
 	let bending = false;
 
@@ -146,15 +173,30 @@ export function createKeyboardControls(root, onModeChange = () => {}, onNote = (
 	return {
 		releaseAll,
 		setConnected(value) {
-			connected = value === true;
+			outputConnected = value === true;
+			connected = outputConnected && !testPlaying && !resetting;
+			updateTestControls();
 			bend.disabled = !connected;
 			if (!connected) { releaseAll(); setBend(8192, false); }
-			root.classList.toggle('is-disconnected', !connected);
+			root.classList.toggle('is-disconnected', !outputConnected);
+			root.classList.toggle('is-busy', outputConnected && (testPlaying || resetting));
 			body.setAttribute('aria-disabled', String(!connected));
 			for (const [index, key] of [...wrapper.children].entries()) {
 				key.tabIndex = connected && index === 0 ? 0 : -1;
 				updateKey(key);
 			}
+		},
+		setVoiceAvailable(value) { voiceAvailable = value === true; updateTestControls(); },
+		setResetting(value) { resetting = value === true; this.setConnected(outputConnected); },
+		setVoiceTest(playing, error = false) { testPlaying = playing === true; testError = error === true; this.setConnected(outputConnected); },
+		get testMml() { return testInput?.value ?? ''; },
+		setTestMml(value) {
+			if (!testInput) { return; }
+			const saved = typeof value === 'string' ? value : '';
+			const trimmed = saved.trim();
+			testInput.value = !trimmed || trimmed === 't120 o4 l8 cdefgab>c4' || trimmed === 'MH0,200,64,0,5,0,1'
+				? testInput.defaultValue : saved.slice(0, 8192);
+			updateTestControls();
 		},
 		setMidiState(state) {
 			midiStatus.hidden = state.connected !== true;

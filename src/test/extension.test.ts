@@ -163,6 +163,94 @@ function waitForDiagnostics(uri: vscode.Uri, count: number): Promise<void> {
 }
 
 suite('mmlx extension', () => {
+	test('FM Voice MML test plays through the connected WASM, finishes silently and reports MML errors', async function () {
+		this.timeout(20000);
+		const extension = vscode.extensions.all.find(extension => extension.packageJSON.name === 'mmlx-lsp'); assert.ok(extension);
+		const voice = { algorithm: 7, feedback: 0, operatorMask: 15, operators: Array.from({ length: 4 }, () => ({
+			ar: 31, d1r: 0, d2r: 0, rr: 15, d1l: 0, tl: 32, ks: 0, mul: 1, dt1: 0, dt2: 0, ame: 1
+		})) };
+		let state: EmulationState | undefined; let testing = false; let testError = false;
+		let receive!: (pcm: ArrayBuffer) => void;
+		const changed = new vscode.EventEmitter<boolean>();
+		const session = new EmulationSession(extension.extensionUri, await Wasm.load(), value => { state = value; }, pcm => receive(pcm), undefined,
+			(playing, error) => { testing = playing; testError = error; changed.fire(playing); });
+		const render = () => new Promise<ArrayBuffer>(resolve => { receive = resolve; session.request(); });
+		const energy = (pcm: ArrayBuffer) => new Float32Array(pcm).reduce((sum, value) => sum + Math.abs(value), 0);
+		try {
+			await session.connect(48000, voice); assert.ok(state?.connected);
+			session.note({ type: 'noteOn', source: 0, channel: 0, note: 84, velocity: 127 });
+			for (let count = 0; count < 10; count++) { await render(); }
+			session.startVoiceTest('t240 y24,128 y25,64 o4 c16', voice);
+			let total = 0;
+			for (let count = 0; count < 100 && testing; count++) { total += energy(await render()); }
+			assert.ok(total > 1 && !testing && state?.connected);
+			for (let count = 0; count < 10; count++) {
+				assert.ok(new Float32Array(await render()).every(value => Math.abs(value) < 0.0001), 'No extra tone after the MML test');
+			}
+			session.startVoiceTest('MH0,200,64,0,5,0,1 t240 o4 c16', voice);
+			for (let count = 0; count < 100 && testing; count++) { await render(); }
+			assert.ok(!testing && !testError);
+			session.note({ type: 'noteOn', source: 0, channel: 0, note: 69, velocity: 127 });
+			const samples: number[] = [];
+			for (let count = 0; count < 80; count++) {
+				const pcm = new Float32Array(await render());
+				for (let index = 0; index < pcm.length; index += 2) { samples.push(pcm[index]); }
+			}
+			const crossings: number[] = [];
+			for (let index = 4096; index < samples.length - 1; index++) {
+				if (samples[index] <= 0 && samples[index + 1] > 0) { crossings.push(index); }
+			}
+			const periods = crossings.slice(1).map((value, index) => value - crossings[index]);
+			assert.ok(periods.length > 100 && Math.max(...periods) - Math.min(...periods) > 3, 'MML hardware LFO persists in real WASM keyboard audio');
+			const reset = session.reset(voice);
+			assert.strictEqual(session.reset(voice), reset, 'Repeated reset waits for the same operation');
+			assert.ok(await reset);
+			assert.ok(state?.connected && !testing && !testError, 'Reset keeps the WASM process connected');
+			assert.strictEqual(energy(await render()), 0, 'Reset silences old keyboard audio');
+			session.note({ type: 'noteOn', source: 0, channel: 0, note: 69, velocity: 127 });
+			assert.ok(energy(await render()) > 1, 'Keyboard notes work after reset');
+			session.startVoiceTest('invalid???', voice);
+			await new Promise<void>((resolve, reject) => {
+				const timer = setTimeout(() => { subscription.dispose(); reject(new Error('Voice test error did not stop')); }, 3000);
+				const subscription = changed.event(playing => { if (!playing) { clearTimeout(timer); subscription.dispose(); resolve(); } });
+			});
+			assert.ok(testError && state?.connected && !state.error);
+			session.startVoiceTest('@42 o4 c16', voice);
+			for (let count = 0; count < 100 && testing; count++) { await render(); }
+			assert.ok(!testing && testError && state?.connected, 'Runtime MML errors also preserve the connection');
+			session.startVoiceTest('o4 c1', voice); await render(); session.stopVoiceTest();
+			assert.ok(!testing && !testError && state?.connected);
+			session.note({ type: 'noteOn', source: 0, channel: 0, note: 60, velocity: 127 });
+			for (let count = 0; count < 5; count++) { await render(); }
+			assert.ok(energy(await render()) > 1);
+		} finally { session.dispose(); changed.dispose(); }
+	});
+	test('Webview AudioWorklet clears old PCM while preserving in-flight requests', async () => {
+		const extension = vscode.extensions.all.find(extension => extension.packageJSON.name === 'mmlx-lsp'); assert.ok(extension);
+		const source = new TextDecoder().decode(await vscode.workspace.fs.readFile(vscode.Uri.joinPath(extension.extensionUri, 'assets', 'webview', 'emulationWorklet.js')));
+		const { runInNewContext } = await import('node:vm');
+		const requests: { type: string; blocks?: number }[] = [];
+		let Processor!: new () => { frames: number; pending: number; port: { onmessage: (event: { data: unknown }) => void }; process: (inputs: unknown[], outputs: Float32Array[][]) => boolean };
+		runInNewContext(source, {
+			ArrayBuffer, Float32Array,
+			AudioWorkletProcessor: class { port = { postMessage: (message: { type: string; blocks?: number }) => requests.push(message) }; },
+			registerProcessor: (_name: string, constructor: typeof Processor) => { Processor = constructor; }
+		});
+		const processor = new Processor();
+		const send = (data: object) => processor.port.onmessage({ data });
+		send({ type: 'start' });
+		send({ type: 'pcm', pcm: new Float32Array(1024).fill(0.5).buffer });
+		send({ type: 'pcm', pcm: new Float32Array(1024).fill(0.5).buffer });
+		assert.strictEqual(processor.frames, 1024); assert.strictEqual(processor.pending, 2);
+		send({ type: 'clear' });
+		assert.strictEqual(processor.frames, 0); assert.strictEqual(processor.pending, 4);
+		assert.strictEqual(requests.at(-1)?.blocks, 2);
+		const output = [new Float32Array(128), new Float32Array(128)];
+		processor.process([], [output]);
+		assert.ok(output.every(channel => channel.every(value => value === 0)));
+		send({ type: 'pcm', pcm: new Float32Array(1024).fill(0.25).buffer });
+		assert.strictEqual(processor.frames, 512); assert.strictEqual(processor.pending, 3);
+	});
 	test('Webview AudioWorklet plays PCM from the real WASI YM2151 backend while hidden', async function () {
 		this.timeout(15000);
 		const extension = vscode.extensions.all.find(extension => extension.packageJSON.name === 'mmlx-lsp');
@@ -546,7 +634,7 @@ suite('mmlx extension', () => {
 		const messages = new vscode.EventEmitter<unknown>();
 		const visibility = new vscode.EventEmitter<void>();
 		const disposed = new vscode.EventEmitter<void>();
-		type Update = { type: string; id?: number; connected?: boolean; connecting?: boolean; pcm?: ArrayBuffer; voice?: unknown };
+		type Update = { type: string; id?: number; connected?: boolean; connecting?: boolean; pcm?: ArrayBuffer; voice?: unknown; playing?: boolean };
 		const updates: Update[] = [];
 		const changed = new vscode.EventEmitter<Update>();
 		const voice = { number: 0, algorithm: 7, feedback: 0, operatorMask: 15, position: { line: 0, character: 0 },
@@ -608,6 +696,24 @@ suite('mmlx extension', () => {
 			const resumed = (await waitFor(message => message.type === 'emulationPcm', resumedStart)).pcm;
 			assert.ok(resumed instanceof ArrayBuffer);
 			assert.ok(new Float32Array(resumed).some(value => Math.abs(value) > 0.0001), 'Showing view must allow notes without reconnecting');
+			const testStart = updates.length;
+			messages.fire({ type: 'voiceTestAction', action: 'play', mml: 'y24,128 o4 c1', id: 1 });
+			await waitFor(message => message.type === 'voiceTest' && message.playing === true, testStart);
+			const testAudioStart = updates.length;
+			messages.fire({ type: 'emulationRender', blocks: 4, id: 1 });
+			await waitFor(message => message.type === 'emulationPcm', testAudioStart);
+			const testStop = updates.length;
+			messages.fire({ type: 'voiceTestAction', action: 'stop', id: 1 });
+			await waitFor(message => message.type === 'voiceTest' && message.playing === false, testStop);
+			assert.strictEqual(view.title, 'mmlx [Connected]');
+			const invalidStart = updates.length;
+			messages.fire({ type: 'voiceTestAction', action: 'play', mml: 'invalid???', id: 1 });
+			await waitFor(message => message.type === 'voiceTest' && message.playing === false, invalidStart);
+			const resetStart = updates.length;
+			messages.fire({ type: 'resetOutput', mode: 'emulation', id: 1 });
+			await waitFor(message => message.type === 'outputReset' && message.connected === true, resetStart);
+			assert.strictEqual(view.title, 'mmlx [Connected]');
+			assert.ok(!updates.slice(invalidStart).some(message => message.type === 'outputConnection' && !message.connected));
 			messages.fire({ type: 'setOutputConnection', target: 'keyboard', connected: false, id: 1 });
 			await waitFor(message => message.type === 'outputConnection' && message.id === 1 && !message.connected && !message.connecting, resumedStart);
 			assert.strictEqual(view.title, 'mmlx');
@@ -916,7 +1022,7 @@ suite('mmlx extension', () => {
 		const button = Object.assign(new EventTarget(), { disabled: false, title: '',
 			setAttribute: (name: string, value: string) => attributes.set(name, value) });
 		const requests: { mode: string; connected: boolean }[] = [];
-		const controls = createOutputConnection({ querySelector: (selector: string) => selector === 'select' ? mode : button },
+		const controls = createOutputConnection({ querySelector: (selector: string) => selector === 'select' ? mode : selector === '.output-connection' ? button : null },
 			(request: { mode: string; connected: boolean }) => requests.push(request));
 		assert.strictEqual(button.disabled, true);
 		assert.strictEqual(mode.disabled, false);
@@ -952,7 +1058,7 @@ suite('mmlx extension', () => {
 		assert.match(template, /<button\b[^>]*id="playback-stop"[^>]*\sdisabled[^>]*>/);
 		const unavailableMode = Object.assign(new EventTarget(), { value: 'emulation', disabled: false });
 		const unavailableButton = Object.assign(new EventTarget(), { disabled: true, title: '', setAttribute: () => {} });
-		const unavailable = createOutputConnection({ querySelector: (selector: string) => selector === 'select' ? unavailableMode : unavailableButton },
+		const unavailable = createOutputConnection({ querySelector: (selector: string) => selector === 'select' ? unavailableMode : selector === '.output-connection' ? unavailableButton : null },
 			() => assert.fail('Unavailable output must not request a connection'));
 		for (const value of ['emulation', 'nanodrive8', 'emulation']) {
 			unavailableMode.value = value; unavailableMode.dispatchEvent(new Event('change'));
@@ -1657,6 +1763,28 @@ suite('mmlx extension', () => {
 			const initialized = await audition({ type: 'init', voice });
 			assert.strictEqual(initialized.count, 3);
 			assert.strictEqual(initialized.bytes.filter(byte => byte === 0).length, 6);
+			await worker.request({ operation: 'voiceTestInit', session: 5, mml: 'MH0,200,64,0,5,0,1 t240 o4 c16', voice });
+			let testEnded = false; let lfoWrite = false;
+			const sensitivity = new Set<number>();
+			for (let index = 0; index < 100; index++) {
+				const chunk = await worker.request({ operation: 'voiceTestNext', session: 5, requestId: index * 128 });
+				assert.ok(chunk && 'bytes' in chunk && chunk.fm === true);
+				lfoWrite ||= Buffer.from(chunk.bytes).includes(Buffer.from([24, 200]));
+				for (let channel = 0; channel < 8; channel++) {
+					if (Buffer.from(chunk.bytes).includes(Buffer.from([0x38 + channel, 0x50]))) { sensitivity.add(channel); }
+				}
+				if (chunk.ended) { testEnded = true; break; }
+			}
+			assert.ok(testEnded && lfoWrite);
+			assert.strictEqual(sensitivity.size, 8, 'MML configures all eight channels');
+			const restored = await worker.request({ operation: 'voiceTestStop', session: 5, requestId: 100 });
+			assert.ok(restored && 'bytes' in restored && restored.count! > 0);
+			for (let channel = 0; channel < 8; channel++) {
+				const note = await audition({ type: 'noteOn', source: 0, channel: 0, note: 60 + channel, velocity: 127 });
+				assert.ok(Buffer.from(note.bytes).includes(Buffer.from([0x38 + channel, 0x50])), 'Keyboard NoteOn retains MML LFO sensitivity');
+			}
+			await audition({ type: 'allOff' });
+			await assert.rejects(worker.request({ operation: 'voiceTestInit', session: 5, mml: 'invalid???', voice }));
 			const on = await audition({ type: 'noteOn', source: 0, channel: 0, note: 69, velocity: 127 });
 			assert.strictEqual(on.count, 1); assert.ok(on.bytes.length > 50);
 			const bent = await audition({ type: 'pitchBend', source: 0, channel: 0, value: 10240 });
@@ -2042,19 +2170,29 @@ suite('mmlx extension', () => {
 					const nativeAcquire = acquireVsCodeApi; const messages = []; let api; let audioContexts = 0;
 					window.acquireVsCodeApi = () => {
 						api = nativeAcquire();
-						return { ...api, postMessage: message => { messages.push(message); api.postMessage(message); } };
+						return { ...api, getState: () => ({ voiceTestMml: 't120 o4 l8 cdefgab>c4' }), postMessage: message => { messages.push(message); api.postMessage(message); } };
 					};
 					window.AudioContext = class { constructor() { audioContexts++; throw new Error('Unexpected browser audio'); } };
 					const send = data => window.dispatchEvent(new MessageEvent('message', { data }));
 					const check = (condition, message) => { if (!condition) throw new Error(message); };
 					window.addEventListener('message', event => {
 						if (event.data?.type !== 'nanodriveProbe') return;
-						const run = () => { try {
+						const run = async () => { try {
 							document.getElementById('voice-tab').click();
 							const mode = document.querySelector('.keyboard-output select');
 							const button = document.querySelector('.keyboard-output .output-connection');
+							const reset = document.getElementById('keyboard-reset');
+							check(reset.disabled && reset.nextElementSibling === button, 'Reset is disabled before connection and sits to its left');
 							const key = document.querySelector('#keyboard [data-midi-note="69"]');
 							if (!key) { requestAnimationFrame(run); return; }
+							const { createKeyboardControls } = await import(${JSON.stringify(panel.webview.asWebviewUri(vscode.Uri.joinPath(media, 'keyboardControls.js')).toString())});
+							const fixture = document.getElementById('keyboard').cloneNode(true);
+							const restored = createKeyboardControls(fixture);
+							const defaultMml = fixture.querySelector('#voice-test-mml').defaultValue;
+							for (const saved of [undefined, '', '   ', 't120 o4 l8 cdefgab>c4', 'MH0,200,64,0,5,0,1', ' MH0,200,64,0,5,0,1 ']) {
+								restored.setTestMml(saved); check(restored.testMml === defaultMml, 'Missing, empty and legacy defaults use Chip State MML default');
+							}
+							restored.setTestMml('MH1,128,32,0,4,0,1'); check(restored.testMml === 'MH1,128,32,0,4,0,1', 'Custom saved MML is preserved');
 							mode.value = 'nanodrive8'; mode.dispatchEvent(new Event('change'));
 							check(button.disabled && !mode.disabled, 'Settings connection required');
 							send({ type: 'playback', id: 0, available: true, document: 'file:///test.mml', source: 'test.mml', playing: false, paused: false, loading: false });
@@ -2070,6 +2208,39 @@ suite('mmlx extension', () => {
 							check(request?.mode === 'nanodrive8' && request.connected && button.disabled && mode.disabled, 'Keyboard connect request and busy state');
 							send({ type: 'outputConnection', target: 'keyboard', id: request.id, mode: 'nanodrive8', connected: true, connecting: false });
 							check(key.getAttribute('aria-disabled') === 'false' && button.getAttribute('aria-pressed') === 'true', 'Connected keyboard');
+							check(!reset.disabled, 'Connected sound chip can be reset');
+							const keyboardBody = document.querySelector('.p-keyboard__body');
+							const mmlInput = document.getElementById('voice-test-mml');
+							const stableControls = [keyboardBody, mmlInput, reset, button];
+							const opacities = stableControls.map(control => getComputedStyle(control).opacity);
+							const resetWidth = reset.getBoundingClientRect().width;
+							const normalMotion = window.matchMedia;
+							window.matchMedia = () => ({ matches: false });
+							reset.click();
+							window.matchMedia = normalMotion;
+							const resetRing = reset.getAnimations({ subtree: true }).find(animation => animation.id === 'chip-action-ring');
+							const resetTurn = reset.getAnimations({ subtree: true }).find(animation => animation.id === 'chip-action-turn');
+							check(resetRing && resetRing.effect.getTiming().duration === 600 && resetTurn, 'Reset gives a visible ring and icon turn');
+							resetRing.pause(); resetRing.currentTime = 150; resetTurn.pause(); resetTurn.currentTime = 150;
+							check(getComputedStyle(reset).boxShadow !== 'none' && getComputedStyle(reset, '::before').transform !== 'none', 'Reset feedback renders on button and icon');
+							check(reset.getBoundingClientRect().width === resetWidth && reset.getAttribute('aria-busy') === 'true', 'Reset feedback preserves size and announces busy state');
+							check(messages.at(-1).type === 'resetOutput' && messages.at(-1).id === request.id && reset.disabled && button.disabled && key.getAttribute('aria-disabled') === 'true', 'Reset routes to the connected chip and locks controls');
+							check(mmlInput.disabled && document.getElementById('voice-test-play').disabled, 'Reset locks MML submission');
+							check(stableControls.every((control, index) => getComputedStyle(control).opacity === opacities[index]), 'Reset keeps control opacity stable');
+							const blocked = messages.length;
+							key.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter' }));
+							key.dispatchEvent(new KeyboardEvent('keyup', { key: 'Enter' }));
+							mmlInput.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', cancelable: true }));
+							check(messages.length === blocked, 'Reset blocks notes and MML even with unchanged control appearance');
+							send({ type: 'voiceTest', id: request.id, playing: false });
+							send({ type: 'outputConnection', target: 'keyboard', id: request.id, mode: 'nanodrive8', connected: false, connecting: true });
+							check(key.getAttribute('aria-disabled') === 'true' && button.getAttribute('aria-pressed') === 'true' && button.disabled, 'Intermediate reset notifications keep connection display and input lock');
+							check(stableControls.every((control, index) => getComputedStyle(control).opacity === opacities[index]), 'Intermediate reset notifications do not dim controls');
+							send({ type: 'outputReset', id: request.id, connected: true });
+							check(!reset.disabled && !button.disabled && key.getAttribute('aria-disabled') === 'false', 'Reset preserves the keyboard connection');
+							check(!mmlInput.disabled && stableControls.every((control, index) => getComputedStyle(control).opacity === opacities[index]), 'Reset completion keeps control opacity stable');
+							check(reset.getAttribute('aria-busy') === 'false' && reset.getAnimations({ subtree: true }).includes(resetRing), 'Quick reset retains acknowledgement after completion');
+							resetRing.finish(); resetTurn.finish();
 							const wheel = document.getElementById('keyboard-pitch-bend');
 							const firstKey = document.querySelector('#keyboard [data-midi-note]');
 							check(!wheel.disabled && wheel.getBoundingClientRect().right <= firstKey.getBoundingClientRect().left, 'Pitch wheel must be enabled to the left of the keys');
@@ -2098,9 +2269,67 @@ suite('mmlx extension', () => {
 							key.dispatchEvent(new KeyboardEvent('keyup', { key: 'Enter' }));
 							check(messages.some(message => message.type === 'emulationNote' && message.event === 'noteOn' && message.note === 69 && message.id === request.id), 'Key-on routing');
 							check(messages.some(message => message.type === 'emulationNote' && message.event === 'noteOff' && message.note === 69), 'Key-off routing');
+							const testInput = document.getElementById('voice-test-mml');
+							check(testInput.value === 'MH0,200,64,0,5,0,1 ; PMS LFO', 'Chip State MML default');
+							check(document.querySelector('label[for="voice-test-mml"]').textContent === 'Chip State MML', 'Chip State MML label');
+							const testPlay = document.getElementById('voice-test-play');
+							check(testPlay.disabled && !document.getElementById('voice-test-stop'), 'One voice test toggle requires a selected voice');
+							const beforeVoice = messages.length;
+							testInput.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true, cancelable: true }));
+							check(messages.length === beforeVoice, 'Enter cannot send without a selected voice');
+							send({ type: 'voice', source: 'test.mml', voice: { number: 1, algorithm: 7, feedback: 0, operatorMask: 15,
+								operators: Array.from({ length: 4 }, () => ({ ar:31, d1r:0, d2r:0, rr:15, d1l:0, tl:32, ks:0, mul:1, dt1:0, dt2:0, ame:1 })) } });
+							testInput.value = 't120 y24,128 o4 c4'; testInput.dispatchEvent(new Event('input'));
+							check(!testPlay.disabled && api.getState().voiceTestMml === testInput.value, 'MML test input is persisted');
+							check(testPlay.getBoundingClientRect().width === 28 && testPlay.getBoundingClientRect().height === 28, 'Compact voice test toggle');
+							check(testInput.getBoundingClientRect().bottom <= document.querySelector('.p-keyboard__body').getBoundingClientRect().top, 'Voice test sits immediately above the keyboard');
+							const beforeEnter = messages.length;
+							for (const options of [{ isComposing: true }, { keyCode: 229 }, { repeat: true }]) {
+								testInput.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true, cancelable: true, ...options }));
+							}
+							check(messages.length === beforeEnter, 'IME confirmation and repeated Enter do not send');
+							const enter = new KeyboardEvent('keydown', { key: 'Enter', bubbles: true, cancelable: true });
+							testInput.dispatchEvent(enter); check(enter.defaultPrevented, 'Enter is handled by Chip State MML');
+							const playRing = testPlay.getAnimations().find(animation => animation.id === 'chip-action-ring');
+							check(playRing && playRing.effect.getTiming().duration === 600, 'Enter gives the same MML send feedback as clicking');
+							playRing.pause(); playRing.currentTime = 150;
+							check(getComputedStyle(testPlay).boxShadow !== 'none' && testPlay.getBoundingClientRect().width === 28, 'MML feedback is visible without changing button size');
+							check(messages.at(-1).type === 'voiceTestAction' && messages.at(-1).action === 'play' && messages.at(-1).mml === testInput.value && messages.at(-1).id === request.id, 'Voice test routes to Keyboard Output');
+							check(!testPlay.disabled && testPlay.classList.contains('transport-stop') && testPlay.getAttribute('aria-pressed') === 'true' && testInput.disabled && key.getAttribute('aria-disabled') === 'true', 'Voice test toggle stops while keys are locked');
+							check(stableControls.every((control, index) => getComputedStyle(control).opacity === opacities[index]), 'MML sending keeps control opacity stable');
+							const sent = messages.length;
+							testInput.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true, cancelable: true }));
+							check(messages.length === sent, 'Enter cannot restart or stop while playing');
+							testPlay.click(); check(messages.at(-1).action === 'stop', 'Voice test Stop toggle');
+							const stopFeedback = testPlay.getAnimations().filter(animation => animation.id === 'chip-action-ring');
+							check(stopFeedback.length === 1 && !stopFeedback.includes(playRing), 'Repeated actions replace feedback instead of stacking it');
+							check(testInput.disabled && key.getAttribute('aria-disabled') === 'true', 'Stop keeps the input lock until completion');
+							send({ type: 'voiceTest', id: request.id, playing: false });
+							check(!testPlay.disabled && testPlay.classList.contains('transport-play') && !testInput.disabled && key.getAttribute('aria-disabled') === 'false', 'Voice test end restores the keyboard');
+							const playOpacity = getComputedStyle(testPlay).opacity;
+							const matchMedia = window.matchMedia;
+							window.matchMedia = () => ({ matches: true });
+							reset.click();
+							window.matchMedia = matchMedia;
+							const reducedFeedback = reset.getAnimations({ subtree: true });
+							check(reducedFeedback.some(animation => animation.id === 'chip-action-ring') && !reducedFeedback.some(animation => animation.id === 'chip-action-turn'), 'Reduced motion keeps acknowledgement without rotation');
+							check(testPlay.disabled && getComputedStyle(testPlay).opacity === playOpacity, 'Reset locks an available MML toggle without dimming it');
+							send({ type: 'outputReset', id: request.id, connected: false });
+							check(reset.disabled && !button.disabled && !testInput.disabled && testPlay.disabled && key.getAttribute('aria-disabled') === 'true', 'Failed reset releases the temporary lock and leaves output disconnected');
+							check(getComputedStyle(keyboardBody).opacity === '0.42' && button.getAttribute('aria-pressed') === 'false', 'Failed reset shows the actual disconnected state');
+							send({ type: 'outputConnection', target: 'keyboard', id: request.id, mode: 'nanodrive8', connected: true, connecting: false });
+							check(!testPlay.disabled && key.getAttribute('aria-disabled') === 'false', 'Connection recovery restores controls after reset failure');
+							send({ type: 'voiceTest', id: request.id, playing: false, error: true });
+							check(testPlay.classList.contains('is-error') && testPlay.title === 'MML error' && testInput.getAttribute('aria-invalid') === 'true', 'MML error is indicated on the toggle');
+							const errorColor = document.createElement('span'); errorColor.style.color = 'var(--vscode-errorForeground, #f48771)'; document.body.append(errorColor);
+							check(getComputedStyle(testPlay).color === getComputedStyle(errorColor).color, 'MML error uses the theme error color'); errorColor.remove();
+							testInput.dispatchEvent(new Event('input')); check(!testPlay.classList.contains('is-error'), 'Editing clears MML error color');
 							button.click(); check(messages.at(-1).type === 'setOutputConnection' && !messages.at(-1).connected, 'Keyboard disconnect');
 							send({ type: 'outputConnection', target: 'keyboard', id: request.id, mode: 'nanodrive8', connected: false, connecting: false });
-							check(!button.disabled && key.getAttribute('aria-disabled') === 'true', 'Settings remains connected');
+							check(!button.disabled && reset.disabled && key.getAttribute('aria-disabled') === 'true', 'Settings remains connected, sound reset requires Keyboard Output');
+							const disconnected = messages.length;
+							testInput.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true, cancelable: true }));
+							check(messages.length === disconnected, 'Enter cannot send while disconnected');
 							check(wheel.disabled && wheel.value === '8192', 'Disconnected wheel must be disabled and centered');
 							document.getElementById('playback-tab').click();
 							const stop = document.getElementById('playback-stop');

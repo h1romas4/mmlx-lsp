@@ -16,11 +16,16 @@ export class EmulationSession {
 	private connected = false;
 	private cancelReady?: () => void;
 	private voice = '';
+	private voiceTesting = false;
+	private voiceTestError = false;
+	private resetReady?: (ready: boolean) => void;
+	private resetting?: Promise<boolean>;
 
 	constructor(private readonly extensionUri: Uri, private readonly wasm: Wasm,
 		private readonly onState: (state: EmulationState) => void,
 		private readonly onPcm: (pcm: ArrayBuffer) => void,
-		private readonly onPlayback: (progress: PlaybackProgress) => void = () => {}) {}
+		private readonly onPlayback: (progress: PlaybackProgress) => void = () => {},
+		private readonly onVoiceTest: (playing: boolean, error: boolean) => void = () => {}) {}
 
 	async connect(sampleRate: number, voice: unknown = null, playback?: { source: string; looped: boolean; cursor?: number }): Promise<void> {
 		this.stop();
@@ -55,13 +60,19 @@ export class EmulationSession {
 					if (ready || new DataView(bytes.buffer).getUint32(0, true) !== sampleRate) { throw new Error('Invalid emulator initialization.'); }
 					ready = true;
 					if (!playback) { clearTimeout(timer); resolveReady(); }
+				} else if (kind === 4) {
+					if (!ready || !this.resetReady) { throw new Error('Unexpected emulator reset.'); }
+					this.setVoiceTesting(false);
+					this.resetReady(true); this.resetReady = undefined;
 				} else if (kind === 3) {
 					const position = new DataView(bytes.buffer).getFloat64(0, true);
-					if (!ready || !playback || !Number.isFinite(position) || position < 0 || bytes[8] > 1) {
+					if (!ready || !Number.isFinite(position) || position < 0 || bytes[8] > (playback ? 1 : 2)) {
 						throw new Error('Invalid playback state.');
 					}
-					this.onPlayback({ position, finished: bytes[8] === 1 });
-					clearTimeout(timer); resolveReady();
+					if (playback) {
+						this.onPlayback({ position, finished: bytes[8] === 1 });
+						clearTimeout(timer); resolveReady();
+					} else { this.setVoiceTesting(bytes[8] === 0, bytes[8] === 2); }
 				} else {
 					if (!this.connected || this.renders <= 0) { throw new Error('Unexpected emulator audio.'); }
 					this.renders--; this.onPcm(bytes.buffer as ArrayBuffer);
@@ -105,6 +116,32 @@ export class EmulationSession {
 
 	note(command: object): void { if (this.connected) { this.command(command); } }
 
+	reset(voice: unknown): Promise<boolean> {
+		if (!this.connected) { return Promise.resolve(false); }
+		if (this.resetting) { return this.resetting; }
+		this.voice = JSON.stringify(voice);
+		const reset = new Promise<boolean>(resolve => { this.resetReady = resolve; });
+		const timer = setTimeout(() => this.disconnect('Emulator reset timed out.'), 3000);
+		this.resetting = reset.finally(() => { clearTimeout(timer); this.resetting = undefined; });
+		this.command({ type: 'reset', voice });
+		return this.resetting;
+	}
+
+	startVoiceTest(mml: string, voice: unknown): void {
+		if (!this.connected) { return; }
+		this.setVoiceTesting(true); this.command({ type: 'voiceTest', mml, voice });
+	}
+
+	stopVoiceTest(): void {
+		if (this.connected && this.voiceTesting) { this.command({ type: 'voiceTestStop' }); }
+		this.setVoiceTesting(false);
+	}
+
+	private setVoiceTesting(playing: boolean, error = false): void {
+		if (this.voiceTesting === playing && this.voiceTestError === error) { return; }
+		this.voiceTesting = playing; this.voiceTestError = error; this.onVoiceTest(playing, error);
+	}
+
 	request(blocks = 1): void {
 		if (!this.connected || !Number.isInteger(blocks) || blocks < 1 || blocks > 4) { return; }
 		for (let index = 0; index < blocks && this.renders < 4; index++) {
@@ -128,6 +165,8 @@ export class EmulationSession {
 	}
 
 	private stop(): void {
+		this.resetReady?.(false); this.resetReady = undefined;
+		this.setVoiceTesting(false);
 		this.generation++;
 		this.cancelReady?.(); this.cancelReady = undefined;
 		const process = this.process;

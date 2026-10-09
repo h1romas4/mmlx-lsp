@@ -45,6 +45,21 @@ enum Operation {
         request_id: u16,
     },
     PlaybackStop,
+    VoiceTestInit {
+        session: u32,
+        mml: String,
+        voice: Voice,
+    },
+    VoiceTestNext {
+        session: u32,
+        #[serde(rename = "requestId")]
+        request_id: u16,
+    },
+    VoiceTestStop {
+        session: u32,
+        #[serde(rename = "requestId")]
+        request_id: u16,
+    },
 }
 
 #[derive(Deserialize)]
@@ -104,6 +119,7 @@ pub struct Bridge {
     source: Vec<u8>,
     pdx: Vec<u8>,
     playback: Option<playback::Playback>,
+    voice_test: Option<playback::FmPlayback>,
 }
 
 pub enum Output {
@@ -131,6 +147,68 @@ impl Bridge {
         let operation: Operation =
             serde_json::from_value(params).map_err(|error| error.to_string())?;
         match operation {
+            Operation::VoiceTestInit {
+                session,
+                mml,
+                voice,
+            } => {
+                self.voice_test = None;
+                if self
+                    .session
+                    .as_ref()
+                    .is_none_or(|(current, _)| *current != session)
+                {
+                    return Err("Stale keyboard session".into());
+                }
+                let mdx = voice.test_document(&mml)?;
+                let registers = self.session.as_mut().unwrap().1.begin_voice_test();
+                self.voice_test = Some(playback::FmPlayback::voice_test(
+                    soundlog::mdx::package::MdxPackage { mdx, pdx: None },
+                    registers,
+                ));
+                Ok(Output::Json(Value::Null))
+            }
+            Operation::VoiceTestNext {
+                session,
+                request_id,
+            } => {
+                if self
+                    .session
+                    .as_ref()
+                    .is_none_or(|(current, _)| *current != session)
+                {
+                    return Err("Stale keyboard session".into());
+                }
+                self.voice_test
+                    .as_mut()
+                    .ok_or("Voice test not initialized")?
+                    .next(request_id)
+                    .map(Output::Audio)
+            }
+            Operation::VoiceTestStop {
+                session,
+                request_id,
+            } => {
+                self.voice_test = None;
+                let (_, audition) = self
+                    .session
+                    .as_mut()
+                    .filter(|(current, _)| *current == session)
+                    .ok_or("Stale keyboard session")?;
+                let writes: Vec<_> = (0..8)
+                    .map(|channel| (0x08, channel))
+                    .chain(audition.restore_voice())
+                    .map(|(address, value)| RegisterWrite::new(address, value))
+                    .collect();
+                let mut bytes = Vec::new();
+                let mut encoder =
+                    CommandEncoder::new(request_id, |frame: &[u8]| bytes.extend_from_slice(frame));
+                encoder
+                    .ym2151_burst(&writes)
+                    .map_err(|error| error.to_string())?;
+                let count = encoder.count();
+                Ok(Output::Bytes(bytes, Some(count)))
+            }
             Operation::Encode {
                 command,
                 request_id,
@@ -338,6 +416,7 @@ impl Bridge {
                         } => audition.pitch_bend(source, channel, value),
                         Input::Stop => {
                             self.session = None;
+                            self.voice_test = None;
                             (0..8)
                                 .map(|channel| (0x08, channel))
                                 .chain((0x60..=0x7f).map(|address| (address, 127)))
@@ -433,6 +512,76 @@ mod tests {
 
     fn voice() -> Value {
         json!({ "algorithm": 7, "feedback": 0, "operatorMask": 15, "operators": vec![json!({ "ar":31, "d1r":0, "d2r":0, "rr":15, "d1l":0, "tl":32, "ks":0, "mul":1, "dt1":0, "dt2":0, "ame":0 }); 4] })
+    }
+
+    #[test]
+    fn voice_test_emits_only_timed_fm_and_preserves_keyboard_session() {
+        let mut bridge = Bridge::default();
+        audition(&mut bridge, json!({"type":"init", "voice":voice()}));
+        bridge.handle(json!({"operation":"voiceTestInit", "session":7, "mml":"MH0,200,64,0,5,0,1 p1 t240 o4 c16 y64,2", "voice":voice()})).unwrap();
+        let mut lfo = false;
+        let mut registers = Vec::new();
+        let mut ended = false;
+        for request_id in 0..100 {
+            let Output::Audio(chunk) = bridge
+                .handle(json!({"operation":"voiceTestNext", "session":7, "requestId":request_id}))
+                .unwrap()
+            else {
+                panic!("Expected FM chunk");
+            };
+            assert!(!chunk.audio);
+            for body in chunk
+                .bytes
+                .split(|byte| *byte == 0)
+                .filter(|body| !body.is_empty())
+            {
+                let frame = Frame::decode(body).unwrap();
+                assert_eq!(frame.opcode(), 0x56);
+                for pair in frame.payload().chunks_exact(2) {
+                    if pair[0] == 0x08 {
+                        assert_eq!(pair[1] & 7, 0, "Only part A sends key events");
+                    }
+                    registers.push((pair[0], pair[1]));
+                }
+                lfo |= frame
+                    .payload()
+                    .chunks_exact(2)
+                    .any(|pair| pair == [24, 200]);
+            }
+            if chunk.ended {
+                ended = true;
+                break;
+            }
+        }
+        assert!(lfo && ended);
+        for channel in 0..8 {
+            assert!(registers.contains(&(0x38 + channel, 0x50)));
+            assert!(registers.contains(&(0x20 + channel, 0x47)));
+            assert!(registers.contains(&(0x40 + channel, 2)));
+        }
+        bridge
+            .handle(json!({"operation":"voiceTestStop", "session":7, "requestId":100}))
+            .unwrap();
+        for channel in 0..8 {
+            let frames = audition(
+                &mut bridge,
+                json!({"type":"noteOn", "source":0, "channel":0, "note":60 + channel, "velocity":127}),
+            );
+            let writes: Vec<_> = frames
+                .iter()
+                .flat_map(|frame| {
+                    frame
+                        .payload()
+                        .chunks_exact(2)
+                        .map(|pair| (pair[0], pair[1]))
+                })
+                .collect();
+            assert!(writes.contains(&(0x38 + channel, 0x50)));
+            assert!(writes.contains(&(0x20 + channel, 0x47)));
+            assert!(writes.contains(&(0x40 + channel, 2)));
+        }
+        assert!(bridge.handle(json!({"operation":"voiceTestInit", "session":7, "mml":"invalid???", "voice":voice()})).is_err());
+        assert!(bridge.voice_test.is_none());
     }
 
     fn audition(bridge: &mut Bridge, command: Value) -> Vec<Frame> {

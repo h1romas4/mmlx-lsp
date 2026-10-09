@@ -59,9 +59,14 @@
 						<span class="keyboard-output output-controls"><label>Output <select id="keyboard-mode" aria-label="Keyboard output">
 							<option value="emulation">Emulation (ymfm)</option>
 							<option value="nanodrive8">NanoDrive8</option>
-						</select></label><button id="keyboard-connection" class="output-connection" type="button" title="Connect" aria-label="Connect" aria-pressed="false"></button></span>
+						</select></label><button id="keyboard-reset" class="output-reset refresh-ports" type="button" title="Reset sound chip" aria-label="Reset sound chip" disabled></button><button id="keyboard-connection" class="output-connection" type="button" title="Connect" aria-label="Connect" aria-pressed="false"></button></span>
 					</span>
 				</summary>
+				<div class="voice-test" role="group" aria-label="Chip State MML">
+					<label for="voice-test-mml">Chip State MML</label>
+					<input id="voice-test-mml" type="text" maxlength="8192" spellcheck="false" autocomplete="off" value="MH0,200,64,0,5,0,1 ; PMS LFO">
+					<button id="voice-test-play" class="transport-button transport-play" type="button" title="Play voice test" aria-label="Play voice test" aria-pressed="false" disabled></button>
+				</div>
 				<div class="p-keyboard__body" aria-disabled="true">
 					<input id="keyboard-pitch-bend" type="range" min="0" max="16383" value="8192" step="1" aria-label="Pitch bend" aria-orientation="vertical" aria-valuetext="0 semitones" title="Pitch bend (+/-2 semitones)" disabled>
 					<ul class="p-keyboard__wrapper" aria-label="Piano keyboard"></ul>
