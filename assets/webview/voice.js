@@ -11,6 +11,7 @@ let outputId = 0;
 let playbackId = 0;
 let playbackOperation = 0;
 let playbackState = null;
+let nanoDriveConnected = false;
 const playbackAudio = createEmulationAudio(
 	blocks => vscode.postMessage({ type: 'playbackRender', id: playbackId, blocks }),
 	error => {
@@ -103,9 +104,10 @@ async function playbackAction(action) {
 			const document = playbackState?.document;
 			playbackState = { ...playbackState, playing: false, paused: false, loading: true, startAction: action, position: 0, finished: false, error: '' };
 			playbackControls.render(playbackState);
-			const sampleRate = await playbackAudio.connect();
+			if (playbackMode === 'nanodrive8' && action === 'playFromCursor') { return; }
+			const sampleRate = playbackMode === 'nanodrive8' ? undefined : await playbackAudio.connect();
 			if (operation !== playbackOperation) { return; }
-			vscode.postMessage({ type: 'playbackAction', action, id, document, sampleRate, looped: playbackControls.looped });
+			vscode.postMessage({ type: 'playbackAction', action, mode: playbackMode, id, document, sampleRate, looped: playbackControls.looped });
 		} else {
 			if (action === 'pause') { await playbackAudio.pause(); }
 			else if (action === 'resume') { await playbackAudio.resume(); }
@@ -157,9 +159,12 @@ window.addEventListener('message', event => {
 		if (changed || !message.available) { playbackOperation++; playbackAudio.disconnect(); }
 		playbackState = message;
 		playbackControls.render(message);
-		if (message.playing) { playbackAudio.start(); if (message.finished) { playbackAudio.finish(); } }
+		if (message.mode === 'nanodrive8') { playbackAudio.disconnect(); }
+		else if (message.playing) { playbackAudio.start(); if (message.finished) { playbackAudio.finish(); } }
 		else if (!message.paused && !message.loading) { playbackAudio.disconnect(); }
-	} else if (message?.type === 'playbackPcm' && message.id === playbackId) {
+	} else if (message?.type === 'nanoDrivePlayback') {
+		outputConnections.keyboard.setNanoDriveBusy(message.busy);
+	} else if (message?.type === 'playbackPcm' && message.id === playbackId && playbackMode === 'emulation') {
 		playbackAudio.pcm(message.pcm);
 	} else if (message?.type === 'midiNotes') {
 		keyboardControls.setMidiNotes(message.notes);
@@ -180,7 +185,16 @@ window.addEventListener('message', event => {
 		emulationAudio.pcm(message.pcm);
 	} else if (message?.type === 'buildSettings' || message?.type === 'serialSettings' || message?.type === 'midiSettings') {
 		settingsControls.render(message);
-		if (message.type === 'serialSettings') { outputConnections.keyboard.setNanoDriveAvailable(message.connected && !message.closing); }
+		if (message.type === 'serialSettings') {
+			const connected = message.connected === true && !message.closing;
+			outputConnections.keyboard.setNanoDriveAvailable(connected);
+			playbackControls.setNanoDriveAvailable(connected);
+			if (connected && !nanoDriveConnected) {
+				if (playbackState?.playing || playbackState?.paused || playbackState?.loading) { void playbackAction('stop'); }
+				playbackMode = 'nanodrive8'; playbackControls.setMode(playbackMode); saveState();
+			}
+			nanoDriveConnected = connected;
+		}
 		if (message.type === 'midiSettings') { keyboardControls.setMidiState(message); }
 	}
 });

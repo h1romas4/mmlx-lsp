@@ -1596,6 +1596,10 @@ suite('mmlx extension', () => {
 		const stderr = new vscode.EventEmitter<Uint8Array>();
 		const requests: number[] = []; const errors: string[] = [];
 		let sent!: () => void;
+		const frame = (kind: number, body: Buffer) => {
+			const header = Buffer.alloc(5); header[0] = kind; header.writeUInt32LE(body.length, 1);
+			return Buffer.concat([header, body]);
+		};
 		const wasm = { createProcess: async () => {
 			creates++;
 			let exited!: (code: number) => void;
@@ -1604,23 +1608,24 @@ suite('mmlx extension', () => {
 				stdin: { write: async (input: string) => {
 					const request = JSON.parse(input);
 					if (mode === 'hang') { sent(); return; }
-					if (mode === 'oversized') { stdout.fire(Buffer.alloc(65537, 120)); return; }
+					if (mode === 'oversized') { const header = Buffer.alloc(5); header[0] = 2; header.writeUInt32LE(65537, 1); stdout.fire(header); return; }
 					requests.push(request.id);
 					if (requests.length !== 2) { return; }
-					const response = Buffer.from(`${JSON.stringify({ id: requests[1], result: null })}\n${JSON.stringify({ id: requests[0], result: { bytes: [42] } })}\n`);
+					const raw = Buffer.alloc(7); raw.writeUInt32LE(requests[0]!, 0); raw.writeUInt16LE(65535, 4); raw[6] = 42;
+					const response = Buffer.concat([frame(1, Buffer.from(JSON.stringify({ id: requests[1], result: null }))), frame(2, raw)]);
 					stdout.fire(response.subarray(0, 7)); stdout.fire(response.subarray(7));
 				} }, run: () => finished, terminate: async () => { closes++; exited(0); return 0; } };
 		} } as unknown as Wasm;
 		const worker = new NanoDriveWorker(extension.extensionUri, wasm, error => errors.push(error));
 		const params = { operation: 'encode' as const, command: 'getInfo' as const, requestId: 0, payload: [] };
 		try {
-			assert.deepStrictEqual(await Promise.all([worker.request(params), worker.request(params)]), [{ bytes: [42] }, null]);
+			assert.deepStrictEqual(await Promise.all([worker.request(params), worker.request(params)]), [{ bytes: Uint8Array.of(42) }, null]);
 			assert.strictEqual(creates, 1);
 			mode = 'hang'; const entered = new Promise<void>(resolve => { sent = resolve; });
 			const pending = worker.request(params); const canceled = assert.rejects(pending, /stopped/);
 			await entered; await worker.dispose(); await canceled;
 			assert.strictEqual(closes, 1); assert.deepStrictEqual(errors, []);
-			mode = 'oversized'; await assert.rejects(worker.request(params), /too large/);
+			mode = 'oversized'; await assert.rejects(worker.request(params), /Invalid.*frame/);
 			assert.strictEqual(creates, 2); assert.strictEqual(closes, 2); assert.strictEqual(errors.length, 1);
 		} finally { await worker.dispose(); stdout.dispose(); stderr.dispose(); }
 	});
@@ -1635,7 +1640,7 @@ suite('mmlx extension', () => {
 			const request = [0, 6, 0x4e, 0x44, 1, 1, 1, 2, 3, 6, 0x4e, 0x44, 0x38, 0x33, 0x96, 0];
 			const response = [6, 0x4e, 0x44, 1, 0x81, 1, 2, 4, 1, 6, 0x4e, 0x44, 0x38, 0xe4, 0x56];
 			assert.deepStrictEqual(await worker.request(
-				{ operation: 'encode', command: 'ping', requestId: 1, payload: [0x4e, 0x44, 0x38] }), { bytes: request });
+				{ operation: 'encode', command: 'ping', requestId: 1, payload: [0x4e, 0x44, 0x38] }), { bytes: Uint8Array.from(request) });
 			assert.deepStrictEqual(await worker.request({ operation: 'decode', body: response, request }), { status: 0 });
 			response[response.length - 1] ^= 1;
 			assert.strictEqual(await worker.request({ operation: 'decode', body: response, request }), null);
@@ -1654,15 +1659,46 @@ suite('mmlx extension', () => {
 			assert.strictEqual(on.count, 1); assert.ok(on.bytes.length > 50);
 			const off = await audition({ type: 'noteOff', source: 0, channel: 0, note: 69 });
 			assert.strictEqual(off.count, 1); assert.ok(off.bytes.length < 20);
-			assert.deepStrictEqual(await audition({ type: 'noteOff', source: 0, channel: 0, note: 69 }), { bytes: [], count: 0 });
+			assert.deepStrictEqual(await audition({ type: 'noteOff', source: 0, channel: 0, note: 69 }), { bytes: new Uint8Array(0), count: 0 });
 			await assert.rejects(audition({ type: 'allOff' }, 6), /Stale/);
 			assert.strictEqual((await audition({ type: 'stop' })).count, 1);
 			await assert.rejects(audition({ type: 'noteOn', source: 0, channel: 0, note: 69, velocity: 127 }), /not initialized/);
 			await worker.dispose();
-			assert.deepStrictEqual(await worker.request({ operation: 'encode', command: 'ping', requestId: 1, payload: [0x4e, 0x44, 0x38] }), { bytes: request });
+			assert.deepStrictEqual(await worker.request({ operation: 'encode', command: 'ping', requestId: 1, payload: [0x4e, 0x44, 0x38] }), { bytes: Uint8Array.from(request) });
 			const pending = worker.request({ operation: 'encode', command: 'getInfo', requestId: 1, payload: [] });
 			const canceled = assert.rejects(pending, /stopped/);
 			await worker.dispose(); await canceled;
+		} finally { await worker.dispose(); }
+	});
+
+	test('NanoDrive8 dedicated WASM streams bounded binary playback with large MML and PDX', async function () {
+		this.timeout(20000);
+		const extension = vscode.extensions.all.find(extension => extension.packageJSON.name === 'mmlx-lsp');
+		assert.ok(extension);
+		const worker = new NanoDriveWorker(extension.extensionUri, await Wasm.load());
+		try {
+			const source = new TextEncoder().encode('\n'.repeat(70000) + '#pcmfile "drums"\nA r4\nP o1 c4');
+			for (let offset = 0; offset < source.length; offset += 8192) {
+				await worker.request({ operation: 'upload', asset: 'source', offset, bytes: Array.from(source.subarray(offset, offset + 8192)) });
+			}
+			assert.deepStrictEqual(await worker.request({ operation: 'playbackInfo' }), { pdxName: 'drums' });
+			await assert.rejects(worker.request({ operation: 'playbackInit', looped: false }), /PDX/);
+			const pdx = Buffer.alloc(768 + 2048); pdx.writeUInt32BE(768, 9 * 8); pdx.writeUInt32BE(2048, 9 * 8 + 4); pdx.fill(0x77, 768);
+			await worker.request({ operation: 'upload', asset: 'pdx', offset: 0, bytes: Array.from(pdx) });
+			await worker.request({ operation: 'playbackInit', looped: false });
+			let position = 0; let ended = false; let chunks = 0;
+			for (; chunks < 300; chunks++) {
+				const result = await worker.request({ operation: 'playbackNext', requestId: chunks * 128 & 65535 });
+				assert.ok(result && 'bytes' in result && result.bytes instanceof Uint8Array);
+				assert.ok(Number.isInteger(result.count) && result.count! > 0 && result.bytes.length < 65525);
+				assert.ok(result.position! > position && result.position! - position <= 160);
+				position = result.position!;
+				if (result.ended) { ended = true; break; }
+			}
+			assert.ok(ended && chunks > 4 && chunks < 100);
+			await assert.rejects(worker.request({ operation: 'playbackNext', requestId: 0 }), /ended/);
+			await worker.request({ operation: 'playbackStop' });
+			await assert.rejects(worker.request({ operation: 'playbackNext', requestId: 0 }), /not initialized/);
 		} finally { await worker.dispose(); }
 	});
 
@@ -1814,8 +1850,14 @@ suite('mmlx extension', () => {
 							if (!key) { requestAnimationFrame(run); return; }
 							mode.value = 'nanodrive8'; mode.dispatchEvent(new Event('change'));
 							check(button.disabled && !mode.disabled, 'Settings connection required');
+							send({ type: 'playback', id: 0, available: true, document: 'file:///test.mml', source: 'test.mml', playing: false, paused: false, loading: false });
+							const playbackMode = document.getElementById('playback-mode');
+							const play = document.getElementById('playback-play');
+							const cursor = document.getElementById('playback-cursor');
+							const volume = document.getElementById('playback-volume');
 							const serial = { type: 'serialSettings', folder: 'test', connection: '/dev/test', ports: [{ path: '/dev/test' }], connected: true, firmware: '1.0b8', model: 'NanoDrive 8' };
 							send(serial); check(!button.disabled, 'Settings connection must enable output');
+							check(playbackMode.value === 'nanodrive8' && !play.disabled && cursor.disabled && volume.disabled, 'NanoDrive Playback auto-selection and unsupported controls');
 							button.click();
 							const request = messages.find(message => message.type === 'setOutputConnection');
 							check(request?.mode === 'nanodrive8' && request.connected && button.disabled && mode.disabled, 'Keyboard connect request and busy state');
@@ -1828,6 +1870,18 @@ suite('mmlx extension', () => {
 							button.click(); check(messages.at(-1).type === 'setOutputConnection' && !messages.at(-1).connected, 'Keyboard disconnect');
 							send({ type: 'outputConnection', target: 'keyboard', id: request.id, mode: 'nanodrive8', connected: false, connecting: false });
 							check(!button.disabled && key.getAttribute('aria-disabled') === 'true', 'Settings remains connected');
+							document.getElementById('playback-tab').click(); play.click();
+							const playbackRequest = messages.find(message => message.type === 'playbackAction' && message.action === 'play');
+							check(playbackRequest?.mode === 'nanodrive8' && !playbackRequest.sampleRate, 'Binary hardware playback without browser PCM');
+							send({ type: 'nanoDrivePlayback', busy: true }); check(button.disabled, 'Keyboard connection locked by Playback');
+							send({ type: 'playback', id: playbackRequest.id, mode: 'nanodrive8', available: true, document: 'file:///test.mml', playing: true, paused: false, loading: false, busy: true });
+							check(play.disabled && play.title === 'Play' && cursor.disabled && volume.disabled, 'Hardware playback cannot pause, seek or change PC volume');
+							check(!document.getElementById('playback-stop').disabled, 'Hardware Stop is enabled');
+							document.getElementById('playback-stop').click();
+							check(messages.at(-1).type === 'playbackAction' && messages.at(-1).action === 'stop', 'Hardware Stop request');
+							send({ type: 'nanoDrivePlayback', busy: false }); check(!button.disabled, 'Keyboard unlock after hardware cleanup');
+							playbackMode.value = 'emulation'; playbackMode.dispatchEvent(new Event('change')); send(serial);
+							check(playbackMode.value === 'emulation', 'Settings updates preserve manually selected Playback mode');
 							send({ ...serial, connected: false }); check(button.disabled && !mode.disabled, 'Port loss disables output');
 							check(audioContexts === 0, 'NanoDrive8 must not initialize AudioContext');
 							api.postMessage({ type: 'nanodriveResult' });

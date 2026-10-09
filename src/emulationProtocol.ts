@@ -3,7 +3,9 @@ export class EmulationFrameDecoder {
 	private headerOffset = 0;
 	private payload?: Uint8Array;
 	private payloadOffset = 0;
-	constructor(private readonly onFrame: (kind: number, bytes: Uint8Array) => void) {}
+	constructor(private readonly onFrame: (kind: number, bytes: Uint8Array) => void,
+		private readonly valid = (kind: number, length: number) => (kind === 1 && length === 4)
+			|| (kind === 2 && length === 4096) || (kind === 3 && length === 9)) {}
 
 	push(data: Uint8Array): void {
 		let offset = 0;
@@ -14,8 +16,7 @@ export class EmulationFrameDecoder {
 				offset += count; this.headerOffset += count;
 				if (this.headerOffset < 5) { continue; }
 				const length = new DataView(this.header.buffer).getUint32(1, true);
-				if (!((this.header[0] === 1 && length === 4) || (this.header[0] === 2 && length === 4096)
-					|| (this.header[0] === 3 && length === 9))) {
+				if (!this.valid(this.header[0], length)) {
 					throw new Error('Invalid emulator frame.');
 				}
 				this.payload = new Uint8Array(length);

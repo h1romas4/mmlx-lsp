@@ -28,20 +28,61 @@ fn run(input: impl BufRead, mut output: impl Write) -> Result<(), String> {
             return Err("Invalid NanoDrive8 command length".into());
         }
         let request: Request = serde_json::from_slice(&line).map_err(|error| error.to_string())?;
-        let reply = match bridge.handle(request.params) {
-            Ok(result) => json!({ "id": request.id, "result": result }),
-            Err(error) => json!({ "id": request.id, "error": error }),
+        let (kind, bytes) = match bridge.handle(request.params) {
+            Ok(nanodrive::Output::Audio(chunk)) => {
+                output
+                    .write_all(&[3])
+                    .and_then(|()| {
+                        output.write_all(&((chunk.bytes.len() + 11) as u32).to_le_bytes())
+                    })
+                    .and_then(|()| output.write_all(&request.id.to_le_bytes()))
+                    .and_then(|()| output.write_all(&(chunk.count as u16).to_le_bytes()))
+                    .and_then(|()| output.write_all(&chunk.position.to_le_bytes()))
+                    .and_then(|()| output.write_all(&[u8::from(chunk.ended)]))
+                    .and_then(|()| output.write_all(&chunk.bytes))
+                    .and_then(|()| output.flush())
+                    .map_err(|error| error.to_string())?;
+                continue;
+            }
+            Ok(nanodrive::Output::Bytes(bytes, count)) => {
+                output
+                    .write_all(&[2])
+                    .and_then(|()| output.write_all(&((bytes.len() + 6) as u32).to_le_bytes()))
+                    .and_then(|()| output.write_all(&request.id.to_le_bytes()))
+                    .and_then(|()| {
+                        output.write_all(
+                            &(count.map_or(u16::MAX, |count| count as u16)).to_le_bytes(),
+                        )
+                    })
+                    .and_then(|()| output.write_all(&bytes))
+                    .and_then(|()| output.flush())
+                    .map_err(|error| error.to_string())?;
+                continue;
+            }
+            Ok(nanodrive::Output::Json(result)) => (
+                1,
+                serde_json::to_vec(&json!({ "id": request.id, "result": result })),
+            ),
+            Err(error) => (
+                1,
+                serde_json::to_vec(&json!({ "id": request.id, "error": error })),
+            ),
         };
-        serde_json::to_writer(&mut output, &reply).map_err(|error| error.to_string())?;
+        let bytes = bytes.map_err(|error| error.to_string())?;
         output
-            .write_all(b"\n")
+            .write_all(&[kind])
+            .and_then(|()| output.write_all(&(bytes.len() as u32).to_le_bytes()))
+            .and_then(|()| output.write_all(&bytes))
             .and_then(|()| output.flush())
             .map_err(|error| error.to_string())?;
     }
 }
 
 fn main() {
-    if let Err(error) = run(io::stdin().lock(), io::stdout().lock()) {
+    if let Err(error) = run(
+        io::stdin().lock(),
+        io::BufWriter::with_capacity(65536, io::stdout().lock()),
+    ) {
         eprintln!("{error}");
         std::process::exit(1);
     }
@@ -61,10 +102,26 @@ mod tests {
         ].iter().map(|value| format!("{value}\n")).collect::<String>();
         let mut output = Vec::new();
         run(io::Cursor::new(input), &mut output).unwrap();
-        let replies: Vec<Value> = serde_json::Deserializer::from_slice(&output)
-            .into_iter()
-            .map(Result::unwrap)
-            .collect();
+        let mut replies = Vec::new();
+        let mut offset = 0;
+        while offset < output.len() {
+            let kind = output[offset];
+            let length =
+                u32::from_le_bytes(output[offset + 1..offset + 5].try_into().unwrap()) as usize;
+            let body = &output[offset + 5..offset + 5 + length];
+            replies.push(if kind == 1 {
+                serde_json::from_slice::<Value>(body).unwrap()
+            } else {
+                let id = u32::from_le_bytes(body[..4].try_into().unwrap());
+                let count = u16::from_le_bytes(body[4..6].try_into().unwrap());
+                let mut result = json!({"bytes":&body[6..]});
+                if count != u16::MAX {
+                    result["count"] = json!(count);
+                }
+                json!({"id":id,"result":result})
+            });
+            offset += 5 + length;
+        }
         assert_eq!(replies.len(), 4);
         assert!(replies[0]["error"].is_string());
         assert_eq!(replies[1]["id"], 2);

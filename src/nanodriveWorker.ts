@@ -1,6 +1,7 @@
 import type { Wasm, WasmProcess } from '@vscode/wasm-wasi/v1';
 import { Uri, workspace, type Disposable } from 'vscode';
 import type { NanoDriveCodec } from './nanodrive';
+import { EmulationFrameDecoder } from './emulationProtocol';
 
 type Result = Awaited<ReturnType<NanoDriveCodec>>;
 
@@ -52,22 +53,17 @@ export class NanoDriveWorker {
 					});
 				if (generation !== this.generation) { await process.terminate(); return; }
 				this.process = process;
-				let body = Buffer.alloc(0);
 				let stderr = '';
+				const decoder = new EmulationFrameDecoder((kind, bytes) => {
+					if (kind === 1) { this.reply(JSON.parse(new TextDecoder().decode(bytes))); return; }
+					const view = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
+					const count = view.getUint16(4, true);
+					this.reply({ id: view.getUint32(0, true), result: { bytes: bytes.subarray(kind === 3 ? 11 : 6), ...(count === 65535 ? {} : { count }),
+						...(kind === 3 ? { position: view.getUint32(6, true), ended: view.getUint8(10) === 1 } : {}) } });
+				}, (kind, length) => (kind === 1 && length > 0 && length <= 65536) || (kind === 2 && length >= 6 && length <= 65536) || (kind === 3 && length >= 11 && length <= 65536));
 				this.subscriptions.push(process.stdout!.onData(data => {
 					if (generation !== this.generation) { return; }
-					try {
-						let offset = 0;
-						for (let index = 0; index < data.length; index++) {
-							if (data[index] !== 10) { continue; }
-							const length = body.length + index - offset;
-							if (length > 65536) { throw new Error('NanoDrive8 engine reply is too large.'); }
-							this.reply(JSON.parse(Buffer.concat([body, data.subarray(offset, index)]).toString('utf8')));
-							body = Buffer.alloc(0); offset = index + 1;
-						}
-						if (body.length + data.length - offset > 65536) { throw new Error('NanoDrive8 engine reply is too large.'); }
-						body = Buffer.concat([body, data.subarray(offset)]);
-					} catch (error) { this.fail(error, generation); }
+					try { decoder.push(data); } catch (error) { this.fail(error, generation); }
 				}), process.stderr!.onData(data => { stderr = (stderr + new TextDecoder().decode(data)).slice(-4096); }));
 				void process.run().then(code => this.fail(new Error(stderr.trim() || `NanoDrive8 engine exited (${code}).`), generation),
 					error => this.fail(error, generation));

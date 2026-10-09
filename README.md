@@ -143,7 +143,7 @@ Playback and NanoDrive8 are not monitored. Modulation and detuning can keep a wa
 
 **Playback** plays the active MML, including unsaved edits. Switching files stops playback without affecting FM Voice or MIDI-IN.
 **Play from cursor** starts at the current command or the next command on the same line. Repeats start at the first occurrence; seeking may take a moment.
-FM (YM2151) only: PCM is silent, and NanoDrive8 is not yet supported.
+FM (YM2151) only: PCM is silent, and NanoDrive8 is not yet experimental.
 
 ## Current Limitations
 

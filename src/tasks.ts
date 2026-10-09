@@ -43,7 +43,7 @@ class BuildFailure extends Error {
 	}
 }
 
-function resolveUri(value: string, folder?: WorkspaceFolder, base?: Uri): Uri {
+export function resolveUri(value: string, folder?: WorkspaceFolder, base?: Uri): Uri {
 	if (value.includes('${')) {
 		throw new Error(`Unresolved task variable: ${value}`);
 	}
@@ -59,7 +59,7 @@ function resolveUri(value: string, folder?: WorkspaceFolder, base?: Uri): Uri {
 	return directory ? directory.with({ path: uri.path }) : uri;
 }
 
-async function findPdx(input: Uri, name: string): Promise<Uri> {
+export async function findPdx(input: Uri, name: string): Promise<Uri> {
 	const reference = Uri.joinPath(input, '..', name.replace(/\\/g, '/'));
 	const directory = Uri.joinPath(reference, '..');
 	const filename = path.posix.basename(reference.path);

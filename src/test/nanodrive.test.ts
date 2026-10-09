@@ -5,6 +5,12 @@ export class Port implements NanoDrivePort {
     isOpen = true;
     commands: { command: string; requestId: number; payload: number[]; input?: NanoDriveInput; session?: number }[] = [];
     firmware = '1.0b8'; model = 'NanoDrive 8'; ignore = ''; rejected = '';
+    drained: string[] = [];
+    audioFault = false;
+    ignoreRunningStatus = false;
+    private accepted = 0;
+    private audioStarted = 0;
+    private audioEnd = false;
     private chunks: Buffer[] = [];
     private reader?: { buffer: Buffer; resolve: (result: { buffer: Buffer; bytesRead: number }) => void; reject: (error: Error) => void };
     read(buffer: Buffer): Promise<{ buffer: Buffer; bytesRead: number }> {
@@ -18,13 +24,22 @@ export class Port implements NanoDrivePort {
     async write(buffer: Buffer): Promise<void> {
         const request = JSON.parse(buffer.subarray(1, buffer.length - 1).toString());
         this.commands.push(request);
-        if (request.command === 'audition' || request.command === 'setClock' || request.command === this.ignore) { return; }
-        const response = { ...request, status: request.command === this.rejected ? 1 : 0, model: this.model, firmware: this.firmware };
+        if (request.command === 'reset') { this.accepted = 0; this.audioStarted = 0; this.audioEnd = false; }
+        if (request.command === 'audioStart') { this.audioStarted = performance.now(); return; }
+        if (request.command === 'audioData') { this.accepted = request.position; this.audioEnd = request.ended; return; }
+        if (request.command === 'audition' || request.command === 'setClock' || request.command === 'setPlaybackClock' || request.command === this.ignore) { return; }
+        if (request.command === 'audioStatus' && this.audioStarted && this.ignoreRunningStatus) { return; }
+        const played = this.audioStarted ? Math.min(this.accepted, Math.floor((performance.now() - this.audioStarted) * 7.8125)) : 0;
+        const response = request.command === 'audioStatus'
+            ? { command: request.command, requestId: request.requestId, status: 0, accepted: this.accepted, played, pending: this.accepted - played,
+                running: this.audioStarted !== 0, ended: this.audioEnd && played === this.accepted, fault: this.audioStarted !== 0 && this.audioFault,
+                underflows: 0, overflows: 0, rejected: 0 }
+            : { ...request, status: request.command === this.rejected ? 1 : 0, model: this.model, firmware: this.firmware };
         const body = Buffer.from(JSON.stringify(response));
         this.chunks.push(Buffer.from('boot log'), Buffer.concat([Buffer.from([0]), body.subarray(0, 5)]), Buffer.concat([body.subarray(5), Buffer.from([0])]));
         this.deliver();
     }
-    async drain(): Promise<void> {}
+    async drain(): Promise<void> { this.drained.push(this.commands.at(-1)!.command); }
     async close(): Promise<void> { this.isOpen = false; this.reader?.reject(new Error('Port closed')); this.reader = undefined; }
 }
 
@@ -33,6 +48,7 @@ export const codec: NanoDriveCodec = async params => {
     if (params.operation === 'audition') {
         return { bytes: [0, ...Buffer.from(JSON.stringify({ ...params, command: 'audition', input: params.command })), 0], count: 1 };
     }
+    if (params.operation !== 'decode') { throw new Error(`Unsupported mock operation: ${params.operation}`); }
     let reply;
     try { reply = JSON.parse(Buffer.from(params.body).toString()); }
     catch { return null; }
@@ -41,6 +57,71 @@ export const codec: NanoDriveCodec = async params => {
 };
 
 suite('NanoDrive8 connection', () => {
+    const playbackCodec = (): NanoDriveCodec => {
+        let position = 0; let looped = false;
+        return async params => {
+            if (params.operation === 'upload' || params.operation === 'playbackStop') { return null; }
+            if (params.operation === 'playbackInfo') { return { pdxName: undefined }; }
+            if (params.operation === 'playbackInit') { position = 0; looped = params.looped; return null; }
+            if (params.operation === 'playbackNext') {
+                position += 160; const ended = !looped && position >= 800;
+                const bytes = Uint8Array.from([0, ...Buffer.from(JSON.stringify({ command: 'audioData', requestId: params.requestId, position, ended })), 0]);
+                return { bytes, position, count: 1, ended };
+            }
+            return codec(params);
+        };
+    };
+    const waitForStart = async (port: Port) => {
+        for (let count = 0; count < 100 && !port.commands.some(command => command.command === 'audioStart'); count++) { await new Promise(resolve => setTimeout(resolve, 2)); }
+        assert.ok(port.commands.some(command => command.command === 'audioStart'));
+    };
+    test('playback disconnects keyboard, preloads before START, streams without drain and confirms END before RESET', async () => {
+        const port = new Port();
+        const connection = new NanoDriveConnection(playbackCodec(), () => {}, async () => port, 100);
+        try {
+            await connection.connect('test'); await connection.connectOutput(null);
+            await connection.startPlayback('A c4', false, async () => { throw new Error('Unexpected PDX'); });
+            assert.ok(connection.playbackState.finished); assert.ok(!connection.playbackState.busy); assert.strictEqual(connection.playbackState.error, '');
+            assert.ok(!connection.outputState.connected); assert.ok(connection.state.connected && port.isOpen);
+            const commands = port.commands.map(request => request.command);
+            const start = commands.indexOf('audioStart');
+            assert.deepStrictEqual(commands.slice(start - 5, start), ['audioData', 'audioData', 'audioData', 'audioData', 'ping']);
+            assert.ok(commands.indexOf('setPlaybackClock') < start); assert.strictEqual(commands.at(-1), 'reset');
+            assert.ok(!port.drained.includes('audioData') && !port.drained.includes('audioStatus'));
+        } finally { await connection.disconnect(); }
+    });
+    test('playback locks keyboard and Stop cancels future chunks without closing Settings connection', async () => {
+        const port = new Port(); const connection = new NanoDriveConnection(playbackCodec(), () => {}, async () => port, 100);
+        try {
+            await connection.connect('test');
+            const playing = connection.startPlayback('A L c4', true, async () => new Uint8Array(0));
+            await waitForStart(port); const before = port.commands.length;
+            await connection.connectOutput(null); assert.strictEqual(port.commands.length, before);
+            await connection.stopPlayback(); await playing;
+            assert.strictEqual(port.commands.at(-1)!.command, 'reset'); assert.ok(!connection.playbackState.busy && port.isOpen);
+            await connection.connectOutput(null); assert.ok(connection.outputState.connected);
+        } finally { await connection.disconnect(); }
+    });
+    test('playback fault resets both chips and releases output lock', async () => {
+        const port = new Port(); port.audioFault = true;
+        const connection = new NanoDriveConnection(playbackCodec(), () => {}, async () => port, 100);
+        try {
+            await connection.connect('test'); await connection.startPlayback('A c4', true, async () => new Uint8Array(0));
+            assert.match(connection.playbackState.error, /fault/); assert.ok(!connection.playbackState.busy);
+            assert.strictEqual(port.commands.at(-1)!.command, 'reset'); assert.ok(port.isOpen);
+        } finally { await connection.disconnect(); }
+    });
+    test('playback supplies DATA during a pending STATUS but aborts when START is not confirmed', async () => {
+        const port = new Port(); port.ignoreRunningStatus = true;
+        const connection = new NanoDriveConnection(playbackCodec(), () => {}, async () => port, 500);
+        try {
+            await connection.connect('test'); await connection.startPlayback('A c4', true, async () => new Uint8Array(0));
+            assert.match(connection.playbackState.error, /timed out/);
+            const start = port.commands.findIndex(command => command.command === 'audioStart');
+            assert.ok(port.commands.slice(start + 1).some(command => command.command === 'audioData'));
+            assert.strictEqual(port.commands.at(-1)!.command, 'reset'); assert.ok(!connection.playbackState.busy);
+        } finally { await connection.disconnect(); }
+    });
     test('keyboard requires Settings, initializes before notes and stops without closing serial', async () => {
         const port = new Port();
         const connection = new NanoDriveConnection(codec, () => {}, async () => port, 100);

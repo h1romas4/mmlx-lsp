@@ -1,7 +1,10 @@
 use mmlx_lsp_server::audition::{Audition, CLOCK, polyphony::Note, voice::Voice};
-use ndsif::{Chip, Command, Frame, RegisterWrite, Reply, Response, Status};
+use ndsif::{Chip, Command, Divider, Frame, OkiClock, RegisterWrite, Reply, Response, Status};
 use serde::Deserialize;
 use serde_json::{Value, json};
+
+#[path = "nanodrive/playback.rs"]
+mod playback;
 
 #[derive(Deserialize)]
 #[serde(tag = "operation", rename_all = "camelCase")]
@@ -23,6 +26,27 @@ enum Operation {
         request_id: u16,
         command: Input,
     },
+    Upload {
+        asset: Asset,
+        offset: usize,
+        bytes: Vec<u8>,
+    },
+    PlaybackInfo,
+    PlaybackInit {
+        looped: bool,
+    },
+    PlaybackNext {
+        #[serde(rename = "requestId")]
+        request_id: u16,
+    },
+    PlaybackStop,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+enum Asset {
+    Source,
+    Pdx,
 }
 
 #[derive(Deserialize)]
@@ -32,6 +56,9 @@ enum Control {
     GetInfo,
     Reset,
     SetClock,
+    SetPlaybackClock,
+    AudioStart,
+    AudioStatus,
 }
 
 #[derive(Deserialize)]
@@ -64,10 +91,33 @@ enum Input {
 #[derive(Default)]
 pub struct Bridge {
     session: Option<(u32, Audition)>,
+    source: Vec<u8>,
+    pdx: Vec<u8>,
+    playback: Option<playback::Playback>,
+}
+
+pub enum Output {
+    Json(Value),
+    Bytes(Vec<u8>, Option<usize>),
+    Audio(playback::Chunk),
+}
+
+#[cfg(test)]
+impl Output {
+    pub fn value(self) -> Value {
+        match self {
+            Self::Json(value) => value,
+            Self::Bytes(bytes, Some(count)) => json!({"bytes":bytes,"count":count}),
+            Self::Bytes(bytes, None) => json!({"bytes":bytes}),
+            Self::Audio(chunk) => {
+                json!({"bytes":chunk.bytes,"count":chunk.count,"position":chunk.position,"ended":chunk.ended})
+            }
+        }
+    }
 }
 
 impl Bridge {
-    pub fn handle(&mut self, params: Value) -> Result<Value, String> {
+    pub fn handle(&mut self, params: Value) -> Result<Output, String> {
         let operation: Operation =
             serde_json::from_value(params).map_err(|error| error.to_string())?;
         match operation {
@@ -84,11 +134,20 @@ impl Bridge {
                         chip: Chip::Ym2151,
                         hz: CLOCK,
                     },
+                    Control::SetPlaybackClock => Command::SetChipClock {
+                        chip: Chip::Ym2151,
+                        hz: 4_000_000,
+                    },
+                    Control::AudioStart => Command::AudioStart {
+                        clock: OkiClock::Mhz8,
+                        divider: Divider::Div512,
+                    },
+                    Control::AudioStatus => Command::AudioStatus,
                 };
                 let encoded = command
                     .encode(request_id)
                     .map_err(|error| error.to_string())?;
-                Ok(json!({ "bytes": encoded.as_bytes() }))
+                Ok(Output::Bytes(encoded.as_bytes().to_vec(), None))
             }
             Operation::Decode { body, request } => {
                 if request.len() < 3 || request.first() != Some(&0) || request.last() != Some(&0) {
@@ -97,13 +156,13 @@ impl Bridge {
                 let request = Frame::decode(&request[1..request.len() - 1])
                     .map_err(|error| error.to_string())?;
                 let Ok(frame) = Frame::decode(&body) else {
-                    return Ok(Value::Null);
+                    return Ok(Output::Json(Value::Null));
                 };
                 let Ok(response) = Response::decode(&frame) else {
-                    return Ok(Value::Null);
+                    return Ok(Output::Json(Value::Null));
                 };
                 if response.matches_request(&request).is_err() {
-                    return Ok(Value::Null);
+                    return Ok(Output::Json(Value::Null));
                 }
                 let mut result =
                     json!({ "status": if response.status == Status::Complete { 0 } else { 1 } });
@@ -111,7 +170,78 @@ impl Bridge {
                     result["model"] = json!(info.model);
                     result["firmware"] = json!(info.firmware);
                 }
-                Ok(result)
+                if let Reply::AudioStatus(status) = response.reply {
+                    result["accepted"] = json!(status.accepted);
+                    result["played"] = json!(status.played);
+                    result["pending"] = json!(status.pending);
+                    result["running"] = json!(status.flags.running());
+                    result["ended"] = json!(status.flags.ended());
+                    result["fault"] = json!(status.flags.fault());
+                    result["underflows"] = json!(status.underflows);
+                    result["overflows"] = json!(status.overflows);
+                    result["rejected"] = json!(status.rejected);
+                }
+                Ok(Output::Json(result))
+            }
+            Operation::Upload {
+                asset,
+                offset,
+                bytes,
+            } => {
+                let target = match asset {
+                    Asset::Source => &mut self.source,
+                    Asset::Pdx => &mut self.pdx,
+                };
+                if offset == 0 {
+                    target.clear();
+                }
+                if offset != target.len()
+                    || bytes.len() > 8192
+                    || offset.saturating_add(bytes.len()) > 16 * 1024 * 1024
+                {
+                    return Err("Invalid NanoDrive8 asset chunk".into());
+                }
+                target.extend_from_slice(&bytes);
+                Ok(Output::Json(Value::Null))
+            }
+            Operation::PlaybackInfo => {
+                let source =
+                    std::str::from_utf8(&self.source).map_err(|error| error.to_string())?;
+                let parsed = mmlx::mdx::parse(source).map_err(|error| error.to_string())?;
+                let mdx = mmlx::mdx::compile(&parsed).map_err(|error| error.to_string())?;
+                let package = soundlog::mdx::package::MdxPackage::parse_owned(
+                    mdx.to_bytes().map_err(|error| error.to_string())?,
+                    None,
+                )
+                .map_err(|error| error.to_string())?;
+                Ok(Output::Json(json!({ "pdxName":package.pdx_name() })))
+            }
+            Operation::PlaybackInit { looped } => {
+                let source =
+                    std::str::from_utf8(&self.source).map_err(|error| error.to_string())?;
+                self.playback = Some(playback::Playback::new(
+                    source,
+                    if self.pdx.is_empty() {
+                        None
+                    } else {
+                        Some(std::mem::take(&mut self.pdx))
+                    },
+                    looped,
+                )?);
+                Ok(Output::Json(Value::Null))
+            }
+            Operation::PlaybackNext { request_id } => {
+                let playback = self
+                    .playback
+                    .as_mut()
+                    .ok_or("NanoDrive8 playback is not initialized")?;
+                Ok(Output::Audio(playback.next(request_id)?))
+            }
+            Operation::PlaybackStop => {
+                self.playback = None;
+                self.source.clear();
+                self.pdx.clear();
+                Ok(Output::Json(Value::Null))
             }
             Operation::Audition {
                 session,
@@ -200,7 +330,7 @@ impl Bridge {
                             .to_vec(),
                     );
                 }
-                Ok(json!({ "bytes": frames.concat(), "count": frames.len() }))
+                Ok(Output::Bytes(frames.concat(), Some(frames.len())))
             }
         }
     }
@@ -211,8 +341,39 @@ mod tests {
     use super::*;
     use ndsif::DeviceInfo;
 
+    #[test]
+    fn playback_controls_set_mdx_clock_and_fixed_oki_cadence() {
+        for (name, expected) in [
+            (
+                "setPlaybackClock",
+                Command::SetChipClock {
+                    chip: Chip::Ym2151,
+                    hz: 4_000_000,
+                },
+            ),
+            (
+                "audioStart",
+                Command::AudioStart {
+                    clock: OkiClock::Mhz8,
+                    divider: Divider::Div512,
+                },
+            ),
+            ("audioStatus", Command::AudioStatus),
+        ] {
+            let result = Bridge::default()
+                .handle(json!({"operation":"encode","command":name,"requestId":7}))
+                .unwrap()
+                .value();
+            let bytes: Vec<u8> = serde_json::from_value(result["bytes"].clone()).unwrap();
+            assert_eq!(
+                ndsif::Frame::decode(&bytes[1..bytes.len() - 1]).unwrap(),
+                expected.to_frame(7).unwrap()
+            );
+        }
+    }
+
     fn handle(params: Value) -> Result<Value, String> {
-        Bridge::default().handle(params)
+        Bridge::default().handle(params).map(Output::value)
     }
 
     fn voice() -> Value {
@@ -224,7 +385,8 @@ mod tests {
             .handle(
                 json!({"operation":"audition", "session":7, "requestId":65535, "command":command}),
             )
-            .unwrap();
+            .unwrap()
+            .value();
         let bytes: Vec<u8> = serde_json::from_value(result["bytes"].clone()).unwrap();
         let frames: Vec<_> = bytes
             .split(|byte| *byte == 0)

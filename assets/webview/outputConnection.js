@@ -5,8 +5,9 @@ export function createOutputConnection(root, onRequest = () => {}) {
 	let connected = false;
 	let connecting = false;
 	let nanoDriveAvailable = false;
+	let nanoDriveBusy = false;
 	function render() {
-		button.disabled = !available || connecting || (mode.value === 'nanodrive8' && !nanoDriveAvailable && !connected);
+		button.disabled = !available || connecting || (mode.value === 'nanodrive8' && (nanoDriveBusy || (!nanoDriveAvailable && !connected)));
 		mode.disabled = connected || connecting;
 		button.title = connected ? 'Disconnect' : 'Connect';
 		button.setAttribute('aria-label', button.title);
@@ -21,6 +22,7 @@ export function createOutputConnection(root, onRequest = () => {}) {
 	});
 	render();
 	return {
+		setNanoDriveBusy(value) { nanoDriveBusy = value === true; render(); },
 		setNanoDriveAvailable(value) {
 			nanoDriveAvailable = value === true;
 			render();
