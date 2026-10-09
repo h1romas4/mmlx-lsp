@@ -1,6 +1,11 @@
 use crate::{
-    BytePosition, Chip, Divider, EncodedFrame, Error, Frame, OkiClock, Pan, RegisterWrite, ZeroPair,
+    BytePosition, Chip, Divider, EncodedFrame, Error, Frame, MAX_PAYLOAD_SIZE, OkiClock, Pan,
+    RegisterWrite, ZeroPair,
 };
+
+pub const MAX_YM2151_WRITES: usize = MAX_PAYLOAD_SIZE / 2;
+pub const MAX_YM2151_EVENT_WRITES: usize = (MAX_PAYLOAD_SIZE - 5) / 2;
+pub const MAX_AUDIO_DATA_BYTES: usize = MAX_PAYLOAD_SIZE - 4;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum AudioEvent<'a> {
@@ -63,7 +68,7 @@ impl Command<'_> {
     }
 
     pub fn to_frame(&self, request_id: u16) -> Result<Frame, Error> {
-        let mut payload = [0; 256];
+        let mut payload = [0; MAX_PAYLOAD_SIZE];
         let length = match *self {
             Self::Reset | Self::GetInfo | Self::AudioStatus => 0,
             Self::Ping(bytes) => {
@@ -74,7 +79,7 @@ impl Command<'_> {
                 bytes.len()
             }
             Self::WriteYm2151(writes) | Self::WriteYm2151Burst(writes) => {
-                encode_writes(writes, &mut payload, 128)?
+                encode_writes(writes, &mut payload, MAX_YM2151_WRITES)?
             }
             Self::SetChipClock { chip, hz } => {
                 if hz == 0 {
@@ -88,7 +93,7 @@ impl Command<'_> {
                 5
             }
             Self::AudioData { position, adpcm } => {
-                if !(1..=252).contains(&adpcm.len()) {
+                if !(1..=MAX_AUDIO_DATA_BYTES).contains(&adpcm.len()) {
                     return Err(Error::InvalidArgument);
                 }
                 position.checked_advance(adpcm.len())?;
@@ -101,7 +106,7 @@ impl Command<'_> {
                 match event {
                     AudioEvent::Ym2151(writes) => {
                         payload[4] = 0;
-                        5 + encode_writes(writes, &mut payload[5..], 125)?
+                        5 + encode_writes(writes, &mut payload[5..], MAX_YM2151_EVENT_WRITES)?
                     }
                     AudioEvent::OkiSettings { clock, divider } => {
                         payload[4] = 1;
@@ -218,7 +223,7 @@ impl<'a> Request<'a> {
                 Ok(Self::Ping(bytes))
             }
             0x54 | 0x56 => {
-                let writes = crate::types::RegisterWrites::decode(bytes, 128)?;
+                let writes = crate::types::RegisterWrites::decode(bytes, MAX_YM2151_WRITES)?;
                 Ok(if frame.opcode() == 0x54 {
                     Self::WriteYm2151(writes)
                 } else {
@@ -238,7 +243,7 @@ impl<'a> Request<'a> {
                 Ok(Self::SetChipClock { chip, hz })
             }
             0x58 => {
-                if !(5..=256).contains(&bytes.len()) {
+                if !(5..=MAX_PAYLOAD_SIZE).contains(&bytes.len()) {
                     return Err(Error::InvalidArgument);
                 }
                 let position = BytePosition::new(read_u32(bytes));
@@ -253,7 +258,10 @@ impl<'a> Request<'a> {
                 let position = BytePosition::new(read_u32(bytes));
                 let data = &bytes[5..];
                 let event = match bytes[4] {
-                    0 => RequestEvent::Ym2151(crate::types::RegisterWrites::decode(data, 125)?),
+                    0 => RequestEvent::Ym2151(crate::types::RegisterWrites::decode(
+                        data,
+                        MAX_YM2151_EVENT_WRITES,
+                    )?),
                     1 => {
                         let (clock, divider) = decode_oki(data)?;
                         RequestEvent::OkiSettings { clock, divider }

@@ -1,4 +1,7 @@
-use ndsif::{AudioEvent, BytePosition, Command, Pan, RegisterWrite, ZeroPair};
+use ndsif::{
+    AudioEvent, AudioSampleConverter, AudioTiming, BytePosition, Command, CommandEncoder, Divider,
+    MAX_YM2151_EVENT_WRITES, OkiClock, Pan, RegisterWrite, ZeroPair,
+};
 use soundlog::chip::{Okim6258Spec, Ym2151Spec};
 use soundlog::mdx::{
     command::MdxCommand,
@@ -9,7 +12,7 @@ use soundlog::mdx::{
 use soundlog::vgm::{VgmCallbackStream, command::VgmCommand, stream::StreamResult};
 use std::{cell::RefCell, collections::VecDeque, rc::Rc};
 
-const RATE: u64 = 15_625;
+const TIMING: AudioTiming = AudioTiming::new(OkiClock::Mhz8, Divider::Div512);
 const PREROLL: u32 = 40;
 const STEPS: [i32; 49] = [
     16, 17, 19, 21, 23, 25, 28, 31, 34, 37, 41, 45, 50, 55, 60, 66, 73, 80, 88, 97, 107, 118, 130,
@@ -215,16 +218,12 @@ impl FmPlayback {
         }
         let mut writes = self.writes.borrow_mut();
         let mut bytes = Vec::with_capacity(writes.len() * 2 + 64);
-        let mut count = 0;
-        for registers in writes.chunks(128) {
-            bytes.extend_from_slice(
-                Command::WriteYm2151Burst(registers)
-                    .encode(request_id.wrapping_add(count as u16))
-                    .map_err(|error| error.to_string())?
-                    .as_bytes(),
-            );
-            count += 1;
-        }
+        let mut encoder =
+            CommandEncoder::new(request_id, |frame: &[u8]| bytes.extend_from_slice(frame));
+        encoder
+            .ym2151_burst(&writes)
+            .map_err(|error| error.to_string())?;
+        let count = encoder.count();
         writes.clear();
         Ok(Chunk {
             bytes,
@@ -244,7 +243,7 @@ pub struct AudioPlayback {
     encoder: Codec,
     position: u32,
     pending: usize,
-    remainder: u64,
+    converter: AudioSampleConverter,
     finished: bool,
     tail: usize,
     ended: bool,
@@ -263,7 +262,10 @@ impl AudioPlayback {
         let writes = Rc::clone(&events);
         stream.on_write(move |_, spec: Ym2151Spec, sample, _| {
             writes.borrow_mut().push_back((
-                PREROLL + (sample as u64 * RATE / 88_200) as u32,
+                PREROLL
+                    + TIMING
+                        .bytes_from_ticks(sample as u64, 44_100)
+                        .expect("valid VGM tick rate") as u32,
                 Event::Fm(RegisterWrite::new(spec.register, spec.value)),
             ));
         });
@@ -289,7 +291,11 @@ impl AudioPlayback {
                 2 => {
                     if let Ok(pan) = Pan::try_from(spec.value) {
                         controls.borrow_mut().push_back((
-                            PREROLL + (sample as u64 * RATE / 88_200) as u32,
+                            PREROLL
+                                + TIMING
+                                    .bytes_from_ticks(sample as u64, 44_100)
+                                    .expect("valid VGM tick rate")
+                                    as u32,
                             Event::Pan(pan),
                         ));
                     }
@@ -304,9 +310,14 @@ impl AudioPlayback {
             encoder: Codec::default(),
             position: 0,
             pending: 0,
-            remainder: 0,
+            converter: TIMING
+                .sample_converter(44_100)
+                .expect("valid VGM tick rate"),
             finished: false,
-            tail: RATE.div_ceil(40) as usize,
+            tail: TIMING
+                .samples_from_ticks(50, 1000)
+                .expect("valid millisecond tick rate")
+                .div_ceil(2) as usize,
             ended: false,
         }
     }
@@ -320,9 +331,10 @@ impl AudioPlayback {
                 .map_err(|error| error.to_string())?
             {
                 Some(StreamResult::Command(VgmCommand::WaitSamples(wait))) => {
-                    let samples = self.remainder + u64::from(wait.0) * RATE;
-                    self.pending = (samples / 44_100) as usize;
-                    self.remainder = samples % 44_100;
+                    self.pending =
+                        self.converter
+                            .advance(u64::from(wait.0))
+                            .map_err(|error| error.to_string())? as usize;
                 }
                 None | Some(StreamResult::EndOfStream) => self.finished = true,
                 Some(StreamResult::NeedsMoreData) => {
@@ -378,15 +390,8 @@ impl AudioPlayback {
             self.ended = true;
         }
         let mut bytes = Vec::with_capacity(4096);
-        let mut count = 0;
-        let mut append = |command: Command<'_>| -> Result<(), String> {
-            let frame = command
-                .encode(request_id.wrapping_add(count as u16))
-                .map_err(|error| error.to_string())?;
-            bytes.extend_from_slice(frame.as_bytes());
-            count += 1;
-            Ok(())
-        };
+        let mut encoder =
+            CommandEncoder::new(request_id, |frame: &[u8]| bytes.extend_from_slice(frame));
         let mut events = self.events.borrow_mut();
         while events
             .front()
@@ -395,13 +400,15 @@ impl AudioPlayback {
             let (position, event) = events.pop_front().unwrap();
             let position = position.max(start);
             match event {
-                Event::Pan(pan) => append(Command::AudioEvent {
-                    position: BytePosition::new(position),
-                    event: AudioEvent::Pan(pan),
-                })?,
+                Event::Pan(pan) => encoder
+                    .push(Command::AudioEvent {
+                        position: BytePosition::new(position),
+                        event: AudioEvent::Pan(pan),
+                    })
+                    .map_err(|error| error.to_string())?,
                 Event::Fm(write) => {
                     let mut writes = vec![write];
-                    while writes.len() < 125
+                    while writes.len() < MAX_YM2151_EVENT_WRITES
                         && events.front().is_some_and(|(next, event)| {
                             *next == position && matches!(event, Event::Fm(_))
                         })
@@ -410,28 +417,29 @@ impl AudioPlayback {
                             writes.push(write);
                         }
                     }
-                    append(Command::AudioEvent {
-                        position: BytePosition::new(position),
-                        event: AudioEvent::Ym2151(&writes),
-                    })?;
+                    encoder
+                        .ym2151_event(BytePosition::new(position), &writes)
+                        .map_err(|error| error.to_string())?;
                 }
             }
         }
         if !pcm.is_empty() {
-            append(Command::AudioData {
-                position: BytePosition::new(start),
-                adpcm: &pcm,
-            })?;
+            encoder
+                .audio_data(BytePosition::new(start), &pcm)
+                .map_err(|error| error.to_string())?;
         }
         if self.ended {
             let silence = self.encoder.clone().pair([0, 0]);
-            append(Command::AudioEvent {
-                position: BytePosition::new(self.position),
-                event: AudioEvent::End(
-                    ZeroPair::try_from(silence).map_err(|error| error.to_string())?,
-                ),
-            })?;
+            encoder
+                .push(Command::AudioEvent {
+                    position: BytePosition::new(self.position),
+                    event: AudioEvent::End(
+                        ZeroPair::try_from(silence).map_err(|error| error.to_string())?,
+                    ),
+                })
+                .map_err(|error| error.to_string())?;
         }
+        let count = encoder.count();
         if bytes.len() > 65525 {
             return Err("NanoDrive8 playback chunk overflow".into());
         }

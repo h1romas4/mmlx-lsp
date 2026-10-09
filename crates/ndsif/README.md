@@ -11,6 +11,7 @@ The wire protocol version is `01`, independently of the document version.
 - All currently specified FM and ADPCM requests, typed request/response parsing,
   local argument validation, diagnostics and response correlation.
 - Unknown opcodes in raw frames and unknown diagnostic bits are retained.
+- Allocation-free batch encoding, protocol-limit splitting and integer audio timing.
 
 No serial I/O, OS clocks, threads, async runtime, allocation or request queue.
 VGM/MML/MIDI parsing, PCM synthesis, ADPCM encoding, resampling and playback
@@ -98,6 +99,54 @@ Immediate register writes accept 1..=128 pairs; positioned FM events accept
 1..=125 pairs. Each pair consumes one device event slot. DATA accepts 1..=252
 ADPCM bytes. `BytePosition` counts bytes, not samples or ticks, and rejects
 overflow rather than wrapping. One ADPCM byte is consumed low nibble first.
+
+The limits are exported as `MAX_YM2151_WRITES`, `MAX_YM2151_EVENT_WRITES` and
+`MAX_AUDIO_DATA_BYTES`. Single `Command` values still reject oversized input.
+`CommandEncoder` splits larger slices and delivers complete encoded frames to
+an infallible callback, without allocating or owning a transport:
+
+```rust
+use ndsif::{BytePosition, CommandEncoder, Error, RegisterWrite};
+
+let writes = [RegisterWrite::new(0x20, 0xc7); 129];
+let adpcm = [0x12; 253];
+let mut encoded_bytes = 0;
+let mut encoder = CommandEncoder::new(7, |frame: &[u8]| {
+  encoded_bytes += frame.len();
+});
+encoder.ym2151_burst(&writes)?;
+encoder.ym2151_event(BytePosition::new(0), &writes)?;
+let end = encoder.audio_data(BytePosition::new(0), &adpcm)?;
+assert_eq!(end.get(), 253);
+assert_eq!(encoder.count(), 6);
+assert_eq!(encoder.next_request_id(), 13);
+assert!(encoded_bytes > adpcm.len());
+# Ok::<(), Error>(())
+```
+
+The callback borrows each frame only for that invocation; copy it into a
+caller-owned buffer if it must outlive the callback. `push()` adds any single
+command to the same sequence. Request IDs wrap at 16 bits. Empty split inputs
+emit nothing. DATA position overflow is rejected before any DATA is emitted.
+Positions describe encoded requests, not device acceptance. Event/DATA/END
+ordering and transport error handling remain the caller's responsibility.
+
+`AudioTiming` converts ticks and ADPCM bytes using the exact clock/divider
+ratio, including divider 768. Conversions round down, reject zero tick rates
+and check overflow. Use a sample converter for consecutive durations to retain
+fractional samples; instantiate a new converter when timing settings change:
+
+```rust
+use ndsif::{AudioTiming, Divider, Error, OkiClock};
+
+let timing = AudioTiming::new(OkiClock::Mhz8, Divider::Div512);
+assert_eq!(timing.ticks_from_bytes(160, 1_000_000)?, 20_480);
+assert_eq!(timing.bytes_from_ticks(20_480, 1_000_000)?, 160);
+let mut converter = timing.sample_converter(44_100)?;
+assert_eq!(converter.advance(1)?, 0);
+assert_eq!(converter.advance(44_099)?, 15_625);
+# Ok::<(), Error>(())
+```
 
 Typed commands validate lengths, supported chip IDs, nonzero YM clocks, the
 4/8 MHz OKI clock choices, dividers 512/768/1024, PAN and END values. YM clocks

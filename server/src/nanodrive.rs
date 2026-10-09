@@ -1,5 +1,7 @@
 use mmlx_lsp_server::audition::{Audition, CLOCK, polyphony::Note, voice::Voice};
-use ndsif::{Chip, Command, Divider, Frame, OkiClock, RegisterWrite, Reply, Response, Status};
+use ndsif::{
+    Chip, Command, CommandEncoder, Divider, Frame, OkiClock, RegisterWrite, Reply, Response, Status,
+};
 use serde::Deserialize;
 use serde_json::{Value, json};
 
@@ -253,7 +255,9 @@ impl Bridge {
                 request_id,
                 command,
             } => {
-                let mut frames = Vec::new();
+                let mut bytes = Vec::new();
+                let mut encoder =
+                    CommandEncoder::new(request_id, |frame: &[u8]| bytes.extend_from_slice(frame));
                 let writes = if let Input::Init { voice } = command {
                     let mut audition = Audition::default();
                     let mut writes = (0..8).map(|channel| (0x08, channel)).collect::<Vec<_>>();
@@ -268,16 +272,12 @@ impl Bridge {
                     ]);
                     writes.extend(audition.set_voice(voice)?);
                     self.session = Some((session, audition));
-                    frames.push(
-                        Command::SetChipClock {
+                    encoder
+                        .push(Command::SetChipClock {
                             chip: Chip::Ym2151,
                             hz: CLOCK,
-                        }
-                        .encode(request_id)
-                        .map_err(|error| error.to_string())?
-                        .as_bytes()
-                        .to_vec(),
-                    );
+                        })
+                        .map_err(|error| error.to_string())?;
                     writes
                 } else {
                     let (id, audition) = self
@@ -326,16 +326,11 @@ impl Bridge {
                     .into_iter()
                     .map(|(address, value)| RegisterWrite { address, value })
                     .collect();
-                for chunk in writes.chunks(128) {
-                    frames.push(
-                        Command::WriteYm2151Burst(chunk)
-                            .encode(request_id.wrapping_add(frames.len() as u16))
-                            .map_err(|error| error.to_string())?
-                            .as_bytes()
-                            .to_vec(),
-                    );
-                }
-                Ok(Output::Bytes(frames.concat(), Some(frames.len())))
+                encoder
+                    .ym2151_burst(&writes)
+                    .map_err(|error| error.to_string())?;
+                let count = encoder.count();
+                Ok(Output::Bytes(bytes, Some(count)))
             }
         }
     }

@@ -126,6 +126,69 @@ pub enum Pan {
     Off = 3,
 }
 
+/// Exact clock/divider timing: two ADPCM samples per byte, rounded down to whole units.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct AudioTiming {
+    clock: OkiClock,
+    divider: Divider,
+}
+
+impl AudioTiming {
+    pub const fn new(clock: OkiClock, divider: Divider) -> Self {
+        Self { clock, divider }
+    }
+
+    pub fn sample_converter(self, tick_rate: u32) -> Result<AudioSampleConverter, Error> {
+        if tick_rate == 0 {
+            return Err(Error::InvalidArgument);
+        }
+        Ok(AudioSampleConverter {
+            numerator: self.clock as u64,
+            denominator: u64::from(tick_rate) * self.divider as u64,
+            remainder: 0,
+        })
+    }
+
+    pub fn samples_from_ticks(self, ticks: u64, tick_rate: u32) -> Result<u64, Error> {
+        self.sample_converter(tick_rate)?.advance(ticks)
+    }
+
+    pub fn bytes_from_ticks(self, ticks: u64, tick_rate: u32) -> Result<u64, Error> {
+        let converter = self.sample_converter(tick_rate)?;
+        let bytes = u128::from(ticks) * u128::from(converter.numerator)
+            / (u128::from(converter.denominator) * 2);
+        u64::try_from(bytes).map_err(|_| Error::InvalidArgument)
+    }
+
+    pub fn ticks_from_bytes(self, bytes: u64, tick_rate: u32) -> Result<u64, Error> {
+        if tick_rate == 0 {
+            return Err(Error::InvalidArgument);
+        }
+        let ticks = u128::from(bytes) * 2 * self.divider as u128 * u128::from(tick_rate)
+            / self.clock as u128;
+        u64::try_from(ticks).map_err(|_| Error::InvalidArgument)
+    }
+}
+
+/// Converts consecutive tick durations without losing fractional samples.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct AudioSampleConverter {
+    numerator: u64,
+    denominator: u64,
+    remainder: u64,
+}
+
+impl AudioSampleConverter {
+    /// Overflow leaves the conversion remainder unchanged.
+    pub fn advance(&mut self, ticks: u64) -> Result<u64, Error> {
+        let total = u128::from(ticks) * u128::from(self.numerator) + u128::from(self.remainder);
+        let samples = u64::try_from(total / u128::from(self.denominator))
+            .map_err(|_| Error::InvalidArgument)?;
+        self.remainder = (total % u128::from(self.denominator)) as u64;
+        Ok(samples)
+    }
+}
+
 impl TryFrom<u8> for Pan {
     type Error = Error;
     fn try_from(value: u8) -> Result<Self, Error> {

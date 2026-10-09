@@ -4,6 +4,140 @@ use ndsif::{
 };
 
 #[test]
+fn batch_encoder_splits_frames_and_preserves_ids_positions_and_order() {
+    use ndsif::{CommandEncoder, MAX_AUDIO_DATA_BYTES, MAX_YM2151_EVENT_WRITES, MAX_YM2151_WRITES};
+    let writes: [_; MAX_YM2151_WRITES * 2 + 1] =
+        std::array::from_fn(|index| RegisterWrite::new(index as u8, index.wrapping_mul(3) as u8));
+    let adpcm: [_; MAX_AUDIO_DATA_BYTES * 2 + 1] =
+        std::array::from_fn(|index| index.wrapping_mul(5) as u8);
+    let mut bytes = Vec::new();
+    {
+        let mut encoder =
+            CommandEncoder::new(u16::MAX, |frame: &[u8]| bytes.extend_from_slice(frame));
+        encoder.ym2151_burst(&writes).unwrap();
+        encoder.ym2151_event(BytePosition::new(9), &writes).unwrap();
+        assert_eq!(
+            encoder
+                .audio_data(BytePosition::new(9), &adpcm)
+                .unwrap()
+                .get(),
+            514
+        );
+        encoder.push(Command::Ping(b"barrier")).unwrap();
+        assert_eq!(encoder.count(), 10);
+        assert_eq!(encoder.next_request_id(), 9);
+    }
+    let frames: Vec<_> = bytes
+        .split(|byte| *byte == 0)
+        .filter(|body| !body.is_empty())
+        .map(|body| Frame::decode(body).unwrap())
+        .collect();
+    for (index, frame) in frames.iter().enumerate() {
+        assert_eq!(frame.request_id(), u16::MAX.wrapping_add(index as u16));
+    }
+    for (index, frame) in frames[..3].iter().enumerate() {
+        assert_eq!(
+            *frame,
+            Command::WriteYm2151Burst(writes.chunks(MAX_YM2151_WRITES).nth(index).unwrap())
+                .to_frame(frame.request_id())
+                .unwrap()
+        );
+    }
+    for (index, frame) in frames[3..6].iter().enumerate() {
+        assert_eq!(
+            *frame,
+            Command::AudioEvent {
+                position: BytePosition::new(9),
+                event: AudioEvent::Ym2151(
+                    writes.chunks(MAX_YM2151_EVENT_WRITES).nth(index).unwrap()
+                )
+            }
+            .to_frame(frame.request_id())
+            .unwrap()
+        );
+    }
+    for (index, frame) in frames[6..9].iter().enumerate() {
+        assert_eq!(
+            *frame,
+            Command::AudioData {
+                position: BytePosition::new(9 + (index * MAX_AUDIO_DATA_BYTES) as u32),
+                adpcm: adpcm.chunks(MAX_AUDIO_DATA_BYTES).nth(index).unwrap()
+            }
+            .to_frame(frame.request_id())
+            .unwrap()
+        );
+    }
+    assert_eq!(frames[9], Command::Ping(b"barrier").to_frame(8).unwrap());
+}
+
+#[test]
+fn batch_encoder_empty_and_invalid_inputs_do_not_emit_or_consume_ids() {
+    use ndsif::CommandEncoder;
+    let mut emitted = 0;
+    let mut encoder = CommandEncoder::new(42, |_: &[u8]| emitted += 1);
+    encoder.ym2151_burst(&[]).unwrap();
+    encoder.ym2151_event(BytePosition::new(0), &[]).unwrap();
+    assert_eq!(
+        encoder
+            .audio_data(BytePosition::new(u32::MAX), &[])
+            .unwrap()
+            .get(),
+        u32::MAX
+    );
+    assert_eq!(
+        encoder.audio_data(BytePosition::new(u32::MAX - 252), &[0; 253]),
+        Err(Error::InvalidArgument)
+    );
+    assert_eq!(
+        encoder.push(Command::Ping(&[0; 33])),
+        Err(Error::InvalidArgument)
+    );
+    assert_eq!(encoder.count(), 0);
+    assert_eq!(encoder.next_request_id(), 42);
+    assert_eq!(emitted, 0);
+}
+
+#[test]
+fn audio_timing_keeps_fractional_samples_and_checks_overflow() {
+    use ndsif::AudioTiming;
+    for clock in [OkiClock::Mhz4, OkiClock::Mhz8] {
+        for divider in [Divider::Div512, Divider::Div768, Divider::Div1024] {
+            let timing = AudioTiming::new(clock, divider);
+            let mut converter = timing.sample_converter(44_100).unwrap();
+            let split: u64 = (0..44_100).map(|_| converter.advance(1).unwrap()).sum();
+            assert_eq!(split, timing.samples_from_ticks(44_100, 44_100).unwrap());
+            assert_eq!(split, clock as u64 / divider as u64);
+            assert_eq!(
+                timing.bytes_from_ticks(44_100, 44_100).unwrap(),
+                clock as u64 / (divider as u64 * 2)
+            );
+            assert_eq!(
+                timing.ticks_from_bytes(clock as u64, 1000).unwrap(),
+                divider as u64 * 2000
+            );
+            assert_eq!(
+                timing.sample_converter(0).unwrap_err(),
+                Error::InvalidArgument
+            );
+            assert_eq!(timing.bytes_from_ticks(1, 0), Err(Error::InvalidArgument));
+            assert_eq!(timing.ticks_from_bytes(1, 0), Err(Error::InvalidArgument));
+        }
+    }
+    let timing = AudioTiming::new(OkiClock::Mhz8, Divider::Div512);
+    assert_eq!(timing.bytes_from_ticks(1024, 1_000_000).unwrap(), 8);
+    assert_eq!(timing.ticks_from_bytes(8, 1_000_000).unwrap(), 1024);
+    assert_eq!(
+        timing.ticks_from_bytes(u64::MAX, u32::MAX),
+        Err(Error::InvalidArgument)
+    );
+    let mut converter = timing.sample_converter(1000).unwrap();
+    converter.advance(1).unwrap();
+    let before = converter.clone();
+    assert_eq!(converter.advance(u64::MAX), Err(Error::InvalidArgument));
+    assert_eq!(converter, before);
+}
+
+#[test]
 fn every_command_encodes_expected_payload_and_reply_policy() {
     let writes = [
         RegisterWrite::new(0x20, 0xc7),
