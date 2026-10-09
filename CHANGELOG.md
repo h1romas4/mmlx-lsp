@@ -2,6 +2,10 @@
 
 All notable changes to the "mmlx-lsp" extension will be documented in this file.
 
+## [Unreleased]
+
+- Use a 4 MHz FM Voice clock on Emulation and NanoDrive8 so MML, keyboard and MIDI audition stay in tune.
+
 ## [0.12.0] - 2026-10-09
 
 - Add Chip State MML for short MML tests and hardware LFO setup on Emulation and NanoDrive8, with Enter-to-play and saved input.

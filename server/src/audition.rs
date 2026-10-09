@@ -7,7 +7,7 @@ use polyphony::{Note, Polyphony};
 use std::{cell::RefCell, collections::BTreeMap, rc::Rc};
 use voice::Voice;
 
-pub const CLOCK: u32 = 3_579_545;
+pub const CLOCK: u32 = 4_000_000;
 
 #[derive(Default)]
 pub struct VoiceTestRegisters {
@@ -141,7 +141,7 @@ impl Audition {
             .get(&(note.source, note.channel))
             .copied()
             .unwrap_or(0);
-        let pitch = ((i32::from(note.note) - 13) * 64 + offset).clamp(0, 96 * 64 - 1);
+        let pitch = ((i32::from(note.note) - 15) * 64 + 5 + offset).clamp(0, 96 * 64 - 1);
         let semitone = pitch / 64;
         let keys = [0_u8, 1, 2, 4, 5, 6, 8, 9, 10, 12, 13, 14];
         [
@@ -271,16 +271,16 @@ mod tests {
         audition.voices.allocate(Note { channel: 3, ..note }, 127);
         assert_eq!(
             audition.pitch_bend(1, 2, 16383),
-            [(0x28, 0x4d), (0x30, 0), (0x29, 0x41), (0x31, 0)]
+            [(0x28, 0x4a), (0x30, 20), (0x29, 0x3e), (0x31, 20)]
         );
         assert!(audition.pitch_bend(1, 2, 16383).is_empty());
         assert_eq!(
             audition.pitch_bend(1, 2, 8192),
-            [(0x28, 0x4a), (0x30, 0), (0x29, 0x3e), (0x31, 0)]
+            [(0x28, 0x48), (0x30, 20), (0x29, 0x3c), (0x31, 20)]
         );
         assert_eq!(
             audition.pitch_bend(1, 2, 0),
-            [(0x28, 0x48), (0x30, 0), (0x29, 0x3c), (0x31, 0)]
+            [(0x28, 0x45), (0x30, 20), (0x29, 0x39), (0x31, 20)]
         );
     }
 
@@ -293,7 +293,7 @@ mod tests {
             note: 69,
         };
         assert!(audition.pitch_bend(0, 0, 10240).is_empty());
-        assert_eq!(audition.pitch(note, 0), [(0x28, 0x4a), (0x30, 128)]);
+        assert_eq!(audition.pitch(note, 0), [(0x28, 0x48), (0x30, 148)]);
         audition.pitch_bend(0, 0, 0);
         assert_eq!(
             audition.pitch(Note { note: 13, ..note }, 0),
@@ -302,7 +302,7 @@ mod tests {
         audition.pitch_bend(0, 0, 16383);
         assert_eq!(
             audition.pitch(Note { note: 108, ..note }, 0),
-            [(0x28, 0x7e), (0x30, 252)]
+            [(0x28, 0x7e), (0x30, 20)]
         );
         assert!(audition.pitch_bend(0, 16, 8192).is_empty());
         assert!(audition.pitch_bend(0, 0, 16384).is_empty());

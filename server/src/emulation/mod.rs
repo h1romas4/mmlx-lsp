@@ -352,12 +352,19 @@ mod tests {
     }
 
     #[test]
-    fn keyboard_notes_match_midi_pitch() {
-        for note in [48, 60, 62, 69, 72, 84] {
+    fn keyboard_and_mml_notes_match_midi_pitch() {
+        for (note, phrase) in [
+            (48, "o3 c1"),
+            (60, "o4 c1"),
+            (62, "o4 d1"),
+            (69, "o4 a1"),
+            (72, "o5 c1"),
+            (84, "o6 c1"),
+        ] {
             let mut engine = Emulation::new(48000).unwrap();
             let mut voice = tone();
             voice.operator_mask = 8;
-            engine.set_voice(Some(voice)).unwrap();
+            engine.set_voice(Some(voice.clone())).unwrap();
             engine.note_on(
                 Note {
                     source: 0,
@@ -366,35 +373,39 @@ mod tests {
                 },
                 127,
             );
-            for _ in 0..10 {
-                engine.render().unwrap();
-            }
-            let mut samples = Vec::new();
-            for _ in 0..30 {
-                samples.extend(
-                    engine
-                        .render()
-                        .unwrap()
-                        .chunks_exact(8)
-                        .map(|frame| f32::from_le_bytes(frame[..4].try_into().unwrap())),
+            let mut mml = Emulation::new(48000).unwrap();
+            mml.start_voice_test(phrase, voice).unwrap();
+            for mut engine in [engine, mml] {
+                for _ in 0..10 {
+                    engine.render().unwrap();
+                }
+                let mut samples = Vec::new();
+                for _ in 0..30 {
+                    samples.extend(
+                        engine
+                            .render()
+                            .unwrap()
+                            .chunks_exact(8)
+                            .map(|frame| f32::from_le_bytes(frame[..4].try_into().unwrap())),
+                    );
+                }
+                let crossings: Vec<f64> = samples
+                    .windows(2)
+                    .enumerate()
+                    .filter(|(_, pair)| pair[0] <= 0.0 && pair[1] > 0.0)
+                    .map(|(index, pair)| {
+                        index as f64 - f64::from(pair[0]) / f64::from(pair[1] - pair[0])
+                    })
+                    .collect();
+                assert!(crossings.len() > 2, "MIDI note {note} must produce a tone");
+                let actual = 48000.0 * (crossings.len() - 1) as f64
+                    / (crossings.last().unwrap() - crossings[0]);
+                let expected = 440.0 * 2_f64.powf((f64::from(note) - 69.0) / 12.0);
+                assert!(
+                    (actual / expected - 1.0).abs() < 0.005,
+                    "MIDI note {note}: expected {expected:.3} Hz, got {actual:.3} Hz"
                 );
             }
-            let crossings: Vec<f64> = samples
-                .windows(2)
-                .enumerate()
-                .filter(|(_, pair)| pair[0] <= 0.0 && pair[1] > 0.0)
-                .map(|(index, pair)| {
-                    index as f64 - f64::from(pair[0]) / f64::from(pair[1] - pair[0])
-                })
-                .collect();
-            assert!(crossings.len() > 2, "MIDI note {note} must produce a tone");
-            let actual =
-                48000.0 * (crossings.len() - 1) as f64 / (crossings.last().unwrap() - crossings[0]);
-            let expected = 440.0 * 2_f64.powf((f64::from(note) - 69.0) / 12.0);
-            assert!(
-                (actual / expected - 1.0).abs() < 0.005,
-                "MIDI note {note}: expected {expected:.3} Hz, got {actual:.3} Hz"
-            );
         }
     }
 

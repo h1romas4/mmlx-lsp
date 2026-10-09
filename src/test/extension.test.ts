@@ -1789,7 +1789,7 @@ suite('mmlx extension', () => {
 			assert.strictEqual(on.count, 1); assert.ok(on.bytes.length > 50);
 			const bent = await audition({ type: 'pitchBend', source: 0, channel: 0, value: 10240 });
 			assert.strictEqual(bent.count, 1); assert.ok(bent.bytes.length < 20);
-			assert.ok(Buffer.from(bent.bytes).includes(Buffer.from([0x28, 0x4a, 0x30, 128])));
+			assert.ok(Buffer.from(bent.bytes).includes(Buffer.from([0x28, 0x48, 0x30, 148])));
 			assert.deepStrictEqual(await audition({ type: 'pitchBend', source: 0, channel: 0, value: 10240 }), { bytes: new Uint8Array(0), count: 0 });
 			const off = await audition({ type: 'noteOff', source: 0, channel: 0, note: 69 });
 			assert.strictEqual(off.count, 1); assert.ok(off.bytes.length < 20);

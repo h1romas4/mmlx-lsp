@@ -579,6 +579,15 @@ mod tests {
             assert!(writes.contains(&(0x38 + channel, 0x50)));
             assert!(writes.contains(&(0x20 + channel, 0x47)));
             assert!(writes.contains(&(0x40 + channel, 2)));
+            if channel == 0 {
+                for address in [0x28, 0x30] {
+                    assert_eq!(
+                        writes.iter().find(|write| write.0 == address).unwrap().1,
+                        registers.iter().find(|write| write.0 == address).unwrap().1,
+                        "MDX C4 and MIDI 60 must use the same pitch"
+                    );
+                }
+            }
         }
         assert!(bridge.handle(json!({"operation":"voiceTestInit", "session":7, "mml":"invalid???", "voice":voice()})).is_err());
         assert!(bridge.voice_test.is_none());
@@ -610,7 +619,7 @@ mod tests {
             frames[0],
             Command::SetChipClock {
                 chip: Chip::Ym2151,
-                hz: CLOCK
+                hz: 4_000_000
             }
             .to_frame(65535)
             .unwrap()
@@ -650,7 +659,7 @@ mod tests {
         assert_eq!(writes[0], (0x08, 0));
         assert_eq!(
             &writes[writes.len() - 3..],
-            &[(0x28, 0x4a), (0x30, 0), (0x08, 0x78)]
+            &[(0x28, 0x48), (0x30, 20), (0x08, 0x78)]
         );
         assert_eq!(
             audition(
@@ -724,7 +733,7 @@ mod tests {
         );
         assert_eq!(frames.len(), 1);
         assert_eq!(frames[0].opcode(), 0x56);
-        assert_eq!(frames[0].payload(), &[0x28, 0x4a, 0x30, 128]);
+        assert_eq!(frames[0].payload(), &[0x28, 0x48, 0x30, 148]);
         audition(
             &mut bridge,
             json!({"type":"noteOff", "source":1, "channel":3, "note":69}),
@@ -736,7 +745,7 @@ mod tests {
         assert!(
             frames[0]
                 .payload()
-                .ends_with(&[0x29, 0x4a, 0x31, 128, 0x08, 0x79])
+                .ends_with(&[0x29, 0x48, 0x31, 148, 0x08, 0x79])
         );
         assert!(
             audition(
@@ -757,7 +766,7 @@ mod tests {
                 "setClock",
                 Command::SetChipClock {
                     chip: Chip::Ym2151,
-                    hz: 3_579_545,
+                    hz: 4_000_000,
                 },
             ),
         ] {
