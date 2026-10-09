@@ -134,6 +134,10 @@ command palette. Diagnostic messages are not translated.
 - **MIDI-IN** connection and note reception, with pressed-key feedback in the FM Voice keyboard.
 - **Emulation output:** Select **Emulation** under **Keyboard > Output** to play up to eight notes with the on-screen keyboard or MIDI-IN.
 - **NanoDrive8 output:** Connect NanoDrive8 in **Settings**, then select **NanoDrive8** and connect under **Keyboard > Output**.
+- **Chip State MML:** Test short MML phrases with the displayed voice using Enter or Play/Stop.
+    Input is saved; the default is `MH0,200,64,0,5,0,1 ; PMS LFO`. Hardware LFO, pan and operator settings remain for keyboard notes; software LFOs apply only during MML playback.
+- **Reset sound chip:** Use the icon left of the Keyboard Output connection button to clear chip state and restore the displayed voice without disconnecting.
+    Available on Emulation and NanoDrive8 when connected and hardware Playback is idle.
 - **Pitch bend:** Drag the left-hand wheel with a mouse or touch, or hold arrow keys while focused. It returns to center when released. Both outputs use a fixed +/-2-semitone range; MIDI RPN range changes are not supported.
 - **MIDI bend:** Incoming bends apply per channel and update the wheel. Moving the on-screen wheel bends its notes and all MIDI channels.
 - **Oscilloscope:** Shows up to two periods of the reference note. Choose x1, x4, or x16 gain (default x4).

@@ -2,6 +2,13 @@
 
 All notable changes to the "mmlx-lsp" extension will be documented in this file.
 
+## [0.12.0] - 2026-10-09
+
+- Add Chip State MML for short MML tests and hardware LFO setup on Emulation and NanoDrive8, with Enter-to-play and saved input.
+- Keep applied hardware LFO, pan and operator settings across all eight keyboard voices after testing.
+- Add a sound-chip reset button that keeps the output connected.
+- Add subtle action animations and clear MML error feedback, reduce control flicker, and prevent unwanted sounds after tests end.
+
 ## [0.11.1] - 2026-10-09
 
 - Record detailed NanoDrive8 playback faults before RESET and prefetch PCM on the host to absorb temporary generation delays without increasing device buffering.
