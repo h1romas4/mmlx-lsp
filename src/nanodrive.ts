@@ -25,7 +25,7 @@ export type NanoDriveCodec = (params: { operation: 'encode'; command: NanoDriveC
     | { operation: 'upload'; asset: 'source' | 'pdx'; offset: number; bytes: number[] }
     | { operation: 'playbackInfo' | 'playbackStop' }
     | { operation: 'playbackInit'; looped: boolean }
-    | { operation: 'playbackNext'; requestId: number }) => Promise<{ bytes: number[] | Uint8Array; count?: number; position?: number; ended?: boolean } | { pdxName?: string } | NanoDriveReply | null>;
+    | { operation: 'playbackNext'; requestId: number }) => Promise<{ bytes: number[] | Uint8Array; count?: number; position?: number; ended?: boolean; fm?: boolean; synchronize?: boolean } | { pdxName?: string | null; audio?: boolean } | NanoDriveReply | null>;
 export interface NanoDriveState {
     port: string; connected: boolean; connecting: boolean; closing: boolean;
     phase: string; model: string; firmware: string; error: string;
@@ -105,9 +105,15 @@ export class NanoDriveConnection {
             await upload('pdx', new Uint8Array(0));
             const info = await this.codec({ operation: 'playbackInfo' }); check();
             if (info && 'pdxName' in info && info.pdxName) { const pdx = await loadPdx(info.pdxName); check(); await upload('pdx', pdx); }
-            await this.codec({ operation: 'playbackInit', looped }); check();
+            const prepared = await this.codec({ operation: 'playbackInit', looped }); check();
+            if (!prepared || !('audio' in prepared) || typeof prepared.audio !== 'boolean') { throw new Error('Invalid NanoDrive8 playback mode.'); }
             resetting = true;
             await this.request('reset'); resetting = false; check();
+            if (!prepared.audio) {
+                await this.send('setPlaybackClock'); check();
+                await this.playFm(connection, token, check);
+                check(); await this.stopPlayback('', true); return;
+            }
             const reset = await this.request('audioStatus'); check();
             if (reset.accepted !== 0 || reset.played !== 0 || reset.pending !== 0 || reset.running !== false || reset.fault !== false) { throw new Error('Invalid NanoDrive8 reset status.'); }
             await this.send('setPlaybackClock'); check();
@@ -157,6 +163,36 @@ export class NanoDriveConnection {
                 if (resetting) { await this.disconnect(message, false); }
                 else { await this.stopPlayback(message); }
             }
+        }
+    }
+
+    private async playFm(connection: number, token: number, check: () => void): Promise<void> {
+        let origin = performance.now();
+        let position = 0;
+        this.hardwarePlayback.loading = false; this.hardwarePlayback.playing = true; this.onPlayback(this.playbackState);
+        while (true) {
+            check(); const requestId = this.requestId & 0xffff; this.requestId += 8192;
+            const chunk = await this.codec({ operation: 'playbackNext', requestId }); check();
+            if (!chunk || !('bytes' in chunk) || chunk.fm !== true || !Number.isInteger(chunk.count) || chunk.count! < 0 || chunk.count! > 8192
+                || !Number.isSafeInteger(chunk.position) || chunk.position! < position || typeof chunk.ended !== 'boolean' || typeof chunk.synchronize !== 'boolean'
+                || ((chunk.count === 0) !== (chunk.bytes.length === 0))) { throw new Error('Invalid NanoDrive8 FM chunk.'); }
+            const deadline = origin + chunk.position! / 44.1;
+            while (performance.now() < deadline) {
+                check();
+                const now = performance.now();
+                const elapsed = Math.max(0, (now - origin) / 1000);
+                if (Math.floor(elapsed * 10) !== Math.floor(this.hardwarePlayback.position * 10)) { this.hardwarePlayback.position = elapsed; this.onPlayback(this.playbackState); }
+                await new Promise<void>(resolve => setTimeout(resolve, Math.max(1, Math.min(10, deadline - now))));
+            }
+            check();
+            if (chunk.bytes.length) { await this.write(chunk.bytes, connection, false, token); check(); }
+            if (chunk.synchronize) {
+                await this.request('ping', [...randomBytes(8)]); check();
+                origin = performance.now() - chunk.position! / 44.1;
+            }
+            position = chunk.position!;
+            this.hardwarePlayback.position = position / 44100;
+            if (chunk.ended) { return; }
         }
     }
 

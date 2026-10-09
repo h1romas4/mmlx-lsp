@@ -6,6 +6,7 @@ export class Port implements NanoDrivePort {
     commands: { command: string; requestId: number; payload: number[]; input?: NanoDriveInput; session?: number }[] = [];
     firmware = '1.0b8'; model = 'NanoDrive 8'; ignore = ''; rejected = '';
     drained: string[] = [];
+    writes: { command: string; time: number }[] = [];
     audioFault = false;
     ignoreRunningStatus = false;
     private accepted = 0;
@@ -24,10 +25,11 @@ export class Port implements NanoDrivePort {
     async write(buffer: Buffer): Promise<void> {
         const request = JSON.parse(buffer.subarray(1, buffer.length - 1).toString());
         this.commands.push(request);
+        this.writes.push({ command:request.command, time:performance.now() });
         if (request.command === 'reset') { this.accepted = 0; this.audioStarted = 0; this.audioEnd = false; }
         if (request.command === 'audioStart') { this.audioStarted = performance.now(); return; }
         if (request.command === 'audioData') { this.accepted = request.position; this.audioEnd = request.ended; return; }
-        if (request.command === 'audition' || request.command === 'setClock' || request.command === 'setPlaybackClock' || request.command === this.ignore) { return; }
+        if (request.command === 'audition' || request.command === 'fmBurst' || request.command === 'setClock' || request.command === 'setPlaybackClock' || request.command === this.ignore) { return; }
         if (request.command === 'audioStatus' && this.audioStarted && this.ignoreRunningStatus) { return; }
         const played = this.audioStarted ? Math.min(this.accepted, Math.floor((performance.now() - this.audioStarted) * 7.8125)) : 0;
         const response = request.command === 'audioStatus'
@@ -57,12 +59,55 @@ export const codec: NanoDriveCodec = async params => {
 };
 
 suite('NanoDrive8 connection', () => {
+    const fmCodec = (): NanoDriveCodec => {
+        let index = 0;
+        return async params => {
+            if (params.operation === 'upload' || params.operation === 'playbackStop') { return null; }
+            if (params.operation === 'playbackInfo') { return { audio:false, pdxName:null }; }
+            if (params.operation === 'playbackInit') { index=0; return { audio:false }; }
+            if (params.operation === 'playbackNext') {
+                const step=index++;
+                const position=step<2 ? 0 : (step-1)*4410;
+                return { bytes:Uint8Array.from([0,...Buffer.from(JSON.stringify({ command:'fmBurst',requestId:params.requestId,payload:[8,step===1?120:0] })),0]),
+                    fm:true,count:1,position,synchronize:step===0,ended:step===2 };
+            }
+            return codec(params);
+        };
+    };
+    test('FM-only sends no AUDIO commands, synchronizes before key-on and preserves note duration', async () => {
+        const port=new Port(); const connection=new NanoDriveConnection(fmCodec(),()=>{},async()=>port,100);
+        try {
+            await connection.connect('test');
+            await connection.startPlayback('#pcmfile "unused"\nA c4',false,async()=>{ throw new Error('FM-only must not load PDX'); });
+            assert.strictEqual(connection.playbackState.error,''); assert.ok(connection.playbackState.finished);
+            assert.ok(port.commands.every(request=>!request.command.startsWith('audio')));
+            assert.deepStrictEqual(port.commands.slice(5).map(request=>request.command),['reset','setPlaybackClock','fmBurst','ping','fmBurst','fmBurst','reset']);
+            const bursts=port.writes.filter(write=>write.command==='fmBurst');
+            assert.ok(bursts[2]!.time-bursts[1]!.time>=90,'Note-off must not be sent ahead of its scheduled time');
+            assert.ok(!port.drained.includes('fmBurst')); assert.ok(port.isOpen && connection.state.connected);
+            assert.strictEqual(connection.playbackState.position,0.1);
+        } finally { await connection.disconnect(); }
+    });
+    test('FM-only Stop cancels a future burst and releases keyboard lock', async () => {
+        const port=new Port(); const connection=new NanoDriveConnection(fmCodec(),()=>{},async()=>port,100);
+        try {
+            await connection.connect('test');
+            const playing=connection.startPlayback('A c4',false,async()=>new Uint8Array(0));
+            for(let count=0;count<100 && port.commands.filter(request=>request.command==='fmBurst').length<2;count++) { await new Promise(resolve=>setTimeout(resolve,2)); }
+            assert.strictEqual(port.commands.filter(request=>request.command==='fmBurst').length,2);
+            await connection.connectOutput(null); assert.ok(!connection.outputState.connected);
+            await connection.stopPlayback(); await playing;
+            assert.strictEqual(port.commands.filter(request=>request.command==='fmBurst').length,2);
+            assert.strictEqual(port.commands.at(-1)!.command,'reset'); assert.ok(!connection.playbackState.busy && port.isOpen);
+            await connection.connectOutput(null); assert.ok(connection.outputState.connected);
+        } finally { await connection.disconnect(); }
+    });
     const playbackCodec = (): NanoDriveCodec => {
         let position = 0; let looped = false;
         return async params => {
             if (params.operation === 'upload' || params.operation === 'playbackStop') { return null; }
             if (params.operation === 'playbackInfo') { return { pdxName: undefined }; }
-            if (params.operation === 'playbackInit') { position = 0; looped = params.looped; return null; }
+            if (params.operation === 'playbackInit') { position = 0; looped = params.looped; return { audio: true }; }
             if (params.operation === 'playbackNext') {
                 position += 160; const ended = !looped && position >= 800;
                 const bytes = Uint8Array.from([0, ...Buffer.from(JSON.stringify({ command: 'audioData', requestId: params.requestId, position, ended })), 0]);

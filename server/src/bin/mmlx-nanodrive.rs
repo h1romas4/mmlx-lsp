@@ -31,14 +31,18 @@ fn run(input: impl BufRead, mut output: impl Write) -> Result<(), String> {
         let (kind, bytes) = match bridge.handle(request.params) {
             Ok(nanodrive::Output::Audio(chunk)) => {
                 output
-                    .write_all(&[3])
+                    .write_all(&[if chunk.audio { 3 } else { 4 }])
                     .and_then(|()| {
                         output.write_all(&((chunk.bytes.len() + 11) as u32).to_le_bytes())
                     })
                     .and_then(|()| output.write_all(&request.id.to_le_bytes()))
                     .and_then(|()| output.write_all(&(chunk.count as u16).to_le_bytes()))
                     .and_then(|()| output.write_all(&chunk.position.to_le_bytes()))
-                    .and_then(|()| output.write_all(&[u8::from(chunk.ended)]))
+                    .and_then(|()| {
+                        output.write_all(&[
+                            u8::from(chunk.ended) | (u8::from(chunk.synchronize) << 1)
+                        ])
+                    })
                     .and_then(|()| output.write_all(&chunk.bytes))
                     .and_then(|()| output.flush())
                     .map_err(|error| error.to_string())?;

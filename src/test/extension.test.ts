@@ -1671,6 +1671,28 @@ suite('mmlx extension', () => {
 		} finally { await worker.dispose(); }
 	});
 
+	test('NanoDrive8 dedicated WASM uses timed FM-only binary bursts without unused PDX or ADPCM', async function () {
+		this.timeout(20000);
+		const extension=vscode.extensions.all.find(extension=>extension.packageJSON.name==='mmlx-lsp'); assert.ok(extension);
+		const worker=new NanoDriveWorker(extension.extensionUri,await Wasm.load());
+		try {
+			const source=new TextEncoder().encode('#pcmfile "unused"\nA r4 c4\nP r2');
+			await worker.request({ operation:'upload',asset:'source',offset:0,bytes:Array.from(source) });
+			assert.deepStrictEqual(await worker.request({ operation:'playbackInfo' }),{ audio:false,pdxName:null });
+			assert.deepStrictEqual(await worker.request({ operation:'playbackInit',looped:false }),{ audio:false });
+			let position=0; let synchronized=false; let ended=false;
+			for(let index=0;index<100;index++) {
+				const result=await worker.request({ operation:'playbackNext',requestId:index*128 });
+				assert.ok(result && 'bytes' in result && result.bytes instanceof Uint8Array && result.fm===true);
+				assert.ok(result.position!>=position && result.count!>=0); position=result.position!;
+				synchronized ||= result.synchronize===true;
+				if(result.ended) { ended=true; break; }
+			}
+			assert.ok(ended && synchronized && position>20000);
+			await worker.request({ operation:'playbackStop' });
+		} finally { await worker.dispose(); }
+	});
+
 	test('NanoDrive8 dedicated WASM streams bounded binary playback with large MML and PDX', async function () {
 		this.timeout(20000);
 		const extension = vscode.extensions.all.find(extension => extension.packageJSON.name === 'mmlx-lsp');
@@ -1681,7 +1703,7 @@ suite('mmlx extension', () => {
 			for (let offset = 0; offset < source.length; offset += 8192) {
 				await worker.request({ operation: 'upload', asset: 'source', offset, bytes: Array.from(source.subarray(offset, offset + 8192)) });
 			}
-			assert.deepStrictEqual(await worker.request({ operation: 'playbackInfo' }), { pdxName: 'drums' });
+			assert.deepStrictEqual(await worker.request({ operation: 'playbackInfo' }), { audio: true, pdxName: 'drums' });
 			await assert.rejects(worker.request({ operation: 'playbackInit', looped: false }), /PDX/);
 			const pdx = Buffer.alloc(768 + 2048); pdx.writeUInt32BE(768, 9 * 8); pdx.writeUInt32BE(2048, 9 * 8 + 4); pdx.fill(0x77, 768);
 			await worker.request({ operation: 'upload', asset: 'pdx', offset: 0, bytes: Array.from(pdx) });

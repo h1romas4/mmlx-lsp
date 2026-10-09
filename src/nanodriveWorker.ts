@@ -58,9 +58,10 @@ export class NanoDriveWorker {
 					if (kind === 1) { this.reply(JSON.parse(new TextDecoder().decode(bytes))); return; }
 					const view = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
 					const count = view.getUint16(4, true);
-					this.reply({ id: view.getUint32(0, true), result: { bytes: bytes.subarray(kind === 3 ? 11 : 6), ...(count === 65535 ? {} : { count }),
-						...(kind === 3 ? { position: view.getUint32(6, true), ended: view.getUint8(10) === 1 } : {}) } });
-				}, (kind, length) => (kind === 1 && length > 0 && length <= 65536) || (kind === 2 && length >= 6 && length <= 65536) || (kind === 3 && length >= 11 && length <= 65536));
+					this.reply({ id: view.getUint32(0, true), result: { bytes: bytes.subarray(kind >= 3 ? 11 : 6), ...(count === 65535 ? {} : { count }),
+						...(kind >= 3 ? { position: view.getUint32(6, true), ended: (view.getUint8(10) & 1) !== 0 } : {}),
+						...(kind === 4 ? { fm: true, synchronize: (view.getUint8(10) & 2) !== 0 } : {}) } });
+				}, (kind, length) => (kind === 1 && length > 0 && length <= 65536) || (kind === 2 && length >= 6 && length <= 65536) || ((kind === 3 || kind === 4) && length >= 11 && length <= 65536));
 				this.subscriptions.push(process.stdout!.onData(data => {
 					if (generation !== this.generation) { return; }
 					try { decoder.push(data); } catch (error) { this.fail(error, generation); }

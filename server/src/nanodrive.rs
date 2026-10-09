@@ -209,12 +209,15 @@ impl Bridge {
                     std::str::from_utf8(&self.source).map_err(|error| error.to_string())?;
                 let parsed = mmlx::mdx::parse(source).map_err(|error| error.to_string())?;
                 let mdx = mmlx::mdx::compile(&parsed).map_err(|error| error.to_string())?;
+                let audio = playback::uses_pcm(&mdx);
                 let package = soundlog::mdx::package::MdxPackage::parse_owned(
                     mdx.to_bytes().map_err(|error| error.to_string())?,
                     None,
                 )
                 .map_err(|error| error.to_string())?;
-                Ok(Output::Json(json!({ "pdxName":package.pdx_name() })))
+                Ok(Output::Json(
+                    json!({ "audio":audio,"pdxName":if audio { package.pdx_name() } else { None } }),
+                ))
             }
             Operation::PlaybackInit { looped } => {
                 let source =
@@ -228,7 +231,9 @@ impl Bridge {
                     },
                     looped,
                 )?);
-                Ok(Output::Json(Value::Null))
+                Ok(Output::Json(
+                    json!({"audio":self.playback.as_ref().unwrap().audio()}),
+                ))
             }
             Operation::PlaybackNext { request_id } => {
                 let playback = self

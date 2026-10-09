@@ -1,7 +1,9 @@
 use ndsif::{AudioEvent, BytePosition, Command, Pan, RegisterWrite, ZeroPair};
 use soundlog::chip::{Okim6258Spec, Ym2151Spec};
 use soundlog::mdx::{
+    command::MdxCommand,
     convert::{AdpcmMode, MdxToVgmOptions},
+    document::MdxDocument,
     package::MdxPackage,
 };
 use soundlog::vgm::{VgmCallbackStream, command::VgmCommand, stream::StreamResult};
@@ -80,8 +82,162 @@ pub struct Chunk {
     pub count: usize,
     pub position: u32,
     pub ended: bool,
+    pub audio: bool,
+    pub synchronize: bool,
 }
-pub struct Playback {
+pub fn uses_pcm(mdx: &MdxDocument) -> bool {
+    mdx.tracks
+        .iter()
+        .skip(8)
+        .flatten()
+        .any(|command| matches!(command, MdxCommand::Note(_)))
+}
+
+pub enum Playback {
+    Audio(AudioPlayback),
+    Fm(FmPlayback),
+}
+
+impl Playback {
+    pub fn new(source: &str, pdx: Option<Vec<u8>>, looped: bool) -> Result<Self, String> {
+        let parsed = mmlx::mdx::parse(source).map_err(|error| error.to_string())?;
+        let mdx = mmlx::mdx::compile(&parsed).map_err(|error| error.to_string())?;
+        let audio = uses_pcm(&mdx);
+        let package = MdxPackage::parse_owned(
+            mdx.to_bytes().map_err(|error| error.to_string())?,
+            if audio { pdx } else { None },
+        )
+        .map_err(|error| error.to_string())?;
+        if audio
+            && package.pdx.is_none()
+            && let Some(name) = package.pdx_name()
+        {
+            return Err(format!("PDX file required: {name}"));
+        }
+        Ok(if audio {
+            Self::Audio(AudioPlayback::new(package, looped))
+        } else {
+            Self::Fm(FmPlayback::new(package, looped))
+        })
+    }
+    pub fn audio(&self) -> bool {
+        matches!(self, Self::Audio(_))
+    }
+    pub fn next(&mut self, request_id: u16) -> Result<Chunk, String> {
+        match self {
+            Self::Audio(playback) => playback.next(request_id),
+            Self::Fm(playback) => playback.next(request_id),
+        }
+    }
+}
+
+pub struct FmPlayback {
+    stream: VgmCallbackStream<'static>,
+    writes: Rc<RefCell<Vec<RegisterWrite>>>,
+    position: u32,
+    key_on: Option<RegisterWrite>,
+    synchronized: bool,
+    ended: bool,
+}
+impl FmPlayback {
+    fn new(package: MdxPackage, looped: bool) -> Self {
+        let options = MdxToVgmOptions {
+            loop_count: if looped { None } else { Some(1) },
+            ..Default::default()
+        };
+        let mut stream = VgmCallbackStream::from_generator((package, options).into());
+        let writes = Rc::new(RefCell::new(Vec::new()));
+        let registers = Rc::clone(&writes);
+        stream.on_write(move |_, spec: Ym2151Spec, _, _| {
+            registers
+                .borrow_mut()
+                .push(RegisterWrite::new(spec.register, spec.value))
+        });
+        Self {
+            stream,
+            writes,
+            position: 0,
+            key_on: None,
+            synchronized: false,
+            ended: false,
+        }
+    }
+    fn next(&mut self, request_id: u16) -> Result<Chunk, String> {
+        if self.ended {
+            return Err("NanoDrive8 playback has ended".into());
+        }
+        if let Some(write) = self.key_on.take() {
+            self.writes.borrow_mut().push(write);
+        }
+        let mut position = self.position;
+        let mut synchronize = false;
+        loop {
+            match self
+                .stream
+                .next()
+                .transpose()
+                .map_err(|error| error.to_string())?
+            {
+                Some(StreamResult::Command(VgmCommand::WaitSamples(wait))) => {
+                    self.position = self
+                        .position
+                        .checked_add(u32::from(wait.0))
+                        .ok_or("NanoDrive8 FM position overflow")?;
+                    if !self.writes.borrow().is_empty() {
+                        break;
+                    }
+                    position = self.position;
+                }
+                None | Some(StreamResult::EndOfStream) => {
+                    self.ended = true;
+                    break;
+                }
+                Some(StreamResult::NeedsMoreData) => {
+                    return Err("Incomplete playback stream".into());
+                }
+                _ => {
+                    let mut writes = self.writes.borrow_mut();
+                    if !self.synchronized
+                        && writes
+                            .last()
+                            .is_some_and(|write| write.address == 0x08 && write.value & 0x78 != 0)
+                    {
+                        self.key_on = writes.pop();
+                        self.synchronized = true;
+                        synchronize = true;
+                        break;
+                    }
+                    if writes.len() > 4096 {
+                        return Err("NanoDrive8 FM register queue overflow".into());
+                    }
+                }
+            }
+        }
+        let mut writes = self.writes.borrow_mut();
+        let mut bytes = Vec::with_capacity(writes.len() * 2 + 64);
+        let mut count = 0;
+        for registers in writes.chunks(128) {
+            bytes.extend_from_slice(
+                Command::WriteYm2151Burst(registers)
+                    .encode(request_id.wrapping_add(count as u16))
+                    .map_err(|error| error.to_string())?
+                    .as_bytes(),
+            );
+            count += 1;
+        }
+        writes.clear();
+        Ok(Chunk {
+            bytes,
+            count,
+            position,
+            ended: self.ended,
+            audio: false,
+            synchronize,
+        })
+    }
+}
+
+pub struct AudioPlayback {
     stream: VgmCallbackStream<'static>,
     input: Rc<RefCell<Input>>,
     events: Rc<RefCell<VecDeque<(u32, Event)>>>,
@@ -94,18 +250,8 @@ pub struct Playback {
     ended: bool,
 }
 
-impl Playback {
-    pub fn new(source: &str, pdx: Option<Vec<u8>>, looped: bool) -> Result<Self, String> {
-        let parsed = mmlx::mdx::parse(source).map_err(|error| error.to_string())?;
-        let mdx = mmlx::mdx::compile(&parsed).map_err(|error| error.to_string())?;
-        let package =
-            MdxPackage::parse_owned(mdx.to_bytes().map_err(|error| error.to_string())?, pdx)
-                .map_err(|error| error.to_string())?;
-        if package.pdx.is_none()
-            && let Some(name) = package.pdx_name()
-        {
-            return Err(format!("PDX file required: {name}"));
-        }
+impl AudioPlayback {
+    fn new(package: MdxPackage, looped: bool) -> Self {
         let options = MdxToVgmOptions {
             adpcm_mode: AdpcmMode::Resample,
             loop_count: if looped { None } else { Some(1) },
@@ -151,7 +297,7 @@ impl Playback {
                 _ => {}
             }
         });
-        Ok(Self {
+        Self {
             stream,
             input,
             events,
@@ -162,7 +308,7 @@ impl Playback {
             finished: false,
             tail: RATE.div_ceil(40) as usize,
             ended: false,
-        })
+        }
     }
 
     fn sample(&mut self) -> Result<i16, String> {
@@ -294,6 +440,8 @@ impl Playback {
             count,
             position: self.position,
             ended: self.ended,
+            audio: true,
+            synchronize: false,
         })
     }
 }
@@ -323,7 +471,12 @@ mod tests {
     }
     #[test]
     fn playback_produces_bounded_monotonic_fm_data_and_end_frames() {
-        let mut playback = Playback::new("A t120 o4 l4 c", None, false).unwrap();
+        let parsed = mmlx::mdx::parse("A t120 o4 l4 c").unwrap();
+        let package = MdxPackage {
+            mdx: mmlx::mdx::compile(&parsed).unwrap(),
+            pdx: None,
+        };
+        let mut playback = AudioPlayback::new(package, false);
         let mut previous = 0;
         let mut finished = false;
         let mut event_position = 0;
@@ -382,6 +535,71 @@ mod tests {
                 .all(|sample| sample.abs() <= 2)
         );
         assert!(playback.next(0).is_err());
+    }
+    #[test]
+    fn fm_only_uses_bursts_without_any_audio_opcode_and_synchronizes_before_key_on() {
+        for source in ["A c4", "#pcmfile \"unused\"\nA c4\nP r4", "A r4 c4"] {
+            let mut playback = Playback::new(source, None, false).unwrap();
+            assert!(!playback.audio());
+            let mut position = 0;
+            let mut synchronized = false;
+            let mut key_on = false;
+            let mut ended = false;
+            for _ in 0..100 {
+                let chunk = playback.next(0).unwrap();
+                assert!(!chunk.audio);
+                assert!(chunk.position >= position);
+                position = chunk.position;
+                for body in chunk
+                    .bytes
+                    .split(|byte| *byte == 0)
+                    .filter(|body| !body.is_empty())
+                {
+                    let frame = ndsif::Frame::decode(body).unwrap();
+                    assert_eq!(frame.opcode(), 0x56);
+                    for pair in frame.payload().chunks_exact(2) {
+                        if pair[0] == 0x08 && pair[1] & 0x78 != 0 {
+                            assert!(synchronized);
+                            key_on = true;
+                        }
+                    }
+                }
+                synchronized |= chunk.synchronize;
+                if chunk.ended {
+                    ended = true;
+                    break;
+                }
+            }
+            assert!(ended && key_on && synchronized && position > 0);
+        }
+        assert!(
+            Playback::new("#pcmfile \"drums\"\nA c4\nP r4 o1 c4", None, false)
+                .err()
+                .unwrap()
+                .contains("PDX")
+        );
+    }
+    #[test]
+    fn fm_only_loops_keep_time_and_do_not_repeat_startup_synchronization() {
+        let mut playback = Playback::new("A L c4", None, true).unwrap();
+        let mut position = 0;
+        let mut synchronizations = 0;
+        for _ in 0..30 {
+            let chunk = playback.next(0).unwrap();
+            assert!(!chunk.audio && !chunk.ended);
+            assert!(chunk.position >= position);
+            position = chunk.position;
+            synchronizations += usize::from(chunk.synchronize);
+            for body in chunk
+                .bytes
+                .split(|byte| *byte == 0)
+                .filter(|body| !body.is_empty())
+            {
+                assert_eq!(ndsif::Frame::decode(body).unwrap().opcode(), 0x56);
+            }
+        }
+        assert_eq!(synchronizations, 1);
+        assert!(position > 44_100);
     }
     #[test]
     fn pdx_pcm_is_mixed_and_reencoded_in_the_continuous_stream() {
