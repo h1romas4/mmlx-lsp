@@ -2,6 +2,10 @@
 
 All notable changes to the "mmlx-lsp" extension will be documented in this file.
 
+## [0.11.0] - 2026-10-09
+
+- Make the Playback Stop button the same size as Play and highlight it when stopping is available.
+
 ## [0.10.0] - 2026-10-09
 
 - Add experimental NanoDrive8 support.

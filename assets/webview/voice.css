@@ -46,8 +46,9 @@ h1.empty { font-size: inherit; font-weight: 400; }
 .playback-transport { display: flex; align-items: center; flex-wrap: wrap; gap: 10px; max-width: 480px; padding: 14px; margin-bottom: 14px; border: 1px solid var(--vscode-widget-border, var(--vscode-panel-border, #d7dce1)); border-radius: 8px; background: var(--vscode-editorWidget-background, #f1f3f5); }
 .transport-button { width: 32px; height: 32px; flex: 0 0 32px; display: grid; place-items: center; border: 1px solid var(--vscode-input-border, #ccc); border-radius: 6px; background: transparent; color: var(--vscode-editor-foreground, #292929); cursor: pointer; transition: background-color 120ms ease; }
 .transport-button::before, .playback-volume span { content: ''; display: block; width: 16px; height: 16px; background: currentColor; mask: url('play.svg') center / contain no-repeat; }
-.transport-play { width: 44px; height: 44px; flex-basis: 44px; border-color: transparent; background: var(--vscode-button-background, #0078d4); color: var(--vscode-button-foreground, #fff); }
-.transport-play::before { width: 20px; height: 20px; }
+.transport-play, .transport-stop { width: 44px; height: 44px; flex-basis: 44px; }
+.transport-play, .transport-stop:not(:disabled) { border-color: transparent; background: var(--vscode-button-background, #0078d4); color: var(--vscode-button-foreground, #fff); }
+.transport-play::before, .transport-stop::before { width: 20px; height: 20px; }
 .transport-play.is-playing::before { mask-image: url('pause.svg'); }
 .transport-cursor::before { mask-image: url('list-start.svg'); }
 .transport-play.is-loading::before { mask-image: url('loader-circle.svg'); animation: playback-loading 900ms linear infinite; }
@@ -55,7 +56,7 @@ h1.empty { font-size: inherit; font-weight: 400; }
 .transport-loop::before { mask-image: url('repeat-2.svg'); }
 .transport-loop[aria-pressed="true"] { color: var(--op1); border-color: var(--op1); }
 .transport-button:hover { background: var(--vscode-toolbar-hoverBackground, #eee); }
-.transport-play:hover { background: var(--vscode-button-hoverBackground, #006cbe); }
+.transport-play:hover, .transport-stop:not(:disabled):hover { background: var(--vscode-button-hoverBackground, #006cbe); }
 .transport-button:focus-visible { outline: 1px solid var(--vscode-focusBorder, #39a9c7); outline-offset: 2px; }
 .transport-button:disabled { opacity: .4; cursor: default; }
 #playback-controls.is-pending .transport-play:disabled, #playback-controls.is-finishing .transport-play:disabled { opacity: 1; }
