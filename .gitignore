@@ -3,6 +3,7 @@ dist/
 out/
 .vscode-test/
 server/target/
+crates/ndsif/target/
 toolchains/wasi-sdk/
 wasi-sdk.tar.gz
 native/helix/build/

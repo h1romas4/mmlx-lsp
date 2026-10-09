@@ -2,10 +2,11 @@
 
 All notable changes to the "mmlx-lsp" extension will be documented in this file.
 
-## [Unreleased]
+## [0.13.0] - 2026-10-09
 
 - Use a 4 MHz FM Voice clock on Emulation and NanoDrive8 so MML, keyboard and MIDI audition stay in tune.
 - Buffer about 205 ms ahead during NanoDrive8 PCM playback to better tolerate brief host stalls, and report supply callback gaps in failure diagnostics.
+- Enable NanoDrive8 output volume during playback using the device volume API.
 
 ## [0.12.0] - 2026-10-09
 

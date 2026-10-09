@@ -62,7 +62,8 @@ export function createPlaybackControls(root, onModeChange = () => {}, onAction =
 		loop.disabled = !available || busy;
 		loop.setAttribute('aria-pressed', String(looped));
 		mode.disabled = !state?.available || busy;
-		volume.disabled = !available || hardware;
+		volume.disabled = hardware ? !nanoDriveAvailable : !available;
+		volume.title = hardware ? 'NanoDrive8 output volume' : 'Playback volume';
 		if (!loading) {
 			const seconds = Math.max(0, Math.floor(state?.position || 0));
 			setText(time, `${Math.floor(seconds / 60)}:${String(seconds % 60).padStart(2, '0')}`);

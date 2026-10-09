@@ -148,7 +148,8 @@ command palette. Diagnostic messages are not translated.
 ### Playback
 
 - **Playback:** Plays the active MML, including unsaved edits. Switching files stops playback without affecting FM Voice or MIDI-IN.
-- **Controls:** Emulation provides play/pause, stop, volume, and elapsed time. NanoDrive8 provides play/stop. Both outputs support optional MML loop points.
+- **Controls:** Emulation provides play/pause, stop, volume, and elapsed time. NanoDrive8 provides play/stop and output volume. Both outputs support optional MML loop points.
+- **NanoDrive8 volume:** Controls the device's main FM/PCM output, including keyboard audition. Requires firmware supporting `SET_OUTPUT_VOLUME`; older firmware may reject volume changes without stopping playback.
 - **Play from cursor:** Emulation starts at the current command or the next command on the same line. Repeats start at the first occurrence; seeking may take a moment.
 - **Outputs:** Emulation is FM-only. NanoDrive8 uses FM bursts for FM-only songs and ADPCM streaming for songs with PCM notes.
 - **NanoDrive8 diagnostics:** Playback failures are recorded before RESET in **Output > mmlx NanoDrive8**, including USB/PCM/event fault reasons, raw status, generation timing, supply callback gaps (`maxSupplyGapMs`), and host serial-write statistics.

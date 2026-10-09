@@ -36,8 +36,9 @@ const voiceControls = createVoiceControls(document.getElementById('voice-control
 const playbackControls = createPlaybackControls(document.getElementById('playback-controls'), mode => {
 	playbackMode = mode;
 	saveState();
+	sendPlaybackVolume();
 }, action => { void playbackAction(action); }, volume => {
-	playbackAudio.setVolume(volume); saveState();
+	playbackAudio.setVolume(volume); saveState(); sendPlaybackVolume();
 });
 const settingsControls = createSettingsControls(document.getElementById('settings-controls'), message => vscode.postMessage(message));
 const keyboardControls = createKeyboardControls(document.getElementById('keyboard'), mode => {
@@ -125,6 +126,12 @@ function saveState() {
 		playbackLooped: playbackControls.looped, playbackVolume: playbackControls.volume * 100, keyboardOpen: keyboard.open, keyboardMode, monitorGain: audioMonitors.gain, voiceTestMml: keyboardControls.testMml });
 }
 
+function sendPlaybackVolume() {
+	if (playbackMode === 'nanodrive8') {
+		vscode.postMessage({ type: 'playbackVolume', mode: playbackMode, volume: playbackControls.volume });
+	}
+}
+
 async function playbackAction(action) {
 	if (action === 'stop') {
 		playbackOperation++; playbackAudio.disconnect();
@@ -142,7 +149,7 @@ async function playbackAction(action) {
 			if (playbackMode === 'nanodrive8' && action === 'playFromCursor') { return; }
 			const sampleRate = playbackMode === 'nanodrive8' ? undefined : await playbackAudio.connect();
 			if (operation !== playbackOperation) { return; }
-			vscode.postMessage({ type: 'playbackAction', action, mode: playbackMode, id, document, sampleRate, looped: playbackControls.looped });
+			vscode.postMessage({ type: 'playbackAction', action, mode: playbackMode, id, document, sampleRate, looped: playbackControls.looped, volume: playbackControls.volume });
 		} else {
 			if (action === 'pause') { await playbackAudio.pause(); }
 			else if (action === 'resume') { await playbackAudio.resume(); }
@@ -238,6 +245,7 @@ window.addEventListener('message', event => {
 			if (connected && !nanoDriveConnected) {
 				if (playbackState?.playing || playbackState?.paused || playbackState?.loading) { void playbackAction('stop'); }
 				playbackMode = 'nanodrive8'; playbackControls.setMode(playbackMode); saveState();
+				sendPlaybackVolume();
 			}
 			nanoDriveConnected = connected;
 		}

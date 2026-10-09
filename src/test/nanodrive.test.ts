@@ -65,6 +65,39 @@ export const codec: NanoDriveCodec = async params => {
 };
 
 suite('NanoDrive8 connection', () => {
+    test('output volume maps levels to attenuation and coalesces slider changes', async () => {
+        const port = new Port();
+        const connection = new NanoDriveConnection(codec, () => {}, async () => port, 100);
+        try {
+            await connection.connect('test');
+            await connection.setVolume(.5);
+            assert.deepStrictEqual(port.commands.at(-1)?.payload, [6]);
+            await Promise.all([connection.setVolume(.1), connection.setVolume(.2), connection.setVolume(0)]);
+            const changes = port.commands.filter(command => command.command === 'setOutputVolume');
+            assert.deepStrictEqual(changes.map(command => command.payload), [[6], [20], [96]]);
+            await connection.setVolume(1);
+            assert.deepStrictEqual(port.commands.at(-1)?.payload, [0]);
+            const count = port.commands.length;
+            await connection.setVolume(1); await connection.setVolume(NaN); await connection.setVolume(-1);
+            assert.strictEqual(port.commands.length, count);
+            await Promise.all([connection.setVolume(1), connection.setVolume(.5)]);
+            assert.deepStrictEqual(port.commands.at(-1)?.payload, [6], 'An unchanged level cannot hide the next slider change');
+        } finally { await connection.disconnect(); }
+    });
+    test('unsupported output volume reports an error without resetting or disconnecting', async () => {
+        const port = new Port(); const diagnostics: string[] = [];
+        const connection = new NanoDriveConnection(codec, () => {}, async () => port, 100, undefined, undefined, message => diagnostics.push(message));
+        try {
+            await connection.connect('test'); const resets = port.commands.filter(command => command.command === 'reset').length;
+            port.rejected = 'setOutputVolume'; await connection.setVolume(.5);
+            assert.match(connection.state.error, /rejected setOutputVolume/);
+            assert.ok(connection.state.connected && port.isOpen);
+            assert.strictEqual(port.commands.filter(command => command.command === 'reset').length, resets);
+            assert.strictEqual(diagnostics.length, 1);
+            port.rejected = ''; await connection.setVolume(.5);
+            assert.strictEqual(connection.state.error, '');
+        } finally { await connection.disconnect(); }
+    });
     test('playback passes ADPCM modes and loads configured or referenced PDX only for PCM', async () => {
         for (const scenario of [
             { audio: true, pdxName: null, configured: true, mode: 'through' as const, name: '' },
@@ -121,7 +154,7 @@ suite('NanoDrive8 connection', () => {
             await connection.startPlayback('#pcmfile "unused"\nA c4',false,async()=>{ throw new Error('FM-only must not load PDX'); });
             assert.strictEqual(connection.playbackState.error,''); assert.ok(connection.playbackState.finished);
             assert.ok(port.commands.every(request=>!request.command.startsWith('audio')));
-            assert.deepStrictEqual(port.commands.slice(5).map(request=>request.command),['reset','setPlaybackClock','fmBurst','ping','fmBurst','fmBurst','reset']);
+            assert.deepStrictEqual(port.commands.slice(5).map(request=>request.command),['reset','setOutputVolume','setPlaybackClock','fmBurst','ping','fmBurst','fmBurst','reset']);
             const bursts=port.writes.filter(write=>write.command==='fmBurst');
             assert.ok(bursts[2]!.time-bursts[1]!.time>=90,'Note-off must not be sent ahead of its scheduled time');
             assert.ok(!port.drained.includes('fmBurst')); assert.ok(port.isOpen && connection.state.connected);
@@ -226,6 +259,32 @@ suite('NanoDrive8 connection', () => {
             assert.strictEqual(port.commands.at(-1)?.command, 'reset');
         } finally { await connection.disconnect(); }
     });
+    test('output volume changes during PCM playback without blocking DATA or STATUS', async () => {
+        const port = new Port(); port.detectUnderflow = true;
+        const base = playbackCodec(4800); const changes: Promise<void>[] = [];
+        const connection = new NanoDriveConnection(async params => {
+            const reply = await base(params);
+            if (params.operation === 'decode' && JSON.parse(Buffer.from(params.request.slice(1, -1)).toString()).command === 'setOutputVolume') {
+                await new Promise(resolve => setTimeout(resolve, 30));
+            }
+            return reply;
+        }, () => {}, async () => port, 500, undefined, state => {
+            if (state.playing && changes.length === 0) { changes.push(connection.setVolume(.5)); }
+            else if (state.playing && state.position >= .2 && changes.length === 1) { changes.push(connection.setVolume(0)); }
+        });
+        try {
+            await connection.connect('test');
+            await connection.startPlayback('P c4', false, async () => new Uint8Array(0));
+            await Promise.all(changes);
+            assert.strictEqual(changes.length, 2);
+            assert.deepStrictEqual(port.commands.filter(command => command.command === 'setOutputVolume').map(command => command.payload), [[0], [6], [96]]);
+            const changed = port.commands.findIndex(command => command.command === 'setOutputVolume' && command.payload[0] === 6);
+            assert.ok(port.commands.slice(changed + 1).some(command => command.command === 'audioData'));
+            assert.ok(!port.drained.includes('setOutputVolume'));
+            assert.strictEqual(connection.playbackState.error, '');
+            assert.ok(connection.playbackState.finished);
+        } finally { await connection.disconnect(); }
+    });
     test('playback survives a 120ms supply callback stall with generated PCM available', async () => {
         const port = new Port(); port.detectUnderflow = true;
         let stalled = false;
@@ -249,9 +308,11 @@ suite('NanoDrive8 connection', () => {
         const connection = new NanoDriveConnection(playbackCodec(3200), () => {}, async () => port, 100);
         try {
             await connection.connect('test'); await connection.connectOutput(null);
+            await connection.setVolume(.5);
             await connection.startPlayback('A c4', false, async () => { throw new Error('Unexpected PDX'); });
             assert.ok(connection.playbackState.finished); assert.ok(!connection.playbackState.busy); assert.strictEqual(connection.playbackState.error, '');
             assert.ok(!connection.outputState.connected); assert.ok(connection.state.connected && port.isOpen);
+            assert.deepStrictEqual(port.commands.filter(command => command.command === 'setOutputVolume').map(command => command.payload), [[6]], 'RESET keeps the selected output volume without resending it');
             const commands = port.commands.map(request => request.command);
             const start = commands.indexOf('audioStart');
             assert.deepStrictEqual(commands.slice(start - 11, start), [...Array<string>(10).fill('audioData'), 'ping']);

@@ -191,7 +191,7 @@ impl<'a> Response<'a> {
             Reply::Rejected
         } else {
             match frame.opcode() {
-                0x80 | 0xd4 => {
+                0x80 | 0x83 | 0xd4 => {
                     if !body.is_empty() {
                         return Err(Error::InvalidLength);
                     }

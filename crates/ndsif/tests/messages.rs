@@ -4,6 +4,61 @@ use ndsif::{
 };
 
 #[test]
+fn output_volume_validates_attenuation_and_round_trips_requests_and_replies() {
+    use ndsif::Request;
+    for attenuation in 0..=96 {
+        let command = Command::SetOutputVolume { attenuation };
+        let request = command.to_frame(42).unwrap();
+        assert_eq!(request.opcode(), 0x03);
+        assert_eq!(request.payload(), &[attenuation]);
+        assert!(command.expects_response());
+        assert_eq!(
+            Request::decode(&request).unwrap(),
+            Request::SetOutputVolume { attenuation }
+        );
+        let encoded = command.encode(42).unwrap();
+        assert_eq!(
+            Frame::decode(&encoded.as_bytes()[1..encoded.as_bytes().len() - 1]).unwrap(),
+            request
+        );
+        for reply in [Reply::Complete, Reply::Rejected] {
+            let response = Response::for_request(&request, reply).unwrap();
+            let frame = response.to_frame().unwrap();
+            assert_eq!(frame.opcode(), 0x83);
+            assert_eq!(
+                frame.payload(),
+                &[if reply == Reply::Complete { 0 } else { 1 }]
+            );
+            let decoded = Response::decode(&frame).unwrap();
+            assert_eq!(decoded.reply, reply);
+            decoded.matches_request(&request).unwrap();
+        }
+    }
+    for attenuation in 97..=255 {
+        assert_eq!(
+            Command::SetOutputVolume { attenuation }.to_frame(42),
+            Err(Error::InvalidArgument)
+        );
+        assert_eq!(
+            Request::decode(&Frame::new(0x03, 42, &[attenuation]).unwrap()),
+            Err(Error::InvalidArgument)
+        );
+    }
+    for payload in [&[][..], &[0, 0][..]] {
+        assert_eq!(
+            Request::decode(&Frame::new(0x03, 42, payload).unwrap()),
+            Err(Error::InvalidArgument)
+        );
+    }
+    for payload in [&[][..], &[0, 0][..], &[1, 0][..]] {
+        assert_eq!(
+            Response::decode(&Frame::new(0x83, 42, payload).unwrap()),
+            Err(Error::InvalidLength)
+        );
+    }
+}
+
+#[test]
 fn batch_encoder_splits_frames_and_preserves_ids_positions_and_order() {
     use ndsif::{CommandEncoder, MAX_AUDIO_DATA_BYTES, MAX_YM2151_EVENT_WRITES, MAX_YM2151_WRITES};
     let writes: [_; MAX_YM2151_WRITES * 2 + 1] =

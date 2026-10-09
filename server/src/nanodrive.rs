@@ -76,6 +76,7 @@ enum Control {
     GetInfo,
     Reset,
     SetClock,
+    SetOutputVolume,
     SetPlaybackClock,
     AudioStart,
     AudioStatus,
@@ -218,6 +219,14 @@ impl Bridge {
                     Control::Ping => Command::Ping(&payload),
                     Control::GetInfo => Command::GetInfo,
                     Control::Reset => Command::Reset,
+                    Control::SetOutputVolume => {
+                        let [attenuation] = payload.as_slice() else {
+                            return Err("Invalid output volume payload".into());
+                        };
+                        Command::SetOutputVolume {
+                            attenuation: *attenuation,
+                        }
+                    }
                     Control::SetClock => Command::SetChipClock {
                         chip: Chip::Ym2151,
                         hz: CLOCK,
@@ -754,6 +763,24 @@ mod tests {
             )
             .is_empty()
         );
+    }
+
+    #[test]
+    fn output_volume_encodes_the_wire_command_and_rejects_invalid_payloads() {
+        for attenuation in [0, 12, 96] {
+            let result = handle(json!({"operation":"encode", "command":"setOutputVolume", "requestId":42, "payload":[attenuation]})).unwrap();
+            let bytes: Vec<u8> = serde_json::from_value(result["bytes"].clone()).unwrap();
+            assert_eq!(
+                bytes,
+                Command::SetOutputVolume { attenuation }
+                    .encode(42)
+                    .unwrap()
+                    .as_bytes()
+            );
+        }
+        for payload in [vec![], vec![12, 13], vec![97]] {
+            assert!(handle(json!({"operation":"encode", "command":"setOutputVolume", "requestId":42, "payload":payload})).is_err());
+        }
     }
 
     #[test]

@@ -8,7 +8,7 @@ export interface NanoDrivePort {
     close(): Promise<void>;
 }
 
-export type NanoDriveCommand = 'ping' | 'getInfo' | 'reset' | 'setClock' | 'setPlaybackClock' | 'audioStart' | 'audioStatus';
+export type NanoDriveCommand = 'ping' | 'getInfo' | 'reset' | 'setClock' | 'setPlaybackClock' | 'audioStart' | 'audioStatus' | 'setOutputVolume';
 export type NanoDriveInput = { type: 'init' | 'voice'; voice: unknown }
     | { type: 'noteOn'; source: number; channel: number; note: number; velocity: number }
     | { type: 'noteOff'; source: number; channel: number; note: number }
@@ -72,6 +72,11 @@ export class NanoDriveConnection {
     private starting = false;
     private requestId = 0;
     private writes: Promise<void> = Promise.resolve();
+    private requests: Promise<void> = Promise.resolve();
+    private outputAttenuation = 0;
+    private outputVolume = 1;
+    private appliedAttenuation?: number;
+    private volumeUpdate?: Promise<void>;
     private serialWrites = { queuedBytes: 0, queuedWrites: 0, maxQueuedBytes: 0, maxQueuedWrites: 0, totalBytes: 0, maxWriteMs: 0, maxDrainMs: 0 };
     private pending?: { request: number[]; resolve: (reply: NanoDriveReply) => void; reject: (error: Error) => void };
     private partialTimer?: ReturnType<typeof setTimeout>;
@@ -103,6 +108,38 @@ export class NanoDriveConnection {
     get state(): NanoDriveState { return { ...this.snapshot }; }
     get outputState(): NanoDriveOutputState { return { ...this.output }; }
     get playbackState(): NanoDrivePlaybackState { return { ...this.hardwarePlayback }; }
+
+    setVolume(volume: number): Promise<void> {
+        if (!Number.isFinite(volume) || volume < 0 || volume > 1) { return Promise.resolve(); }
+        this.outputVolume = volume;
+        this.outputAttenuation = volume === 0 ? 96 : Math.min(95, Math.round(-20 * Math.log10(volume)));
+        if (!this.snapshot.connected) { return Promise.resolve(); }
+        if (this.volumeUpdate) { return this.volumeUpdate; }
+        if (this.appliedAttenuation === this.outputAttenuation) { return Promise.resolve(); }
+        const generation = this.generation;
+        const updating = (async () => {
+            while (generation === this.generation && this.snapshot.connected && this.appliedAttenuation !== this.outputAttenuation) {
+                const attenuation = this.outputAttenuation;
+                try {
+                    await this.request('setOutputVolume', [attenuation]);
+                    if (generation !== this.generation) { return; }
+                    this.appliedAttenuation = attenuation;
+                    if (this.snapshot.error.startsWith('NanoDrive8 volume:')) { this.snapshot.error = ''; this.emit(); }
+                } catch (error) {
+                    if (generation === this.generation && this.snapshot.connected) {
+                        const message = `NanoDrive8 volume: ${error instanceof Error ? error.message : String(error)}`;
+                        if (this.snapshot.error !== message) {
+                            this.snapshot.error = message; this.emit();
+                            try { this.onDiagnostic(message); } catch {}
+                        }
+                    }
+                    return;
+                }
+            }
+        })();
+        this.volumeUpdate = updating;
+        return updating.finally(() => { if (this.volumeUpdate === updating) { this.volumeUpdate = undefined; } });
+    }
 
     async startVoiceTest(mml: string, voice: unknown): Promise<void> {
         const stopping = this.stopVoiceTest(); const token = ++this.voiceTestGeneration;
@@ -185,6 +222,7 @@ export class NanoDriveConnection {
             if (!prepared || !('audio' in prepared) || typeof prepared.audio !== 'boolean') { throw new Error('Invalid NanoDrive8 playback mode.'); }
             resetting = true;
             await this.request('reset'); resetting = false; check();
+            await this.setVolume(this.outputVolume); check();
             if (!prepared.audio) {
                 await this.send('setPlaybackClock'); check();
                 await this.playFm(connection, token, check);
@@ -499,6 +537,7 @@ export class NanoDriveConnection {
         if (this.closing) { return this.closing; }
         const wasConnected = this.snapshot.connected;
         this.generation++;
+        this.appliedAttenuation = undefined; this.volumeUpdate = undefined;
         this.voiceTestGeneration++; this.voiceTesting = false; this.onVoiceTest(false);
         this.playbackGeneration++;
         if (this.hardwarePlayback.busy) {
@@ -571,7 +610,17 @@ export class NanoDriveConnection {
         await this.write(bytes, generation);
     }
 
-    private async request(command: NanoDriveCommand, payload: number[] = [], check?: () => void): Promise<NanoDriveReply> {
+    private request(command: NanoDriveCommand, payload: number[] = [], check?: () => void): Promise<NanoDriveReply> {
+        const generation = this.generation;
+        const result = this.requests.then(() => {
+            if (generation !== this.generation || !this.port) { throw new Error('NanoDrive8 connection canceled.'); }
+            return this.performRequest(command, payload, check);
+        });
+        this.requests = result.then(() => {}, () => {});
+        return result;
+    }
+
+    private async performRequest(command: NanoDriveCommand, payload: number[], check?: () => void): Promise<NanoDriveReply> {
         const generation = this.generation;
         const bytes = await this.encode(command, payload);
         check?.();
@@ -586,7 +635,7 @@ export class NanoDriveConnection {
             const pending = { request: Array.from(bytes), resolve: (reply: NanoDriveReply) => finish(reply), reject: (error: Error) => finish(undefined, error) };
             const timer = setTimeout(() => pending.reject(new ResponseTimeout(`NanoDrive8 ${command} timed out.`)), this.responseTimeout);
             this.pending = pending;
-            void this.write(bytes, generation, command !== 'audioStatus').catch(error => pending.reject(error));
+            void this.write(bytes, generation, command !== 'audioStatus' && command !== 'setOutputVolume').catch(error => pending.reject(error));
         }).then(reply => {
             if (reply.status !== 0) { throw new Error(`NanoDrive8 rejected ${command}.`); }
             return reply;

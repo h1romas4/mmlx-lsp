@@ -236,6 +236,10 @@ export class VoiceViewProvider implements WebviewViewProvider {
 				else if (message?.type === 'resetOutput') { void this.resetOutput(message); }
 				else if (message?.type === 'voiceTestAction') { void this.voiceTestAction(message); }
 				else if (message?.type === 'playbackAction') { void this.playbackAction(message); }
+				else if (message?.type === 'playbackVolume' && message.mode === 'nanodrive8' && workspace.isTrusted
+					&& typeof message.volume === 'number' && Number.isFinite(message.volume) && message.volume >= 0 && message.volume <= 1) {
+					void this.nanodrive.setVolume(message.volume);
+				}
 				else if (message?.type === 'playbackRender' && message.id === this.playbackId
 					&& (this.playbackState.playing || this.playbackState.paused) && !this.playbackState.finished) { this.playback?.request(message.blocks); }
 				else if (message?.type === 'emulationRender' && message.id === this.outputId && this.keyboardOutputMode === 'emulation') { this.emulation?.request(message.blocks); }
@@ -406,7 +410,7 @@ export class VoiceViewProvider implements WebviewViewProvider {
 		this.sendPlayback();
 	}
 
-	private async playbackAction(message: { action?: unknown; mode?: unknown; id?: unknown; document?: unknown; sampleRate?: unknown; looped?: unknown; error?: unknown }): Promise<void> {
+	private async playbackAction(message: { action?: unknown; mode?: unknown; id?: unknown; document?: unknown; sampleRate?: unknown; looped?: unknown; volume?: unknown; error?: unknown }): Promise<void> {
 		if (!Number.isSafeInteger(message.id)) { return; }
 		if (message.action === 'play' || message.action === 'playFromCursor') {
 			const document = this.playbackDocument;
@@ -425,6 +429,9 @@ export class VoiceViewProvider implements WebviewViewProvider {
 			this.playbackMode = hardware ? 'nanodrive8' : 'emulation';
 			this.playbackState = { playing: false, paused: false, loading: true, position: 0, finished: false, error: '' };
 			if (hardware) {
+				if (typeof message.volume === 'number' && Number.isFinite(message.volume) && message.volume >= 0 && message.volume <= 1) {
+					void this.nanodrive.setVolume(message.volume);
+				}
 				this.playback?.disconnect();
 				const folder = workspace.getWorkspaceFolder(document.uri);
 				const configuration = workspace.getConfiguration('mmlx', folder?.uri);

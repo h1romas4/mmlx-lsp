@@ -1,7 +1,7 @@
 # ndsif
 
 Allocation-free, `no_std` Rust codec for the NDSIF v1 protocol used by NanoDrive8.
-Based on the bundled specification, document version 0.24 (Draft), FW `1.0b8`.
+Based on the NDSIF specification, document version 0.34 (Draft).
 The wire protocol version is `01`, independently of the document version.
 
 ## Scope
@@ -62,6 +62,27 @@ has been inactive for `PARTIAL_FRAME_TIMEOUT_MS` (500 ms), call
 `expire_partial_frame()`. The remainder is discarded through the next delimiter.
 Call `Decoder::reset()` when switching or reopening transports. This only resets
 the parser, not the hardware; `Command::Reset` is the distinct wire command.
+
+## Output Volume
+
+```rust
+use ndsif::{Command, Error};
+
+let request = Command::SetOutputVolume { attenuation: 12 }.to_frame(5)?;
+assert_eq!(request.opcode(), 0x03);
+assert_eq!(request.payload(), &[12]);
+# Ok::<(), Error>(())
+```
+
+Attenuation is `0..=96`: 0 applies no attenuation, 1..=95 attenuates in 1 dB
+steps, and 96 mutes. The command affects both main output channels, not input
+gain or OKI pan. Invalid values are rejected locally rather than clamped.
+The `0x83` response is `Reply::Complete` or `Reply::Rejected`; older firmware
+rejects unsupported requests. Completion confirms software processing, not
+I2C acknowledgement or hardware readback.
+
+The device retains the setting across RESET, but not reboot; serial-mode startup
+defaults to 0. The protocol does not provide a volume readback or timed volume event.
 
 ## Registers and ADPCM
 

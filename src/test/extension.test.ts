@@ -1763,6 +1763,11 @@ suite('mmlx extension', () => {
 			const initialized = await audition({ type: 'init', voice });
 			assert.strictEqual(initialized.count, 3);
 			assert.strictEqual(initialized.bytes.filter(byte => byte === 0).length, 6);
+			for (const attenuation of [0, 6, 96]) {
+				const result = await worker.request({ operation: 'encode', command: 'setOutputVolume', requestId: 42, payload: [attenuation] });
+				assert.ok(result && 'bytes' in result && result.bytes.length > 0);
+			}
+			await assert.rejects(worker.request({ operation: 'encode', command: 'setOutputVolume', requestId: 42, payload: [97] }));
 			await worker.request({ operation: 'voiceTestInit', session: 5, mml: 'MH0,200,64,0,5,0,1 t240 o4 c16', voice });
 			let testEnded = false; let lfoWrite = false;
 			const sensitivity = new Set<number>();
@@ -1926,6 +1931,16 @@ suite('mmlx extension', () => {
 			messages.fire({ type: 'setSerialConnection', folder: folder.uri.toString(), connected: true });
 			await waitFor('serialSettings', state => state.connected === true);
 			let id = 0;
+			messages.fire({ type: 'playbackVolume', mode: 'nanodrive8', volume: .5 });
+			for (let count = 0; count < 100 && !captured.some(request => request.operation === 'encode' && request.command === 'setOutputVolume'); count++) {
+				await new Promise<void>(resolve => setImmediate(resolve));
+			}
+			assert.ok(captured.some(request => request.operation === 'encode' && request.command === 'setOutputVolume' && request.payload[0] === 6), 'Playback volume reaches the hardware command');
+			const volumeRequests = captured.filter(request => request.operation === 'encode' && request.command === 'setOutputVolume').length;
+			messages.fire({ type: 'playbackVolume', mode: 'nanodrive8', volume: -1 });
+			messages.fire({ type: 'playbackVolume', mode: 'emulation', volume: .2 });
+			await new Promise<void>(resolve => setImmediate(resolve));
+			assert.strictEqual(captured.filter(request => request.operation === 'encode' && request.command === 'setOutputVolume').length, volumeRequests);
 			for (const scenario of [
 				{ mode: 'through', pdx: `${directoryName}/override.pdx`, name: 'drums', bytes: [1, 2, 3] },
 				{ mode: 'lpf', pdx: override.fsPath, name: null, bytes: [1, 2, 3] },
@@ -2202,7 +2217,10 @@ suite('mmlx extension', () => {
 							const volume = document.getElementById('playback-volume');
 							const serial = { type: 'serialSettings', folder: 'test', connection: '/dev/test', ports: [{ path: '/dev/test' }], connected: true, firmware: '1.0b8', model: 'NanoDrive 8' };
 							send(serial); check(!button.disabled, 'Settings connection must enable output');
-							check(playbackMode.value === 'nanodrive8' && !play.disabled && cursor.disabled && volume.disabled, 'NanoDrive Playback auto-selection and unsupported controls');
+							check(playbackMode.value === 'nanodrive8' && !play.disabled && cursor.disabled && !volume.disabled, 'NanoDrive Playback auto-selection with output volume');
+							volume.value = '50'; volume.dispatchEvent(new Event('input'));
+							check(messages.at(-1).type === 'playbackVolume' && messages.at(-1).mode === 'nanodrive8' && messages.at(-1).volume === .5, 'Hardware volume routes to the output');
+							check(api.getState().playbackVolume === 50, 'Hardware volume is saved');
 							button.click();
 							const request = messages.find(message => message.type === 'setOutputConnection');
 							check(request?.mode === 'nanodrive8' && request.connected && button.disabled && mode.disabled, 'Keyboard connect request and busy state');
@@ -2343,9 +2361,10 @@ suite('mmlx extension', () => {
 							play.click();
 							const playbackRequest = messages.find(message => message.type === 'playbackAction' && message.action === 'play');
 							check(playbackRequest?.mode === 'nanodrive8' && !playbackRequest.sampleRate, 'Binary hardware playback without browser PCM');
+							check(playbackRequest.volume === .5, 'Hardware playback starts with the saved volume');
 							send({ type: 'nanoDrivePlayback', busy: true }); check(button.disabled, 'Keyboard connection locked by Playback');
 							send({ type: 'playback', id: playbackRequest.id, mode: 'nanodrive8', available: true, document: 'file:///test.mml', playing: true, paused: false, loading: false, busy: true });
-							check(play.disabled && play.title === 'Play' && cursor.disabled && volume.disabled, 'Hardware playback cannot pause, seek or change PC volume');
+							check(play.disabled && play.title === 'Play' && cursor.disabled && !volume.disabled, 'Hardware playback cannot pause or seek but can change output volume');
 							check(!stop.disabled, 'Hardware Stop is enabled');
 							check(getComputedStyle(stop).backgroundColor !== inactiveStopBackground && getComputedStyle(stop).backgroundColor === getComputedStyle(play).backgroundColor, 'Enabled Stop must use the active button color');
 							stop.click();

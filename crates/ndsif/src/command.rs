@@ -22,6 +22,9 @@ pub enum Command<'a> {
     Reset,
     Ping(&'a [u8]),
     GetInfo,
+    SetOutputVolume {
+        attenuation: u8,
+    },
     WriteYm2151(&'a [RegisterWrite]),
     WriteYm2151Burst(&'a [RegisterWrite]),
     SetChipClock {
@@ -49,6 +52,7 @@ impl Command<'_> {
             Self::Reset => 0x00,
             Self::Ping(_) => 0x01,
             Self::GetInfo => 0x02,
+            Self::SetOutputVolume { .. } => 0x03,
             Self::WriteYm2151(_) => 0x54,
             Self::WriteYm2151Burst(_) => 0x56,
             Self::SetChipClock { .. } => 0x57,
@@ -63,7 +67,12 @@ impl Command<'_> {
     pub const fn expects_response(&self) -> bool {
         matches!(
             self,
-            Self::Reset | Self::Ping(_) | Self::GetInfo | Self::WriteYm2151(_) | Self::AudioStatus
+            Self::Reset
+                | Self::Ping(_)
+                | Self::GetInfo
+                | Self::SetOutputVolume { .. }
+                | Self::WriteYm2151(_)
+                | Self::AudioStatus
         )
     }
 
@@ -71,6 +80,13 @@ impl Command<'_> {
         let mut payload = [0; MAX_PAYLOAD_SIZE];
         let length = match *self {
             Self::Reset | Self::GetInfo | Self::AudioStatus => 0,
+            Self::SetOutputVolume { attenuation } => {
+                if attenuation > 96 {
+                    return Err(Error::InvalidArgument);
+                }
+                payload[0] = attenuation;
+                1
+            }
             Self::Ping(bytes) => {
                 if bytes.len() > 32 {
                     return Err(Error::InvalidArgument);
@@ -176,6 +192,9 @@ pub enum Request<'a> {
     Reset,
     Ping(&'a [u8]),
     GetInfo,
+    SetOutputVolume {
+        attenuation: u8,
+    },
     WriteYm2151(crate::types::RegisterWrites<'a>),
     WriteYm2151Burst(crate::types::RegisterWrites<'a>),
     SetChipClock {
@@ -221,6 +240,15 @@ impl<'a> Request<'a> {
                     return Err(Error::InvalidArgument);
                 }
                 Ok(Self::Ping(bytes))
+            }
+            0x03 => {
+                require_length(bytes, 1)?;
+                if bytes[0] > 96 {
+                    return Err(Error::InvalidArgument);
+                }
+                Ok(Self::SetOutputVolume {
+                    attenuation: bytes[0],
+                })
             }
             0x54 | 0x56 => {
                 let writes = crate::types::RegisterWrites::decode(bytes, MAX_YM2151_WRITES)?;
