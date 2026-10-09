@@ -15,6 +15,43 @@ class FakeInput extends EventEmitter {
 }
 
 suite('MIDI input connection', () => {
+	test('screen bends update all channel caches without echo and allow MIDI to return to center', async () => {
+		const input = new FakeInput();
+		const events: MidiNoteEvent[] = [];
+		const connection = new MidiInputConnection(() => {}, async () => input, () => {}, event => events.push(event));
+		await connection.connect('Keyboard 2'); events.length = 0;
+		connection.setPitchBends(10240);
+		assert.ok(connection.pitchBends.every(value => value === 10240));
+		assert.deepStrictEqual(events, []);
+		for (const value of [-1, 16384, 0.5, NaN]) { connection.setPitchBends(value); }
+		assert.ok(connection.pitchBends.every(value => value === 10240));
+		input.emit('messageBuffer', 0, Buffer.from([0xe3, 0, 64]));
+		assert.strictEqual(connection.pitchBends[3], 8192);
+		assert.strictEqual(connection.pitchBends[4], 10240);
+		assert.deepStrictEqual(events, [{ type: 'pitchBend', channel: 3, value: 8192 }]);
+		connection.disconnect();
+	});
+	test('receives 14-bit bends, ignores malformed messages and resets controllers on disconnect', async () => {
+		const input = new FakeInput();
+		const events: MidiNoteEvent[] = [];
+		const connection = new MidiInputConnection(() => {}, async () => input, () => {}, event => events.push(event));
+		await connection.connect('Keyboard 2'); events.length = 0;
+		input.emit('messageBuffer', 0, Buffer.from([0xe3, 127, 127]));
+		input.emit('messageBuffer', 0, Buffer.from([0xe3, 127, 127]));
+		input.emit('messageBuffer', 0, Buffer.from([0xe4, 0, 0]));
+		for (const bytes of [[0xe3], [0xe3, 128, 0], [0xe3, 0, 128], [0x93, 60, 100]]) {
+			input.emit('messageBuffer', 0, Buffer.from(bytes));
+		}
+		assert.strictEqual(connection.pitchBends[3], 16383);
+		assert.strictEqual(connection.pitchBends[4], 0);
+		input.emit('cc', 121, 0, { channel: 3 });
+		connection.disconnect();
+		assert.ok(connection.pitchBends.every(value => value === 8192));
+		assert.deepStrictEqual(events, [
+			{ type: 'pitchBend', channel: 3, value: 16383 }, { type: 'pitchBend', channel: 4, value: 0 },
+			{ type: 'pitchBend', channel: 3, value: 8192 }, { type: 'pitchBend', channel: 4, value: 8192 }, { type: 'allOff' }
+		]);
+	});
 	test('forwards velocity, retriggers and source channel releases independently of display changes', async () => {
 		const input = new FakeInput();
 		const events: MidiNoteEvent[] = [];

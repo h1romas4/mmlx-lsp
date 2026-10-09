@@ -12,6 +12,7 @@ export type NanoDriveCommand = 'ping' | 'getInfo' | 'reset' | 'setClock' | 'setP
 export type NanoDriveInput = { type: 'init' | 'voice'; voice: unknown }
     | { type: 'noteOn'; source: number; channel: number; note: number; velocity: number }
     | { type: 'noteOff'; source: number; channel: number; note: number }
+    | { type: 'pitchBend'; source: number; channel: number; value: number }
     | { type: 'allOff'; source?: number; channel?: number } | { type: 'stop' };
 export interface NanoDriveOutputState { connected: boolean; connecting: boolean; error: string; }
 export interface NanoDriveReply { status: number; model?: string; firmware?: string;
@@ -19,12 +20,13 @@ export interface NanoDriveReply { status: number; model?: string; firmware?: str
     underflows?: number; overflows?: number; rejected?: number;
 }
 export interface NanoDrivePlaybackState { busy: boolean; playing: boolean; loading: boolean; position: number; finished: boolean; error: string; }
+export type NanoDriveAdpcmMode = 'through' | 'resample' | 'lpf';
 export type NanoDriveCodec = (params: { operation: 'encode'; command: NanoDriveCommand; requestId: number; payload: number[] }
     | { operation: 'decode'; body: number[]; request: number[] }
     | { operation: 'audition'; session: number; requestId: number; command: NanoDriveInput }
     | { operation: 'upload'; asset: 'source' | 'pdx'; offset: number; bytes: number[] }
     | { operation: 'playbackInfo' | 'playbackStop' }
-    | { operation: 'playbackInit'; looped: boolean }
+    | { operation: 'playbackInit'; looped: boolean; adpcmMode?: NanoDriveAdpcmMode }
     | { operation: 'playbackNext'; requestId: number }) => Promise<{ bytes: number[] | Uint8Array; count?: number; position?: number; ended?: boolean; fm?: boolean; synchronize?: boolean } | { pdxName?: string | null; audio?: boolean } | NanoDriveReply | null>;
 export interface NanoDriveState {
     port: string; connected: boolean; connecting: boolean; closing: boolean;
@@ -80,7 +82,8 @@ export class NanoDriveConnection {
     get outputState(): NanoDriveOutputState { return { ...this.output }; }
     get playbackState(): NanoDrivePlaybackState { return { ...this.hardwarePlayback }; }
 
-    async startPlayback(source: string, looped: boolean, loadPdx: (name: string) => Promise<Uint8Array>): Promise<void> {
+    async startPlayback(source: string, looped: boolean, loadPdx: (name: string) => Promise<Uint8Array>,
+        options: { adpcmMode?: NanoDriveAdpcmMode; pdxConfigured?: boolean } = {}): Promise<void> {
         if (this.hardwarePlayback.busy || !this.snapshot.connected) { return; }
         await this.playbackStopping;
         if (this.hardwarePlayback.busy || !this.snapshot.connected) { return; }
@@ -104,8 +107,10 @@ export class NanoDriveConnection {
             await upload('source', new TextEncoder().encode(source));
             await upload('pdx', new Uint8Array(0));
             const info = await this.codec({ operation: 'playbackInfo' }); check();
-            if (info && 'pdxName' in info && info.pdxName) { const pdx = await loadPdx(info.pdxName); check(); await upload('pdx', pdx); }
-            const prepared = await this.codec({ operation: 'playbackInit', looped }); check();
+            if (info && 'pdxName' in info && (info.pdxName || (info.audio && options.pdxConfigured))) {
+                const pdx = await loadPdx(info.pdxName ?? ''); check(); await upload('pdx', pdx);
+            }
+            const prepared = await this.codec({ operation: 'playbackInit', looped, adpcmMode: options.adpcmMode ?? 'resample' }); check();
             if (!prepared || !('audio' in prepared) || typeof prepared.audio !== 'boolean') { throw new Error('Invalid NanoDrive8 playback mode.'); }
             resetting = true;
             await this.request('reset'); resetting = false; check();

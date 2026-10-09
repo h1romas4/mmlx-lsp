@@ -3,6 +3,26 @@ export function createKeyboardControls(root, onModeChange = () => {}, onNote = (
 	const wrapper = root.querySelector('.p-keyboard__wrapper');
 	const mode = root.querySelector('#keyboard-mode');
 	const midiStatus = root.querySelector('#keyboard-midi-status');
+	const bend = root.querySelector('#keyboard-pitch-bend');
+	let bendValue = 8192;
+	let bending = false;
+
+	function setBend(value, notify = true) {
+		value = Math.max(0, Math.min(16383, Math.round(value)));
+		bend.value = String(value);
+		const semitones = (value - 8192) / (value >= 8192 ? 8191 : 8192) * 2;
+		bend.setAttribute('aria-valuetext', `${semitones.toFixed(2)} semitones`);
+		if (notify) { bending = true; }
+		if (value === bendValue) { return; }
+		bendValue = value;
+		if (notify) { onNote({ event: 'pitchBend', value }); }
+	}
+
+	function resetBend() {
+		if (!bending) { return; }
+		setBend(8192);
+		bending = false;
+	}
 	const names = ['C', 'C#', 'D', 'D#', 'E', 'F', 'F#', 'G', 'G#', 'A', 'A#', 'B'];
 	const pointers = new Map();
 	const heldKeys = new Set();
@@ -31,6 +51,7 @@ export function createKeyboardControls(root, onModeChange = () => {}, onNote = (
 	}
 
 	function releaseAll() {
+		resetBend();
 		const keys = new Set([...pointers.values(), ...heldKeys]);
 		pointers.clear();
 		heldKeys.clear();
@@ -38,9 +59,9 @@ export function createKeyboardControls(root, onModeChange = () => {}, onNote = (
 	}
 
 	function render() {
-		const width = body.getBoundingClientRect().width;
+		const width = wrapper.getBoundingClientRect().width;
 		if (!width || !root.open) { releaseAll(); return; }
-		const targetWhiteCount = Math.max(22, Math.floor(width / 33.2));
+		const targetWhiteCount = Math.max(22, Math.floor(body.getBoundingClientRect().width / 33.2));
 		const startNote = targetWhiteCount === 22 ? 48 : 36;
 		const notes = [];
 		let whiteCount = 0;
@@ -103,6 +124,21 @@ export function createKeyboardControls(root, onModeChange = () => {}, onNote = (
 	}
 
 	new ResizeObserver(render).observe(body);
+	bend.addEventListener('pointerdown', event => {
+		if (connected && event.button === 0) { bend.setPointerCapture(event.pointerId); }
+	});
+	bend.addEventListener('input', () => { if (connected) { setBend(Number(bend.value)); } });
+	for (const type of ['pointerup', 'pointercancel', 'lostpointercapture', 'blur']) { bend.addEventListener(type, resetBend); }
+	bend.addEventListener('keydown', event => {
+		if (!connected || !['ArrowUp', 'ArrowDown', 'ArrowLeft', 'ArrowRight', 'PageUp', 'PageDown', 'Home', 'End'].includes(event.key)) { return; }
+		event.preventDefault();
+		if (event.key === 'Home' || event.key === 'End') { setBend(8192); bending = false; return; }
+		const direction = ['ArrowUp', 'ArrowRight', 'PageUp'].includes(event.key) ? 1 : -1;
+		setBend(bendValue + direction * (event.key.startsWith('Page') ? 4096 : 512));
+	});
+	bend.addEventListener('keyup', event => {
+		if (['ArrowUp', 'ArrowDown', 'ArrowLeft', 'ArrowRight', 'PageUp', 'PageDown'].includes(event.key)) { event.preventDefault(); resetBend(); }
+	});
 	root.addEventListener('toggle', () => { if (root.open) { render(); } else { releaseAll(); } });
 	mode.addEventListener('change', () => { releaseAll(); onModeChange(mode.value); });
 	window.addEventListener('blur', releaseAll);
@@ -111,7 +147,8 @@ export function createKeyboardControls(root, onModeChange = () => {}, onNote = (
 		releaseAll,
 		setConnected(value) {
 			connected = value === true;
-			if (!connected) { releaseAll(); }
+			bend.disabled = !connected;
+			if (!connected) { releaseAll(); setBend(8192, false); }
 			root.classList.toggle('is-disconnected', !connected);
 			body.setAttribute('aria-disabled', String(!connected));
 			for (const [index, key] of [...wrapper.children].entries()) {
@@ -125,6 +162,9 @@ export function createKeyboardControls(root, onModeChange = () => {}, onNote = (
 			midiStatus.setAttribute('aria-label', state.connected ? `MIDI-IN connected: ${state.connection}` : 'MIDI-IN disconnected');
 		},
 		setMode(value) { mode.value = value === 'nanodrive8' ? 'nanodrive8' : 'emulation'; },
+		setPitchBend(value) {
+			if (Number.isInteger(value) && value >= 0 && value <= 16383) { setBend(value, false); }
+		},
 		setMidiNotes(notes) {
 			midiNotes = new Set(Array.isArray(notes) ? notes.filter(note => Number.isInteger(note) && note >= 0 && note <= 127) : []);
 			for (const key of wrapper.children) { updateKey(key); }

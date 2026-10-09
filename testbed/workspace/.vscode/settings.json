@@ -4,5 +4,5 @@
     "*.mml": "mmlx"
   },
   "mmlx.build.onSave": false,
-  "mmlx.midi.input": "FM-1:FM-1 MIDI 1 28:0",
+  "mmlx.midi.input": "MODX:MODX MIDI 1 20:0",
 }

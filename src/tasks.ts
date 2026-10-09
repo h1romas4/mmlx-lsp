@@ -252,7 +252,7 @@ export class BuildTerminal implements Pseudoterminal {
 				source: extension === '.mml' ? (await workspace.openTextDocument(input)).getText() : undefined,
 				bytes: extension === '.mdx' ? Array.from(await workspace.fs.readFile(input)) : undefined,
 				pdx: pdxPath ? Array.from(await workspace.fs.readFile(resolveUri(pdxPath, this.folder))) : undefined,
-				adpcmMode: definition.adpcmMode ?? configuration.get<'through' | 'resample' | 'lpf'>('build.adpcmMode', 'through'),
+				adpcmMode: definition.adpcmMode ?? configuration.get<'through' | 'resample' | 'lpf'>('build.adpcmMode', 'resample'),
 				loopCount,
 				maxTicks: definition.maxTicks ?? configuration.get<number>('build.maxTicks', 100000)
 			};

@@ -8,7 +8,7 @@ import type { LanguageClient } from 'vscode-languageclient/node';
 import type { Wasm } from '@vscode/wasm-wasi/v1';
 import { EmulationSession } from './emulation';
 import { createMidiInput, MidiInputConnection, type MidiInputPort } from './midiInput';
-import { NanoDriveConnection, openNanoDrivePort, type NanoDriveCodec, type NanoDriveInput, type NanoDrivePort } from './nanodrive';
+import { NanoDriveConnection, openNanoDrivePort, type NanoDriveAdpcmMode, type NanoDriveCodec, type NanoDriveInput, type NanoDrivePort } from './nanodrive';
 import { NanoDriveWorker } from './nanodriveWorker';
 import { findPdx, resolveUri } from './tasks';
 
@@ -48,7 +48,7 @@ export async function listMidiInputPorts(): Promise<string[]> {
 
 const buildSettingsDefaults = {
 	format: 'both', onSave: false, outputDirectory: 'build', pdx: '',
-	adpcmMode: 'through', loopCount: 0, maxTicks: 100000
+	adpcmMode: 'resample', loopCount: 0, maxTicks: 100000
 };
 
 const buildSettingsValidators: Record<keyof typeof buildSettingsDefaults, (value: unknown) => boolean> = {
@@ -98,6 +98,9 @@ export class VoiceViewProvider implements WebviewViewProvider {
 	private playbackState = { playing: false, paused: false, loading: false, position: 0, finished: false, error: '' };
 	private outputId = 0;
 	private keyboardOutputMode = 'emulation';
+	private pitchBendValue = 8192;
+	private bendTimer: ReturnType<typeof setTimeout> | undefined;
+	private pendingBends = new Map<string, Extract<NanoDriveInput, { type: 'pitchBend' }>>();
 	private midiFolder = '';
 	private editTarget: { document: TextDocument; version: number; token: number; voice: VoiceDefinition } | undefined;
 	private snapshot: { voice: VoiceDefinition | null; source: string; retained: boolean; error: boolean } = {
@@ -118,7 +121,7 @@ export class VoiceViewProvider implements WebviewViewProvider {
 			return this.nanodriveWorker.request(params);
 		}, () => { this.updateConnectionMarker(); this.sendSerialSettings(); }, openSerial, undefined, state => {
 			if (this.keyboardOutputMode !== 'nanodrive8') { return; }
-			if (state.connected) { this.nanodrive.setVoice(this.snapshot.voice); }
+			if (state.connected) { this.nanodrive.setVoice(this.snapshot.voice); this.restorePitchBends(); }
 			void this.view?.webview.postMessage({ type: 'outputConnection', target: 'keyboard', mode: 'nanodrive8', id: this.outputId, ...state });
 		}, state => {
 			void this.view?.webview.postMessage({ type: 'nanoDrivePlayback', busy: state.busy });
@@ -131,6 +134,7 @@ export class VoiceViewProvider implements WebviewViewProvider {
 				this.emulationConnected = state.connected;
 				this.updateConnectionMarker();
 				if (this.keyboardOutputMode === 'emulation') {
+					if (state.connected) { this.restorePitchBends(); }
 					void this.view?.webview.postMessage({ type: 'outputConnection', target: 'keyboard', mode: 'emulation', id: this.outputId, ...state });
 				}
 			},
@@ -158,7 +162,11 @@ export class VoiceViewProvider implements WebviewViewProvider {
 			notes => { void this.view?.webview.postMessage({ type: 'midiNotes', notes }); },
 			event => {
 				this.note({ ...event, source: 1 });
-				void this.view?.webview.postMessage({ type: 'midiNote', event });
+				if (event.type === 'pitchBend') {
+					this.pitchBendValue = event.value;
+					this.note({ type: 'pitchBend', source: 0, channel: 0, value: event.value });
+					void this.view?.webview.postMessage({ type: 'pitchBend', value: event.value });
+				} else { void this.view?.webview.postMessage({ type: 'midiNote', event }); }
 			});
 		context.subscriptions.push(
 			window.onDidChangeTextEditorSelection(event => this.follow(event.textEditor)),
@@ -200,6 +208,7 @@ export class VoiceViewProvider implements WebviewViewProvider {
 					this.stopPlayback();
 					this.send(); this.schedule(); this.sendBuildSettings();
 					void this.view?.webview.postMessage({ type: 'midiNotes', notes: this.midiInput.notes });
+					void this.view?.webview.postMessage({ type: 'pitchBend', value: this.pitchBendValue });
 					void this.refreshSerialPorts(); void this.refreshMidiInputPorts();
 				}
 				else if (message?.type === 'openStarter') { void this.openStarter(); }
@@ -218,6 +227,12 @@ export class VoiceViewProvider implements WebviewViewProvider {
 					&& (this.playbackState.playing || this.playbackState.paused) && !this.playbackState.finished) { this.playback?.request(message.blocks); }
 				else if (message?.type === 'emulationRender' && message.id === this.outputId && this.keyboardOutputMode === 'emulation') { this.emulation?.request(message.blocks); }
 				else if (message?.type === 'emulationNote' && message.id === this.outputId) {
+					if (message.event === 'pitchBend' && Number.isInteger(message.value) && message.value >= 0 && message.value <= 16383) {
+						this.pitchBendValue = message.value;
+						this.midiInput.setPitchBends(message.value);
+						this.note({ type: 'pitchBend', source: 0, channel: 0, value: message.value });
+						this.midiInput.pitchBends.forEach((value, channel) => this.note({ type: 'pitchBend', source: 1, channel, value }));
+					}
 					if (['noteOn', 'noteOff'].includes(message.event) && Number.isInteger(message.note)
 						&& message.note >= 0 && message.note <= 127 && Number.isInteger(message.velocity)
 						&& message.velocity >= 0 && message.velocity <= 127) {
@@ -257,6 +272,7 @@ export class VoiceViewProvider implements WebviewViewProvider {
 	}
 
 	private async setOutputConnection(message: { target: unknown; mode: unknown; connected: unknown; sampleRate?: unknown; id?: unknown }): Promise<void> {
+		this.flushPitchBends();
 		if (!['keyboard', 'playback'].includes(String(message.target)) || typeof message.connected !== 'boolean') { return; }
 		if (message.target === 'keyboard' && Number.isInteger(message.id)) { this.outputId = message.id as number; }
 		if (!message.connected) {
@@ -284,6 +300,30 @@ export class VoiceViewProvider implements WebviewViewProvider {
 	}
 
 	private note(command: Exclude<NanoDriveInput, { type: 'init' | 'voice' } | { type: 'stop' }>): void {
+		if (command.type === 'pitchBend') {
+			this.pendingBends.set(`${command.source}:${command.channel}`, command);
+			this.bendTimer ??= setTimeout(() => this.flushPitchBends(), 16);
+			return;
+		}
+		this.flushPitchBends();
+		this.sendNote(command);
+	}
+
+	private flushPitchBends(): void {
+		clearTimeout(this.bendTimer); this.bendTimer = undefined;
+		for (const command of this.pendingBends.values()) { this.sendNote(command); }
+		this.pendingBends.clear();
+	}
+
+	private restorePitchBends(): void {
+		if (this.pitchBendValue !== 8192) { this.note({ type: 'pitchBend', source: 0, channel: 0, value: this.pitchBendValue }); }
+		this.midiInput.pitchBends.forEach((value, channel) => {
+			if (value !== 8192) { this.note({ type: 'pitchBend', source: 1, channel, value }); }
+		});
+		void this.view?.webview.postMessage({ type: 'pitchBend', value: this.pitchBendValue });
+	}
+
+	private sendNote(command: Exclude<NanoDriveInput, { type: 'init' | 'voice' } | { type: 'stop' }>): void {
 		if (this.keyboardOutputMode === 'nanodrive8') { this.nanodrive.note(command); }
 		else { this.emulation?.note(command); }
 	}
@@ -329,11 +369,13 @@ export class VoiceViewProvider implements WebviewViewProvider {
 			this.playbackState = { playing: false, paused: false, loading: true, position: 0, finished: false, error: '' };
 			if (hardware) {
 				this.playback?.disconnect();
+				const folder = workspace.getWorkspaceFolder(document.uri);
+				const configuration = workspace.getConfiguration('mmlx', folder?.uri);
+				const adpcmMode = configuration.get<NanoDriveAdpcmMode>('build.adpcmMode', 'resample');
+				const configured = configuration.get<string>('build.pdx', '');
 				await this.nanodrive.startPlayback(source, message.looped === true, async name => {
-					const folder = workspace.getWorkspaceFolder(document.uri);
-					const configured = workspace.getConfiguration('mmlx', folder?.uri).get<string>('build.pdx', '');
 					return workspace.fs.readFile(configured ? resolveUri(configured, folder) : await findPdx(document.uri, name));
-				});
+				}, { adpcmMode, pdxConfigured: configured.length > 0 });
 			} else { await this.playback!.connect(message.sampleRate as number, null, { source, looped: message.looped === true, cursor }); }
 		} else if (message.id === this.playbackId) {
 			if (message.action === 'stop' || message.action === 'ended') {
@@ -702,6 +744,8 @@ export class VoiceViewProvider implements WebviewViewProvider {
 		this.playback?.dispose();
 		this.midiInput.disconnect();
 		clearTimeout(this.timer);
+		clearTimeout(this.bendTimer);
+		this.pendingBends.clear();
 		this.sequence++;
 		this.editTarget = undefined;
 	}

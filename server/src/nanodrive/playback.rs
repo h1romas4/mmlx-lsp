@@ -102,7 +102,12 @@ pub enum Playback {
 }
 
 impl Playback {
-    pub fn new(source: &str, pdx: Option<Vec<u8>>, looped: bool) -> Result<Self, String> {
+    pub fn new(
+        source: &str,
+        pdx: Option<Vec<u8>>,
+        looped: bool,
+        adpcm_mode: AdpcmMode,
+    ) -> Result<Self, String> {
         let parsed = mmlx::mdx::parse(source).map_err(|error| error.to_string())?;
         let mdx = mmlx::mdx::compile(&parsed).map_err(|error| error.to_string())?;
         let audio = uses_pcm(&mdx);
@@ -118,7 +123,7 @@ impl Playback {
             return Err(format!("PDX file required: {name}"));
         }
         Ok(if audio {
-            Self::Audio(AudioPlayback::new(package, looped))
+            Self::Audio(AudioPlayback::new(package, looped, adpcm_mode))
         } else {
             Self::Fm(FmPlayback::new(package, looped))
         })
@@ -250,9 +255,9 @@ pub struct AudioPlayback {
 }
 
 impl AudioPlayback {
-    fn new(package: MdxPackage, looped: bool) -> Self {
+    fn new(package: MdxPackage, looped: bool, adpcm_mode: AdpcmMode) -> Self {
         let options = MdxToVgmOptions {
-            adpcm_mode: AdpcmMode::Resample,
+            adpcm_mode,
             loop_count: if looped { None } else { Some(1) },
             ..Default::default()
         };
@@ -484,7 +489,7 @@ mod tests {
             mdx: mmlx::mdx::compile(&parsed).unwrap(),
             pdx: None,
         };
-        let mut playback = AudioPlayback::new(package, false);
+        let mut playback = AudioPlayback::new(package, false, AdpcmMode::Resample);
         let mut previous = 0;
         let mut finished = false;
         let mut event_position = 0;
@@ -547,7 +552,7 @@ mod tests {
     #[test]
     fn fm_only_uses_bursts_without_any_audio_opcode_and_synchronizes_before_key_on() {
         for source in ["A c4", "#pcmfile \"unused\"\nA c4\nP r4", "A r4 c4"] {
-            let mut playback = Playback::new(source, None, false).unwrap();
+            let mut playback = Playback::new(source, None, false, AdpcmMode::Resample).unwrap();
             assert!(!playback.audio());
             let mut position = 0;
             let mut synchronized = false;
@@ -581,15 +586,20 @@ mod tests {
             assert!(ended && key_on && synchronized && position > 0);
         }
         assert!(
-            Playback::new("#pcmfile \"drums\"\nA c4\nP r4 o1 c4", None, false)
-                .err()
-                .unwrap()
-                .contains("PDX")
+            Playback::new(
+                "#pcmfile \"drums\"\nA c4\nP r4 o1 c4",
+                None,
+                false,
+                AdpcmMode::Resample
+            )
+            .err()
+            .unwrap()
+            .contains("PDX")
         );
     }
     #[test]
     fn fm_only_loops_keep_time_and_do_not_repeat_startup_synchronization() {
-        let mut playback = Playback::new("A L c4", None, true).unwrap();
+        let mut playback = Playback::new("A L c4", None, true, AdpcmMode::Resample).unwrap();
         let mut position = 0;
         let mut synchronizations = 0;
         for _ in 0..30 {
@@ -610,16 +620,69 @@ mod tests {
         assert!(position > 44_100);
     }
     #[test]
+    fn configured_adpcm_modes_change_pcm_output() {
+        let mut builder = soundlog::mdx::pdx::PdxBuilder::new();
+        builder.set_sample(0, 9, vec![0x7f; 4096]).unwrap();
+        let pdx = builder.finalize().to_bytes();
+        let mut outputs = Vec::new();
+        for mode in [AdpcmMode::Through, AdpcmMode::Resample, AdpcmMode::Lpf] {
+            let mut playback = Playback::new("P F2 o1 c4", Some(pdx.clone()), false, mode).unwrap();
+            let mut audio = Vec::new();
+            let mut ended = false;
+            for _ in 0..100 {
+                let chunk = playback.next(0).unwrap();
+                for body in chunk
+                    .bytes
+                    .split(|byte| *byte == 0)
+                    .filter(|body| !body.is_empty())
+                {
+                    let frame = ndsif::Frame::decode(body).unwrap();
+                    if frame.opcode() == 0x58 {
+                        audio.extend_from_slice(&frame.payload()[4..]);
+                    }
+                }
+                if chunk.ended {
+                    ended = true;
+                    break;
+                }
+            }
+            assert!(ended);
+            assert!(
+                soundlog::mdx::pcm::decode_adpcm(&audio)
+                    .iter()
+                    .any(|sample| sample.abs() > 64),
+                "{mode:?}"
+            );
+            outputs.push(audio);
+        }
+        assert!(
+            outputs[0] == outputs[1],
+            "PCM8A Through and Resample both use the mixer"
+        );
+        assert!(
+            outputs[1] != outputs[2],
+            "LPF should filter the resampled signal at F2"
+        );
+    }
+
+    #[test]
     fn pdx_pcm_is_mixed_and_reencoded_in_the_continuous_stream() {
         let source = "#pcmfile \"drums\"\nP o1 c4";
-        let error = Playback::new(source, None, false).err().unwrap();
+        let error = Playback::new(source, None, false, AdpcmMode::Resample)
+            .err()
+            .unwrap();
         assert!(error.contains("PDX"), "{error}");
         let mut builder = soundlog::mdx::pdx::PdxBuilder::new();
         for note in 0..96 {
             builder.set_sample(0, note, vec![0x77; 4096]).unwrap();
         }
-        let mut playback =
-            Playback::new(source, Some(builder.finalize().to_bytes()), false).unwrap();
+        let mut playback = Playback::new(
+            source,
+            Some(builder.finalize().to_bytes()),
+            false,
+            AdpcmMode::Resample,
+        )
+        .unwrap();
         let mut adpcm = Vec::new();
         for _ in 0..100 {
             let chunk = playback.next(0).unwrap();

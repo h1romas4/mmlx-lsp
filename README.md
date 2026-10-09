@@ -53,7 +53,7 @@ to override; you do not need to include every entry.
     "mmlx.build.onSave": false,
     "mmlx.build.outputDirectory": "build",
     "mmlx.build.pdx": "",
-    "mmlx.build.adpcmMode": "through",
+    "mmlx.build.adpcmMode": "resample",
     "mmlx.build.loopCount": 0,
     "mmlx.build.maxTicks": 100000,
     "mmlx.serial.connection": "",
@@ -88,8 +88,8 @@ restarting the language server.
 | `mmlx.build.format` | Output formats used by **mmlx: Build**: `both`, `mdx`, or `vgm`. |
 | `mmlx.build.onSave` | Automatically build MML when saved in a trusted workspace. |
 | `mmlx.build.outputDirectory` | Output directory: a relative workspace path or an absolute path. |
-| `mmlx.build.pdx` | PDX file path, relative to the workspace folder or absolute. When empty, look for the referenced PDX beside the input, accepting case-insensitive filenames. |
-| `mmlx.build.adpcmMode` | VGM ADPCM processing: `through`, `resample`, or `lpf`. |
+| `mmlx.build.pdx` | PDX file path for VGM builds and NanoDrive8 Playback, relative to the workspace folder or absolute. When empty, look for the referenced PDX beside the input, accepting case-insensitive filenames. |
+| `mmlx.build.adpcmMode` | ADPCM processing for VGM builds and NanoDrive8 Playback: `through`, `resample` (default), or `lpf`. |
 | `mmlx.build.loopCount` | `0` preserves native VGM loop points; positive values produce finite playback without a loop point. |
 | `mmlx.build.maxTicks` | Positive playback tick limit for VGM conversion. |
 
@@ -123,27 +123,35 @@ command palette. Diagnostic messages are not translated.
 ## mmlx Panel
 
 - **Dedicated bottom panel** opened with **mmlx: Show mmlx Panel**.
+
+### Get Started
+
 - **Get Started** opens an editable example `.mml` in a new, unsaved editor.
+
+### FM Voice
+
 - **FM Voice editing** for parameters, algorithms, and envelopes directly in the source by placing the cursor in an `@` definition.
-- **Settings** for MDX/VGM builds, NanoDrive8 port selection and experimental connection, and MIDI-IN selection, saved to `.vscode/settings.json`.
 - **MIDI-IN** connection and note reception, with pressed-key feedback in the FM Voice keyboard.
-- **YM2151 emulation** with up to eight simultaneous notes from the keyboard or MIDI-IN.
-- **Audio monitors** above the FM Voice keyboard: a note-synchronized oscilloscope and a logarithmic frequency spectrum for Emulation output.
-- **Playback** of the current MML through MDX, soundlog's lazy callback stream, and ymfm, with play/pause, stop, volume, elapsed time, and optional MML loop points.
+- **Emulation output:** Select **Emulation** under **Keyboard > Output** to play up to eight notes with the on-screen keyboard or MIDI-IN.
+- **NanoDrive8 output:** Connect NanoDrive8 in **Settings**, then select **NanoDrive8** and connect under **Keyboard > Output**.
+- **Pitch bend:** Drag the left-hand wheel with a mouse or touch, or hold arrow keys while focused. It returns to center when released. Both outputs use a fixed +/-2-semitone range; MIDI RPN range changes are not supported.
+- **MIDI bend:** Incoming bends apply per channel and update the wheel. Moving the on-screen wheel bends its notes and all MIDI channels.
+- **Oscilloscope:** Shows up to two periods of the reference note. Choose x1, x4, or x16 gain (default x4).
+- **Spectrum:** Shows frequency (Hz) and level (dB), with a reference-note marker.
+- **Chords:** The last pressed note sets the reference; both monitors show the mixed sound, including release tails.
+- **Monitors:** Emulation only, not Playback or NanoDrive8. Drawing pauses while hidden without stopping audio or MIDI. Modulation and detuning may move the waveform.
 
-Select **Emulation** under **FM Voice > Keyboard > Output** to play up to eight notes with the on-screen keyboard or MIDI-IN.
-For hardware output, connect NanoDrive8 in Settings, then select **NanoDrive8** and connect under **Keyboard > Output**.
-Connections stay active while the panel is hidden; on-screen notes stop. `[Connected]` and the badge show active connections.
-Disconnect manually when finished. Connections are not restored after a reload.
+### Playback
 
-The oscilloscope shows up to two periods of the reference note, with a fixed amplitude scale and selectable x1/x4/x16 vertical gain (default x4).
-For chords, the last pressed note sets the reference; both monitors show the combined output, including release tails.
-The spectrum uses Hz and dB, with a marker at the reference frequency. Monitor drawing stops while hidden without stopping audio or MIDI reception.
-Playback and NanoDrive8 are not monitored. Modulation and detuning can keep a waveform moving even with note synchronization.
+- **Playback:** Plays the active MML, including unsaved edits. Switching files stops playback without affecting FM Voice or MIDI-IN.
+- **Controls:** Emulation provides play/pause, stop, volume, and elapsed time. NanoDrive8 provides play/stop. Both outputs support optional MML loop points.
+- **Play from cursor:** Emulation starts at the current command or the next command on the same line. Repeats start at the first occurrence; seeking may take a moment.
+- **Outputs:** Emulation is FM-only. NanoDrive8 uses FM bursts for FM-only songs and ADPCM streaming for songs with PCM notes.
 
-**Playback** plays the active MML, including unsaved edits. Switching files stops playback without affecting FM Voice or MIDI-IN.
-**Play from cursor** starts at the current command or the next command on the same line. Repeats start at the first occurrence; seeking may take a moment.
-Emulation remains FM-only. NanoDrive8 sends FM-only songs as FM bursts; ADPCM streaming is used only for songs with PCM notes.
+### Settings
+
+- **Settings:** Configure MDX/VGM builds, NanoDrive8 port selection and experimental connection, and MIDI-IN selection. Choices are saved to `.vscode/settings.json`.
+- **Connections:** `[Connected]` and the badge show active connections. Hiding the panel stops on-screen notes, not connections. Disconnect manually; connections are not restored after a reload.
 
 ## Current Limitations
 

@@ -27,6 +27,11 @@ enum Command {
         source: Option<u8>,
         channel: Option<u8>,
     },
+    PitchBend {
+        source: u8,
+        channel: u8,
+        value: u16,
+    },
     Playback {
         source: String,
         #[serde(default)]
@@ -97,6 +102,11 @@ pub fn run(input: impl BufRead, mut output: impl Write) -> Result<(), String> {
                 note,
             }),
             Command::AllOff { source, channel } => engine.all_off(source, channel),
+            Command::PitchBend {
+                source,
+                channel,
+                value,
+            } => engine.pitch_bend(source, channel, value),
             Command::Playback {
                 source,
                 looped,

@@ -4,6 +4,8 @@ All notable changes to the "mmlx-lsp" extension will be documented in this file.
 
 ## [0.11.0] - 2026-10-09
 
+- Add a +/-2-semitone pitch-bend wheel with spring return and MIDI-IN synchronization for Emulation and NanoDrive8.
+- Apply ADPCM and PDX settings to NanoDrive8 Playback and default ADPCM processing to Resample.
 - Make the Playback Stop button the same size as Play and highlight it when stopping is available.
 
 ## [0.10.0] - 2026-10-09

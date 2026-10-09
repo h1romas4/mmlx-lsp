@@ -228,7 +228,11 @@ dd select { display: block; width: 100%; padding: 2px; }
 .audio-monitor canvas { display: block; width: 100%; height: 164px; }
 .audio-monitors[data-state="disconnected"] canvas { opacity: .55; }
 .p-keyboard { margin: 15px 0 0; }
+.p-keyboard__body { display: flex; align-items: stretch; gap: 8px; margin: 12px 0; }
 .p-keyboard__wrapper {
+	flex: 1;
+	min-width: 0;
+	margin: 0;
 	list-style: none;
 	display: flex;
 	padding: 0;
@@ -320,6 +324,12 @@ dd select { display: block; width: 100%; padding: 2px; }
 	box-shadow: inset 0px -1px 1px rgba(255, 255, 255, 0.4), 0 1px 0px rgba(0, 0, 0, 0.8), 0 2px 2px rgba(0, 0, 0, 0.4), 0 -1px 0px #000;
 }
 #keyboard { border-top: 1px solid var(--vscode-panel-border, #ddd); padding-top: 12px; }
+#keyboard-pitch-bend { flex: 0 0 44px; width: 44px; height: 120px; margin: 0; padding: 8px 10px; border: 1px solid #555; border-radius: 4px; background: #171717; appearance: none; writing-mode: vertical-lr; direction: rtl; touch-action: none; cursor: grab; box-shadow: inset 0 0 5px #000; }
+#keyboard-pitch-bend::-webkit-slider-runnable-track { width: 22px; height: 100%; border-radius: 4px; background: linear-gradient(90deg, #0009, transparent 35%, transparent 65%, #0009), repeating-linear-gradient(0deg, #484848 0 2px, #191919 2px 5px); }
+#keyboard-pitch-bend::-webkit-slider-thumb { appearance: none; width: 22px; height: 12px; border: 1px solid #b4b4b4; border-top: 3px solid var(--vscode-focusBorder, #39a9c7); border-radius: 2px; background: #737373; box-shadow: 0 2px 3px #000; }
+#keyboard-pitch-bend:active { cursor: grabbing; }
+#keyboard-pitch-bend:focus { outline: none; }
+#keyboard-pitch-bend:disabled { cursor: not-allowed; opacity: 1; }
 .keyboard-heading { cursor: pointer; min-height: 26px; line-height: 26px; user-select: none; }
 .keyboard-heading:focus-visible { outline: 1px solid var(--vscode-focusBorder, #39a9c7); outline-offset: 2px; }
 .keyboard-heading-content { display: inline-flex; flex-wrap: wrap; align-items: center; gap: 6px 12px; width: calc(100% - 18px); vertical-align: top; }

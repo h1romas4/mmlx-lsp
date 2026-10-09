@@ -2,6 +2,7 @@ import type { Input } from '@julusian/midi';
 
 export interface MidiInputPort extends Pick<Input, 'getPortCount' | 'getPortName' | 'openPort' | 'ignoreTypes' | 'destroy'> {
 	on(event: 'noteon' | 'noteoff' | 'cc', listener: (note: number, value: number, info: { channel: number }) => void): unknown;
+	on(event: 'messageBuffer', listener: (deltaTime: number, message: Buffer) => void): unknown;
 }
 
 export interface MidiInputState {
@@ -13,6 +14,7 @@ export interface MidiInputState {
 
 export type MidiNoteEvent = { type: 'noteOn'; channel: number; note: number; velocity: number }
 	| { type: 'noteOff'; channel: number; note: number }
+	| { type: 'pitchBend'; channel: number; value: number }
 	| { type: 'allOff'; channel?: number };
 
 export async function createMidiInput(): Promise<MidiInputPort> {
@@ -24,6 +26,7 @@ export class MidiInputConnection {
 	private input?: MidiInputPort;
 	private generation = 0;
 	private held = new Set<number>();
+	private bends = Array<number>(16).fill(8192);
 	private snapshot: MidiInputState = { port: '', connected: false, connecting: false, error: '' };
 
 	constructor(private readonly onState: (state: MidiInputState) => void,
@@ -32,7 +35,12 @@ export class MidiInputConnection {
 		private readonly onNoteEvent: (event: MidiNoteEvent) => void = () => {}) {}
 
 	get state(): MidiInputState { return { ...this.snapshot }; }
+	get pitchBends(): readonly number[] { return [...this.bends]; }
 	get notes(): number[] { return [...new Set([...this.held].map(note => note % 128))].sort((first, second) => first - second); }
+
+	setPitchBends(value: number): void {
+		if (Number.isInteger(value) && value >= 0 && value <= 16383) { this.bends.fill(value); }
+	}
 
 	async connect(port: string): Promise<void> {
 		this.disconnect();
@@ -47,6 +55,11 @@ export class MidiInputConnection {
 			if (!port || index < 0) { throw new Error('MIDI input port is no longer available.'); }
 			const source = input;
 			input.ignoreTypes(true, true, true);
+			input.on('messageBuffer', (_deltaTime, message) => {
+				if (this.input !== source || !Buffer.isBuffer(message) || message.length !== 3 || (message[0]! & 0xf0) !== 0xe0
+					|| message[1]! > 127 || message[2]! > 127) { return; }
+				this.setPitchBend(message[0]! & 15, message[1]! | (message[2]! << 7));
+			});
 			input.on('noteon', (note, velocity, info) => {
 				if (this.input === source && Number.isInteger(velocity) && velocity >= 0 && velocity <= 127) {
 						this.setNote(note, info.channel, velocity > 0, velocity);
@@ -57,6 +70,7 @@ export class MidiInputConnection {
 			});
 			input.on('cc', (parameter, _value, info) => {
 				if (this.input !== source || !Number.isInteger(info.channel) || info.channel < 0 || info.channel > 15) { return; }
+				if (parameter === 121) { this.setPitchBend(info.channel, 8192); }
 				if (parameter === 120 || (parameter >= 123 && parameter <= 127)) {
 						this.onNoteEvent({ type: 'allOff', channel: info.channel });
 					for (const note of this.held) { if (Math.floor(note / 128) === info.channel) { this.held.delete(note); } }
@@ -84,6 +98,7 @@ export class MidiInputConnection {
 		const input = this.input;
 		this.input = undefined;
 		this.held.clear();
+		for (let channel = 0; channel < 16; channel++) { this.setPitchBend(channel, 8192); }
 		this.onNoteEvent({ type: 'allOff' });
 		try { input?.destroy(); } catch (failure) {
 			error = failure instanceof Error ? failure.message : 'Could not close MIDI input.';
@@ -100,5 +115,11 @@ export class MidiInputConnection {
 		if (this.held.has(key) === active) { return; }
 		if (active) { this.held.add(key); } else { this.held.delete(key); }
 		this.onNotes(this.notes);
+	}
+
+	private setPitchBend(channel: number, value: number): void {
+		if (this.bends[channel] === value) { return; }
+		this.bends[channel] = value;
+		this.onNoteEvent({ type: 'pitchBend', channel, value });
 	}
 }

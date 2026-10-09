@@ -100,7 +100,7 @@
               "resample",
               "lpf"
             ],
-            "default": "through",
+            "default": "resample",
             "description": "ADPCM processing mode for VGM output."
           },
           "loopCount": {
@@ -169,7 +169,7 @@
           "type": "string",
           "default": "",
           "scope": "resource",
-          "description": "Default PDX file for VGM conversion. Empty discovers the referenced PDX beside the input. An explicit task pdx overrides this setting."
+          "description": "Default PDX file for VGM conversion and NanoDrive8 Playback. Empty discovers the referenced PDX beside the input. An explicit task pdx overrides this setting for builds."
         },
         "mmlx.build.adpcmMode": {
           "type": "string",
@@ -178,9 +178,9 @@
             "resample",
             "lpf"
           ],
-          "default": "through",
+          "default": "resample",
           "scope": "resource",
-          "description": "Default ADPCM processing mode for VGM output. An explicit task adpcmMode overrides this setting."
+          "description": "Default ADPCM processing mode for VGM output and NanoDrive8 Playback. An explicit task adpcmMode overrides this setting for builds."
         },
         "mmlx.build.loopCount": {
           "type": "integer",

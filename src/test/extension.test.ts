@@ -580,6 +580,8 @@ suite('mmlx extension', () => {
 			assert.strictEqual(view.title, 'mmlx [Connected]');
 			assert.deepStrictEqual(view.badge, { value: 1, tooltip: 'Connected: YM2151 (ymfm)' });
 			messages.fire({ type: 'emulationNote', event: 'noteOn', note: 60, velocity: 100, id: 1 });
+			messages.fire({ type: 'emulationNote', event: 'pitchBend', value: 10240, id: 1 });
+			messages.fire({ type: 'emulationNote', event: 'noteOn', note: 64, velocity: 100, id: 1 });
 			messages.fire({ type: 'emulationRender', blocks: 4, id: 1 });
 			const pcm = (await waitFor(message => message.type === 'emulationPcm'
 				&& updates.filter(update => update.type === 'emulationPcm').length === 4)).pcm;
@@ -1657,6 +1659,10 @@ suite('mmlx extension', () => {
 			assert.strictEqual(initialized.bytes.filter(byte => byte === 0).length, 6);
 			const on = await audition({ type: 'noteOn', source: 0, channel: 0, note: 69, velocity: 127 });
 			assert.strictEqual(on.count, 1); assert.ok(on.bytes.length > 50);
+			const bent = await audition({ type: 'pitchBend', source: 0, channel: 0, value: 10240 });
+			assert.strictEqual(bent.count, 1); assert.ok(bent.bytes.length < 20);
+			assert.ok(Buffer.from(bent.bytes).includes(Buffer.from([0x28, 0x4a, 0x30, 128])));
+			assert.deepStrictEqual(await audition({ type: 'pitchBend', source: 0, channel: 0, value: 10240 }), { bytes: new Uint8Array(0), count: 0 });
 			const off = await audition({ type: 'noteOff', source: 0, channel: 0, note: 69 });
 			assert.strictEqual(off.count, 1); assert.ok(off.bytes.length < 20);
 			assert.deepStrictEqual(await audition({ type: 'noteOff', source: 0, channel: 0, note: 69 }), { bytes: new Uint8Array(0), count: 0 });
@@ -1721,7 +1727,104 @@ suite('mmlx extension', () => {
 			await assert.rejects(worker.request({ operation: 'playbackNext', requestId: 0 }), /ended/);
 			await worker.request({ operation: 'playbackStop' });
 			await assert.rejects(worker.request({ operation: 'playbackNext', requestId: 0 }), /not initialized/);
+			for (const adpcmMode of ['through', 'resample', 'lpf'] as const) {
+				for (let offset = 0; offset < source.length; offset += 8192) {
+					await worker.request({ operation: 'upload', asset: 'source', offset, bytes: Array.from(source.subarray(offset, offset + 8192)) });
+				}
+				await worker.request({ operation: 'upload', asset: 'pdx', offset: 0, bytes: Array.from(pdx) });
+				assert.deepStrictEqual(await worker.request({ operation: 'playbackInit', looped: false, adpcmMode }), { audio: true });
+				const chunk = await worker.request({ operation: 'playbackNext', requestId: 0 });
+				assert.ok(chunk && 'bytes' in chunk && chunk.bytes instanceof Uint8Array && chunk.position! > 0);
+				await worker.request({ operation: 'playbackStop' });
+			}
 		} finally { await worker.dispose(); }
+	});
+
+	test('NanoDrive8 Playback applies Settings ADPCM mode and PDX overrides or discovery', async function () {
+		this.timeout(20000);
+		const extension = vscode.extensions.all.find(extension => extension.packageJSON.name === 'mmlx-lsp');
+		assert.ok(extension);
+		assert.strictEqual(extension.packageJSON.contributes.configuration.properties['mmlx.build.adpcmMode'].default, 'resample');
+		const folder = vscode.workspace.workspaceFolders![0];
+		const configuration = vscode.workspace.getConfiguration('mmlx', folder.uri);
+		const keys = ['serial.connection', 'build.adpcmMode', 'build.pdx'];
+		const previous = keys.map(key => {
+			const setting = configuration.inspect(key);
+			return vscode.workspace.workspaceFile ? setting?.workspaceFolderValue : setting?.workspaceValue;
+		});
+		const directoryName = `nanodrive-playback-${randomUUID()}`;
+		const directory = vscode.Uri.joinPath(folder.uri, directoryName);
+		const override = vscode.Uri.joinPath(directory, 'override.pdx');
+		const context = { extensionUri: extension.extensionUri, subscriptions: [] as vscode.Disposable[] };
+		const events = new vscode.EventEmitter<void>(); const messages = new vscode.EventEmitter<unknown>();
+		const updates = new vscode.EventEmitter<Record<string, unknown>>();
+		const states = new Map<string, Record<string, unknown>>();
+		const captured: Parameters<typeof nanoDriveTestCodec>[0][] = [];
+		const port = new NanoDriveTestPort();
+		let pdxName: string | null = 'drums';
+		const provider = new VoiceViewProvider(context as unknown as vscode.ExtensionContext, () => undefined,
+			async () => [{ path: '/dev/nanodrive-test' }], async () => [], undefined, undefined, async () => port, async params => {
+				captured.push(params);
+				if (params.operation === 'upload' || params.operation === 'playbackStop') { return null; }
+				if (params.operation === 'playbackInfo') { return { audio: true, pdxName }; }
+				if (params.operation === 'playbackInit') { throw new Error('Playback initialization captured'); }
+				return nanoDriveTestCodec(params);
+			});
+		const view = { visible: true, onDidChangeVisibility: events.event, onDidDispose: events.event,
+			webview: { cspSource: 'https://test.invalid', asWebviewUri: (uri: vscode.Uri) => uri,
+				onDidReceiveMessage: messages.event, postMessage: (message: Record<string, unknown>) => {
+					states.set(String(message.type), message); updates.fire(message); return Promise.resolve(true);
+				} }
+		} as unknown as vscode.WebviewView;
+		function waitFor(type: string, predicate: (state: Record<string, unknown>) => boolean): Promise<void> {
+			const latest = states.get(type);
+			if (latest && predicate(latest)) { return Promise.resolve(); }
+			return new Promise((resolve, reject) => {
+				const subscription = updates.event(state => {
+					if (state.type === type && predicate(state)) { clearTimeout(timer); subscription.dispose(); resolve(); }
+				});
+				const timer = setTimeout(() => { subscription.dispose(); reject(new Error(`Playback settings timed out: ${type}`)); }, 4000);
+			});
+		}
+		try {
+			await vscode.workspace.fs.createDirectory(directory);
+			await vscode.workspace.fs.writeFile(override, Uint8Array.of(1, 2, 3));
+			await vscode.workspace.fs.writeFile(vscode.Uri.joinPath(directory, 'Drums.PDX'), Uint8Array.of(4, 5, 6));
+			await configuration.update('serial.connection', '/dev/nanodrive-test', vscode.ConfigurationTarget.WorkspaceFolder);
+			await provider.resolveWebviewView(view); messages.fire({ type: 'ready' });
+			await waitFor('serialSettings', state => state.canConnect === true);
+			messages.fire({ type: 'setSerialConnection', folder: folder.uri.toString(), connected: true });
+			await waitFor('serialSettings', state => state.connected === true);
+			let id = 0;
+			for (const scenario of [
+				{ mode: 'through', pdx: `${directoryName}/override.pdx`, name: 'drums', bytes: [1, 2, 3] },
+				{ mode: 'lpf', pdx: override.fsPath, name: null, bytes: [1, 2, 3] },
+				{ mode: 'resample', pdx: '', name: 'drums', bytes: [4, 5, 6] }
+			]) {
+				const input = vscode.Uri.joinPath(directory, `${scenario.mode}.mml`);
+				await vscode.workspace.fs.writeFile(input, new TextEncoder().encode(`${scenario.name ? '#pcmfile "drums"\n' : ''}P F2 o1 c4`));
+				await vscode.window.showTextDocument(await vscode.workspace.openTextDocument(input));
+				await waitFor('playback', state => state.document === input.toString() && state.available === true);
+				await configuration.update('build.adpcmMode', scenario.mode, vscode.ConfigurationTarget.WorkspaceFolder);
+				await configuration.update('build.pdx', scenario.pdx, vscode.ConfigurationTarget.WorkspaceFolder);
+				pdxName = scenario.name;
+				const start = captured.length;
+				messages.fire({ type: 'playbackAction', action: 'play', mode: 'nanodrive8', id: ++id, document: input.toString(), looped: false });
+				await waitFor('playback', state => state.id === id && state.error === 'Playback initialization captured');
+				assert.deepStrictEqual(captured.slice(start).find(request => request.operation === 'playbackInit'), {
+					operation: 'playbackInit', looped: false, adpcmMode: scenario.mode
+				});
+				assert.deepStrictEqual(captured.slice(start).filter(request => request.operation === 'upload' && request.asset === 'pdx').at(-1), {
+					operation: 'upload', asset: 'pdx', offset: 0, bytes: scenario.bytes
+				});
+			}
+		} finally {
+			provider.dispose(); for (const subscription of context.subscriptions) { subscription.dispose(); }
+			for (let index = 0; index < keys.length; index++) { await configuration.update(keys[index], previous[index], vscode.ConfigurationTarget.WorkspaceFolder); }
+			await vscode.commands.executeCommand('workbench.action.closeActiveEditor');
+			await vscode.workspace.fs.delete(directory, { recursive: true });
+			events.dispose(); messages.dispose(); updates.dispose();
+		}
 	});
 
 	test('NanoDrive8 Settings connect, lock configuration and release ports on changes or disposal', async function () {
@@ -1732,16 +1835,28 @@ suite('mmlx extension', () => {
 		const configuration = vscode.workspace.getConfiguration('mmlx', folder.uri);
 		const setting = configuration.inspect<string>('serial.connection');
 		const previous = vscode.workspace.workspaceFile ? setting?.workspaceFolderValue : setting?.workspaceValue;
+		const midiSetting = configuration.inspect<string>('midi.input');
+		const previousMidi = vscode.workspace.workspaceFile ? midiSetting?.workspaceFolderValue : midiSetting?.workspaceValue;
 		const context = { extensionUri: extension.extensionUri, subscriptions: [] as vscode.Disposable[] };
 		const events = new vscode.EventEmitter<void>(); const messages = new vscode.EventEmitter<unknown>();
 		const visibility = new vscode.EventEmitter<void>();
 		type SerialState = { type: string; folder: string; connection: string; connected: boolean; connecting: boolean;
-			closing: boolean; loading: boolean; editable: boolean; canConnect: boolean; firmware: string; error: string; id?: number };
+			closing: boolean; loading: boolean; editable: boolean; canConnect: boolean; firmware: string; error: string; id?: number; value?: number };
 		const updates = new vscode.EventEmitter<SerialState>(); let latest: SerialState | undefined;
 		const outputs: SerialState[] = [];
+		const pitchUpdates: number[] = [];
+		const expectedBends = (value: number) => [
+			{ type: 'pitchBend', source: 0, channel: 0, value },
+			...Array.from({ length: 16 }, (_unused, channel) => ({ type: 'pitchBend', source: 1, channel, value }))
+		];
 		const opened: NanoDriveTestPort[] = []; let available = [{ path: '/dev/nanodrive-test' }];
+		const input = Object.assign(new NodeEventEmitter(), {
+			getPortCount: () => 1, getPortName: () => 'Pitch bend test',
+			ignoreTypes: () => {}, openPort: () => {}, destroy: () => { input.removeAllListeners(); }
+		});
+		let midiConnected = false;
 		const provider = new VoiceViewProvider(context as unknown as vscode.ExtensionContext, () => undefined,
-			async () => available, async () => [], undefined, undefined, async () => {
+			async () => available, async () => ['Pitch bend test'], async () => input, undefined, async () => {
 				const port = new NanoDriveTestPort(); opened.push(port); return port;
 			}, nanoDriveTestCodec);
 		const view = { visible: true, onDidChangeVisibility: visibility.event, onDidDispose: events.event,
@@ -1749,6 +1864,8 @@ suite('mmlx extension', () => {
 				onDidReceiveMessage: messages.event, postMessage: (message: SerialState) => {
 					if (message.type === 'serialSettings') { latest = message; updates.fire(message); }
 					if (message.type === 'outputConnection') { outputs.push(message); updates.fire(message); }
+					if (message.type === 'midiSettings') { midiConnected = message.connected; }
+					if (message.type === 'pitchBend') { pitchUpdates.push(message.value!); }
 					return Promise.resolve(true);
 				} }
 		} as unknown as vscode.WebviewView;
@@ -1764,6 +1881,7 @@ suite('mmlx extension', () => {
 		}
 		try {
 			await configuration.update('serial.connection', '/dev/nanodrive-test', vscode.ConfigurationTarget.WorkspaceFolder);
+			await configuration.update('midi.input', 'Pitch bend test', vscode.ConfigurationTarget.WorkspaceFolder);
 			await provider.resolveWebviewView(view); messages.fire({ type: 'ready' });
 			await waitFor(state => state.canConnect); assert.strictEqual(opened.length, 0);
 			messages.fire({ type: 'setSerialConnection', folder: 'file:///wrong', connected: true });
@@ -1783,9 +1901,54 @@ suite('mmlx extension', () => {
 			messages.fire({ type: 'emulationNote', event: 'noteOff', note: 69, velocity: 0, id: 1 });
 			await new Promise<void>(resolve => setImmediate(resolve));
 			assert.deepStrictEqual(opened[0].commands.slice(count).map(request => request.input?.type), ['noteOn', 'noteOff']);
+			const bendStart = opened[0].commands.length;
+			for (const value of [9000, 10000, 10240]) { messages.fire({ type: 'emulationNote', event: 'pitchBend', value, id: 1 }); }
+			messages.fire({ type: 'emulationNote', event: 'pitchBend', value: 16384, id: 1 });
+			messages.fire({ type: 'emulationNote', event: 'pitchBend', value: 0, id: 0 });
+			messages.fire({ type: 'emulationNote', event: 'noteOn', note: 70, velocity: 100, id: 1 });
+			messages.fire({ type: 'emulationNote', event: 'noteOff', note: 70, velocity: 0, id: 1 });
+			await new Promise<void>(resolve => setImmediate(resolve));
+			assert.deepStrictEqual(opened[0].commands.slice(bendStart).map(request => request.input), [
+				...expectedBends(10240),
+				{ type: 'noteOn', source: 0, channel: 0, note: 70, velocity: 100 },
+				{ type: 'noteOff', source: 0, channel: 0, note: 70, velocity: 0 }
+			]);
+			const timedBendStart = opened[0].commands.length;
+			messages.fire({ type: 'emulationNote', event: 'pitchBend', value: 0, id: 1 });
+			await new Promise<void>(resolve => setTimeout(resolve, 30));
+			assert.deepStrictEqual(opened[0].commands.slice(timedBendStart).map(request => request.input), expectedBends(0));
+			messages.fire({ type: 'setMidiInputConnection', folder: folder.uri.toString(), connected: true });
+			await new Promise<void>(resolve => setImmediate(resolve));
+			assert.ok(midiConnected);
+			input.emit('messageBuffer', 0, Buffer.from([0xe3, 0, 80]));
+			input.emit('noteon', 69, 100, { channel: 3 });
+			input.emit('noteoff', 69, 0, { channel: 3 });
+			await new Promise<void>(resolve => setImmediate(resolve));
+			assert.deepStrictEqual(opened[0].commands.at(-4)?.input, { type: 'pitchBend', source: 1, channel: 3, value: 10240 });
+			assert.deepStrictEqual(opened[0].commands.at(-3)?.input, { type: 'pitchBend', source: 0, channel: 0, value: 10240 });
+			assert.strictEqual(pitchUpdates.at(-1), 10240);
+			input.emit('noteon', 69, 100, { channel: 3 });
+			await new Promise<void>(resolve => setImmediate(resolve));
+			const wheelMidiStart = opened[0].commands.length;
+			const pitchDisplayStart = pitchUpdates.length;
+			messages.fire({ type: 'emulationNote', event: 'pitchBend', value: 12000, id: 1 });
+			input.emit('noteon', 72, 100, { channel: 5 });
+			await new Promise<void>(resolve => setImmediate(resolve));
+			assert.deepStrictEqual(opened[0].commands.slice(wheelMidiStart).map(request => request.input), [
+				...expectedBends(12000), { type: 'noteOn', source: 1, channel: 5, note: 72, velocity: 100 }
+			]);
+			assert.strictEqual(pitchUpdates.length, pitchDisplayStart);
+			input.emit('noteoff', 69, 0, { channel: 3 });
+			input.emit('noteoff', 72, 0, { channel: 5 });
+			messages.fire({ type: 'emulationNote', event: 'pitchBend', value: 8192, id: 1 });
+			input.emit('messageBuffer', 0, Buffer.from([0xe3, 0, 80]));
+			input.emit('noteon', 69, 100, { channel: 3 });
+			await new Promise<void>(resolve => setImmediate(resolve));
+			const hideStart = opened[0].commands.length;
 			Object.assign(view, { visible: false }); visibility.fire();
 			await new Promise<void>(resolve => setImmediate(resolve));
-			assert.deepStrictEqual(opened[0].commands.at(-1)?.input, { type: 'allOff', source: 0 });
+			assert.deepStrictEqual(opened[0].commands.slice(hideStart).map(request => request.input), [{ type: 'allOff', source: 0 }]);
+			assert.strictEqual(pitchUpdates.at(-1), 10240);
 			Object.assign(view, { visible: true });
 			messages.fire({ type: 'setOutputConnection', target: 'keyboard', mode: 'nanodrive8', id: 1, connected: false });
 			await waitFor(state => state.id === 1 && !state.connected && !state.connecting, 'outputConnection');
@@ -1798,8 +1961,17 @@ suite('mmlx extension', () => {
 			assert.ok(!opened[0].isOpen); assert.strictEqual(opened[0].commands.at(-1)?.command, 'reset');
 			messages.fire({ type: 'setSerialConnection', folder: folder.uri.toString(), connected: true });
 			await waitFor(state => state.connected);
+			const reconnectStart = opened[1].commands.length;
 			messages.fire({ type: 'setOutputConnection', target: 'keyboard', mode: 'nanodrive8', id: 2, connected: true });
 			await waitFor(state => state.id === 2 && state.connected, 'outputConnection');
+			input.emit('noteon', 69, 100, { channel: 3 });
+			input.emit('noteoff', 69, 0, { channel: 3 });
+			await new Promise<void>(resolve => setImmediate(resolve));
+			assert.deepStrictEqual(opened[1].commands.slice(reconnectStart).filter(request => request.input && 'source' in request.input && request.input.source === 1).map(request => request.input), [
+				{ type: 'pitchBend', source: 1, channel: 3, value: 10240 },
+				{ type: 'noteOn', source: 1, channel: 3, note: 69, velocity: 100 },
+				{ type: 'noteOff', source: 1, channel: 3, note: 69 }
+			]);
 			available = []; messages.fire({ type: 'getSerialPorts' });
 			await waitFor(state => !state.loading && !state.closing && /no longer available/.test(state.error));
 			assert.ok(!opened[1].isOpen);
@@ -1825,6 +1997,7 @@ suite('mmlx extension', () => {
 		} finally {
 			provider.dispose(); for (const subscription of context.subscriptions) { subscription.dispose(); }
 			await configuration.update('serial.connection', previous, vscode.ConfigurationTarget.WorkspaceFolder);
+			await configuration.update('midi.input', previousMidi, vscode.ConfigurationTarget.WorkspaceFolder);
 			events.dispose(); visibility.dispose(); messages.dispose(); updates.dispose();
 		}
 	});
@@ -1885,6 +2058,30 @@ suite('mmlx extension', () => {
 							check(request?.mode === 'nanodrive8' && request.connected && button.disabled && mode.disabled, 'Keyboard connect request and busy state');
 							send({ type: 'outputConnection', target: 'keyboard', id: request.id, mode: 'nanodrive8', connected: true, connecting: false });
 							check(key.getAttribute('aria-disabled') === 'false' && button.getAttribute('aria-pressed') === 'true', 'Connected keyboard');
+							const wheel = document.getElementById('keyboard-pitch-bend');
+							const firstKey = document.querySelector('#keyboard [data-midi-note]');
+							check(!wheel.disabled && wheel.getBoundingClientRect().right <= firstKey.getBoundingClientRect().left, 'Pitch wheel must be enabled to the left of the keys');
+							wheel.focus();
+							check(getComputedStyle(wheel).outlineStyle === 'none', 'Wheel must not show a focus outline');
+							const beforeMidiBend = messages.length;
+							send({ type: 'pitchBend', value: 10240 });
+							check(wheel.value === '10240' && wheel.getAttribute('aria-valuetext') !== '0.00 semitones', 'MIDI bend must update the wheel');
+							wheel.dispatchEvent(new Event('blur'));
+							window.dispatchEvent(new Event('blur'));
+							check(wheel.value === '10240' && messages.length === beforeMidiBend, 'MIDI display must not echo or reset on blur');
+							wheel.value = '0'; wheel.dispatchEvent(new Event('input'));
+							check(messages.at(-1).event === 'pitchBend' && messages.at(-1).value === 0 && messages.at(-1).id === request.id, 'Wheel must send pitch bend');
+							wheel.dispatchEvent(new PointerEvent('pointerup'));
+							check(wheel.value === '8192' && messages.at(-1).value === 8192, 'Wheel must spring to center');
+							wheel.dispatchEvent(new KeyboardEvent('keydown', { key: 'ArrowUp' }));
+							check(Number(wheel.value) > 8192, 'Wheel keyboard control');
+							wheel.dispatchEvent(new KeyboardEvent('keyup', { key: 'ArrowUp' }));
+							check(wheel.value === '8192', 'Wheel keyboard release must center');
+							for (const release of ['pointercancel', 'blur']) {
+								wheel.value = '16383'; wheel.dispatchEvent(new Event('input'));
+								wheel.dispatchEvent(new Event(release));
+								check(wheel.value === '8192', 'Wheel must center on ' + release);
+							}
 							key.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter' }));
 							key.dispatchEvent(new KeyboardEvent('keyup', { key: 'Enter' }));
 							check(messages.some(message => message.type === 'emulationNote' && message.event === 'noteOn' && message.note === 69 && message.id === request.id), 'Key-on routing');
@@ -1892,6 +2089,7 @@ suite('mmlx extension', () => {
 							button.click(); check(messages.at(-1).type === 'setOutputConnection' && !messages.at(-1).connected, 'Keyboard disconnect');
 							send({ type: 'outputConnection', target: 'keyboard', id: request.id, mode: 'nanodrive8', connected: false, connecting: false });
 							check(!button.disabled && key.getAttribute('aria-disabled') === 'true', 'Settings remains connected');
+							check(wheel.disabled && wheel.value === '8192', 'Disconnected wheel must be disabled and centered');
 							document.getElementById('playback-tab').click();
 							const stop = document.getElementById('playback-stop');
 							stop.style.transition = 'none';

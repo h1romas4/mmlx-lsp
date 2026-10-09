@@ -4,6 +4,7 @@ use ndsif::{
 };
 use serde::Deserialize;
 use serde_json::{Value, json};
+use soundlog::mdx::convert::AdpcmMode;
 
 #[path = "nanodrive/playback.rs"]
 mod playback;
@@ -36,6 +37,8 @@ enum Operation {
     PlaybackInfo,
     PlaybackInit {
         looped: bool,
+        #[serde(rename = "adpcmMode")]
+        adpcm_mode: Option<String>,
     },
     PlaybackNext {
         #[serde(rename = "requestId")]
@@ -86,6 +89,11 @@ enum Input {
     AllOff {
         source: Option<u8>,
         channel: Option<u8>,
+    },
+    PitchBend {
+        source: u8,
+        channel: u8,
+        value: u16,
     },
     Stop,
 }
@@ -221,7 +229,13 @@ impl Bridge {
                     json!({ "audio":audio,"pdxName":if audio { package.pdx_name() } else { None } }),
                 ))
             }
-            Operation::PlaybackInit { looped } => {
+            Operation::PlaybackInit { looped, adpcm_mode } => {
+                let adpcm_mode = match adpcm_mode.as_deref().unwrap_or("resample") {
+                    "through" => AdpcmMode::Through,
+                    "resample" => AdpcmMode::Resample,
+                    "lpf" => AdpcmMode::Lpf,
+                    _ => return Err("Invalid ADPCM mode".into()),
+                };
                 let source =
                     std::str::from_utf8(&self.source).map_err(|error| error.to_string())?;
                 self.playback = Some(playback::Playback::new(
@@ -232,6 +246,7 @@ impl Bridge {
                         Some(std::mem::take(&mut self.pdx))
                     },
                     looped,
+                    adpcm_mode,
                 )?);
                 Ok(Output::Json(
                     json!({"audio":self.playback.as_ref().unwrap().audio()}),
@@ -312,6 +327,11 @@ impl Bridge {
                             note,
                         }),
                         Input::AllOff { source, channel } => audition.all_off(source, channel),
+                        Input::PitchBend {
+                            source,
+                            channel,
+                            value,
+                        } => audition.pitch_bend(source, channel, value),
                         Input::Stop => {
                             self.session = None;
                             (0..8)
@@ -504,6 +524,43 @@ mod tests {
                 .collect::<Vec<_>>()
         );
         assert!(bridge.session.is_none());
+    }
+
+    #[test]
+    fn keyboard_pitch_bend_uses_only_kc_kf_bursts_and_survives_new_notes() {
+        let mut bridge = Bridge::default();
+        audition(&mut bridge, json!({"type":"init", "voice":voice()}));
+        audition(
+            &mut bridge,
+            json!({"type":"noteOn", "source":1, "channel":3, "note":69, "velocity":127}),
+        );
+        let frames = audition(
+            &mut bridge,
+            json!({"type":"pitchBend", "source":1, "channel":3, "value":10240}),
+        );
+        assert_eq!(frames.len(), 1);
+        assert_eq!(frames[0].opcode(), 0x56);
+        assert_eq!(frames[0].payload(), &[0x28, 0x4a, 0x30, 128]);
+        audition(
+            &mut bridge,
+            json!({"type":"noteOff", "source":1, "channel":3, "note":69}),
+        );
+        let frames = audition(
+            &mut bridge,
+            json!({"type":"noteOn", "source":1, "channel":3, "note":69, "velocity":127}),
+        );
+        assert!(
+            frames[0]
+                .payload()
+                .ends_with(&[0x29, 0x4a, 0x31, 128, 0x08, 0x79])
+        );
+        assert!(
+            audition(
+                &mut bridge,
+                json!({"type":"pitchBend", "source":0, "channel":3, "value":16383})
+            )
+            .is_empty()
+        );
     }
 
     #[test]

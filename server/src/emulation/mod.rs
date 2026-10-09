@@ -42,6 +42,11 @@ impl Emulation {
         self.write(writes);
     }
 
+    pub fn pitch_bend(&mut self, source: u8, channel: u8, value: u16) {
+        let writes = self.audition.pitch_bend(source, channel, value);
+        self.write(writes);
+    }
+
     pub fn all_off(&mut self, source: Option<u8>, midi_channel: Option<u8>) {
         let writes = self.audition.all_off(source, midi_channel);
         self.write(writes);
@@ -201,6 +206,48 @@ mod tests {
             engine.render().unwrap();
         }
         assert!(energy(&engine.render().unwrap()) < 0.001);
+    }
+
+    #[test]
+    fn pitch_bend_changes_a_sustained_tones_frequency_without_retrigger() {
+        let mut engine = Emulation::new(48000).unwrap();
+        engine.set_voice(Some(tone())).unwrap();
+        engine.note_on(
+            Note {
+                source: 1,
+                channel: 3,
+                note: 69,
+            },
+            127,
+        );
+        for (value, expected) in [
+            (8192, 440.0),
+            (0, 392.0),
+            (10240, 452.9),
+            (16383, 493.9),
+            (8192, 440.0),
+        ] {
+            engine.pitch_bend(1, 3, value);
+            for _ in 0..8 {
+                engine.render().unwrap();
+            }
+            let mut crossings = 0;
+            let mut previous = 0.0;
+            for _ in 0..80 {
+                for frame in engine.render().unwrap().chunks_exact(8) {
+                    let sample = f32::from_le_bytes(frame[..4].try_into().unwrap());
+                    if previous < 0.0 && sample >= 0.0 {
+                        crossings += 1;
+                    }
+                    previous = sample;
+                }
+            }
+            let frequency = crossings as f64 * 48000.0 / (80.0 * 512.0);
+            assert!(
+                (frequency - expected).abs() < 4.0,
+                "bend {value}: {frequency} Hz, expected {expected}"
+            );
+        }
     }
 
     #[test]

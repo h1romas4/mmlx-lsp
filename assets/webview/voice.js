@@ -42,7 +42,7 @@ const settingsControls = createSettingsControls(document.getElementById('setting
 const keyboardControls = createKeyboardControls(document.getElementById('keyboard'), mode => {
 	keyboardMode = mode;
 	saveState();
-	}, note => { audioMonitors.setNote(note); vscode.postMessage({ type: 'emulationNote', id: outputId, ...note }); });
+	}, note => { if (note.event !== 'pitchBend') { audioMonitors.setNote(note); } vscode.postMessage({ type: 'emulationNote', id: outputId, ...note }); });
 const outputConnections = {
 	keyboard: createOutputConnection(document.querySelector('.keyboard-output'), async request => {
 		if (!request.connected) {
@@ -171,6 +171,8 @@ window.addEventListener('message', event => {
 		audioMonitors.setMidiNotes(message.notes);
 	} else if (message?.type === 'midiNote') {
 		audioMonitors.setNote(message.event, 'midi');
+	} else if (message?.type === 'pitchBend') {
+		keyboardControls.setPitchBend(message.value);
 	} else if (message?.type === 'outputConnection' && message.target === 'keyboard'
 		&& typeof message.connected === 'boolean') {
 		if (message.target === 'keyboard') {

@@ -59,6 +59,40 @@ export const codec: NanoDriveCodec = async params => {
 };
 
 suite('NanoDrive8 connection', () => {
+    test('playback passes ADPCM modes and loads configured or referenced PDX only for PCM', async () => {
+        for (const scenario of [
+            { audio: true, pdxName: null, configured: true, mode: 'through' as const, name: '' },
+            { audio: true, pdxName: 'drums', configured: true, mode: 'lpf' as const, name: 'drums' },
+            { audio: true, pdxName: 'drums', configured: false, mode: undefined, name: 'drums' },
+            { audio: true, pdxName: null, configured: false, mode: undefined, name: undefined },
+            { audio: false, pdxName: null, configured: true, mode: undefined, name: undefined }
+        ]) {
+            const port = new Port();
+            const inputs: Parameters<NanoDriveCodec>[0][] = [];
+            const loaded: string[] = [];
+            const connection = new NanoDriveConnection(async params => {
+                inputs.push(params);
+                if (params.operation === 'upload' || params.operation === 'playbackStop') { return null; }
+                if (params.operation === 'playbackInfo') { return { audio: scenario.audio, pdxName: scenario.pdxName }; }
+                if (params.operation === 'playbackInit') { throw new Error('Initialization captured'); }
+                return codec(params);
+            }, () => {}, async () => port, 100);
+            try {
+                await connection.connect('test');
+                await connection.startPlayback('P o1 c4', false, async name => {
+                    loaded.push(name); return Uint8Array.of(1, 2, 3);
+                }, { adpcmMode: scenario.mode, pdxConfigured: scenario.configured });
+                assert.strictEqual(connection.playbackState.error, 'Initialization captured');
+                assert.deepStrictEqual(loaded, scenario.name === undefined ? [] : [scenario.name]);
+                assert.deepStrictEqual(inputs.find(params => params.operation === 'playbackInit'), {
+                    operation: 'playbackInit', looped: false, adpcmMode: scenario.mode ?? 'resample'
+                });
+                const uploaded = inputs.filter(params => params.operation === 'upload' && params.asset === 'pdx');
+                assert.strictEqual(uploaded.length, scenario.name === undefined ? 1 : 2);
+                if (scenario.name !== undefined) { assert.deepStrictEqual(uploaded.at(-1), { operation: 'upload', asset: 'pdx', offset: 0, bytes: [1, 2, 3] }); }
+            } finally { await connection.disconnect(); }
+        }
+    });
     const fmCodec = (): NanoDriveCodec => {
         let index = 0;
         return async params => {
