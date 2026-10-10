@@ -1,6 +1,6 @@
 [package]
 name = "mmlx-lsp-server"
-version = "0.13.0"
+version = "0.14.0"
 edition = "2024"
 license = "BSD-3-Clause"
 publish = false
