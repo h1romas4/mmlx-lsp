@@ -1,4 +1,5 @@
 mod audio;
+pub mod okim6258;
 pub mod playback;
 pub mod protocol;
 mod ym2151;

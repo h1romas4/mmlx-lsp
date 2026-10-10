@@ -1,5 +1,6 @@
 use super::{Emulation, playback::Playback, polyphony::Note, voice::Voice};
 use serde::Deserialize;
+use soundlog::mdx::convert::AdpcmMode;
 use std::io::{self, BufRead, Read, Write};
 
 #[derive(Deserialize)]
@@ -35,11 +36,20 @@ enum Command {
         channel: u8,
         value: u16,
     },
+    PlaybackInfo {
+        source: String,
+    },
+    Pdx {
+        offset: usize,
+        bytes: Vec<u8>,
+    },
     Playback {
         source: String,
         #[serde(default)]
         looped: bool,
         cursor: Option<usize>,
+        #[serde(rename = "adpcmMode")]
+        adpcm_mode: Option<String>,
     },
     VoiceTest {
         mml: String,
@@ -59,6 +69,7 @@ pub fn frame(output: &mut impl Write, kind: u8, data: &[u8]) -> io::Result<()> {
 pub fn run(input: impl BufRead, mut output: impl Write) -> Result<(), String> {
     let mut engine = None;
     let mut playback = None;
+    let mut pdx = Vec::new();
     let mut output_rate = 0;
     let mut reader = input;
     loop {
@@ -121,12 +132,50 @@ pub fn run(input: impl BufRead, mut output: impl Write) -> Result<(), String> {
                 channel,
                 value,
             } => engine.pitch_bend(source, channel, value),
+            Command::PlaybackInfo { source } => {
+                let (audio, name) = Playback::info(&source)?;
+                let info =
+                    serde_json::to_vec(&serde_json::json!({ "audio": audio, "pdxName": name }))
+                        .map_err(|error| error.to_string())?;
+                frame(&mut output, 5, &info).map_err(|error| error.to_string())?;
+            }
+            Command::Pdx { offset, bytes } => {
+                if offset == 0 {
+                    pdx.clear();
+                }
+                if offset != pdx.len()
+                    || bytes.len() > 8192
+                    || pdx.len() + bytes.len() > 16 * 1024 * 1024
+                {
+                    return Err("Invalid PDX upload".into());
+                }
+                pdx.extend(bytes);
+            }
             Command::Playback {
                 source,
                 looped,
                 cursor,
+                adpcm_mode,
             } => {
-                playback = Some(Playback::with_cursor(&source, output_rate, looped, cursor)?);
+                let mode = match adpcm_mode.as_deref().unwrap_or("resample") {
+                    "through" => AdpcmMode::Through,
+                    "resample" => AdpcmMode::Resample,
+                    "lpf" => AdpcmMode::Lpf,
+                    _ => return Err("Invalid ADPCM mode".into()),
+                };
+                let asset = if pdx.is_empty() {
+                    None
+                } else {
+                    Some(std::mem::take(&mut pdx))
+                };
+                playback = Some(Playback::with_assets(
+                    &source,
+                    output_rate,
+                    looped,
+                    cursor,
+                    asset,
+                    mode,
+                )?);
                 playback_state(&mut output, playback.as_ref().unwrap())?;
             }
             Command::VoiceTest { mml, voice } => {
@@ -223,5 +272,53 @@ mod tests {
         assert_eq!(output.len(), 14 + 4096);
         assert!(run(io::Cursor::new(b"{\"type\":\"render\"}\n"), Vec::new()).is_err());
         assert!(run(io::Cursor::new(vec![b'x'; 16385]), Vec::new()).is_err());
+    }
+
+    #[test]
+    fn pdx_upload_metadata_and_playback_emit_pcm() {
+        let mut builder = soundlog::mdx::pdx::PdxBuilder::new();
+        builder.set_sample(0, 9, vec![0x7f; 4096]).unwrap();
+        let source = "#pcmfile \"drums\"\nP F2 o1 c4";
+        let commands = [
+            serde_json::json!({ "type": "init", "sampleRate": 48000 }),
+            serde_json::json!({ "type": "playbackInfo", "source": source }),
+            serde_json::json!({ "type": "pdx", "offset": 0, "bytes": builder.finalize().to_bytes() }),
+            serde_json::json!({ "type": "playback", "source": source, "adpcmMode": "through" }),
+            serde_json::json!({ "type": "render" }),
+        ];
+        let input = commands
+            .iter()
+            .map(|command| format!("{command}\n"))
+            .collect::<String>();
+        let mut output = Vec::new();
+        run(io::Cursor::new(input), &mut output).unwrap();
+        assert_eq!(output[9], 5);
+        let length = u32::from_le_bytes(output[10..14].try_into().unwrap()) as usize;
+        let info: serde_json::Value = serde_json::from_slice(&output[14..14 + length]).unwrap();
+        assert_eq!(
+            info,
+            serde_json::json!({ "audio": true, "pdxName": "drums" })
+        );
+        let start = 14 + length + 14 + 5;
+        assert!(
+            output[start..start + 4096]
+                .chunks_exact(4)
+                .any(|sample| f32::from_le_bytes(sample.try_into().unwrap()).abs() > 0.001)
+        );
+        for command in [
+            serde_json::json!({ "type": "pdx", "offset": 1, "bytes": [0] }),
+            serde_json::json!({ "type": "pdx", "offset": 0, "bytes": vec![0; 8193] }),
+            serde_json::json!({ "type": "playback", "source": source, "adpcmMode": "invalid" }),
+        ] {
+            assert!(
+                run(
+                    io::Cursor::new(format!(
+                        "{{\"type\":\"init\",\"sampleRate\":48000}}\n{command}\n"
+                    )),
+                    Vec::new()
+                )
+                .is_err()
+            );
+        }
     }
 }

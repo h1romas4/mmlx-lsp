@@ -40,11 +40,25 @@ suite('Emulation frame protocol', () => {
 			decoder.push(reset.subarray(0, split)); decoder.push(reset.subarray(split)); decoder.push(reset); decoder.finish();
 			assert.deepStrictEqual(received, [4, 4]);
 		}
-		for (const bytes of [[3, 4, 0, 0, 0], [2, 255, 255, 255, 255], [1, 0, 0, 0, 0], [4, 1, 0, 0, 0]]) {
+		for (const bytes of [[3, 4, 0, 0, 0], [2, 255, 255, 255, 255], [1, 0, 0, 0, 0], [4, 1, 0, 0, 0], [5, 0, 0, 0, 0], [5, 1, 0, 1, 0], [6, 1, 0, 0, 0]]) {
 			assert.throws(() => new EmulationFrameDecoder(() => {}).push(new Uint8Array(bytes)));
 		}
 		const decoder = new EmulationFrameDecoder(() => {});
 		decoder.push(new Uint8Array([1, 4, 0, 0, 0, 1]));
 		assert.throws(() => decoder.finish());
+	});
+	test('decodes asset metadata at every frame split', () => {
+		const info = { audio: true, pdxName: 'drums' };
+		const payload = new TextEncoder().encode(JSON.stringify(info));
+		const frame = new Uint8Array(5 + payload.length);
+		frame[0] = 5; new DataView(frame.buffer).setUint32(1, payload.length, true); frame.set(payload, 5);
+		for (let split = 0; split <= frame.length; split++) {
+			let received = false;
+			const decoder = new EmulationFrameDecoder((kind, bytes) => {
+				assert.strictEqual(kind, 5); assert.deepStrictEqual(JSON.parse(new TextDecoder().decode(bytes)), info); received = true;
+			});
+			decoder.push(frame.subarray(0, split)); decoder.push(frame.subarray(split)); decoder.finish();
+			assert.ok(received);
+		}
 	});
 });

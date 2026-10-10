@@ -428,19 +428,20 @@ export class VoiceViewProvider implements WebviewViewProvider {
 			this.playbackId = message.id as number;
 			this.playbackMode = hardware ? 'nanodrive8' : 'emulation';
 			this.playbackState = { playing: false, paused: false, loading: true, position: 0, finished: false, error: '' };
+			const folder = workspace.getWorkspaceFolder(document.uri);
+			const configuration = workspace.getConfiguration('mmlx', folder?.uri);
+			const adpcmMode = configuration.get<NanoDriveAdpcmMode>('build.adpcmMode', 'resample');
+			const configured = configuration.get<string>('build.pdx', '');
+			const loadPdx = async (name: string) => workspace.fs.readFile(configured ? resolveUri(configured, folder) : await findPdx(document.uri, name));
 			if (hardware) {
 				if (typeof message.volume === 'number' && Number.isFinite(message.volume) && message.volume >= 0 && message.volume <= 1) {
 					void this.nanodrive.setVolume(message.volume);
 				}
 				this.playback?.disconnect();
-				const folder = workspace.getWorkspaceFolder(document.uri);
-				const configuration = workspace.getConfiguration('mmlx', folder?.uri);
-				const adpcmMode = configuration.get<NanoDriveAdpcmMode>('build.adpcmMode', 'resample');
-				const configured = configuration.get<string>('build.pdx', '');
-				await this.nanodrive.startPlayback(source, message.looped === true, async name => {
-					return workspace.fs.readFile(configured ? resolveUri(configured, folder) : await findPdx(document.uri, name));
-				}, { adpcmMode, pdxConfigured: configured.length > 0 });
-			} else { await this.playback!.connect(message.sampleRate as number, null, { source, looped: message.looped === true, cursor }); }
+				await this.nanodrive.startPlayback(source, message.looped === true, loadPdx, { adpcmMode, pdxConfigured: configured.length > 0 });
+			} else { await this.playback!.connect(message.sampleRate as number, null, {
+				source, looped: message.looped === true, cursor, adpcmMode, pdxConfigured: configured.length > 0, loadPdx
+			}); }
 		} else if (message.id === this.playbackId) {
 			if (message.action === 'stop' || message.action === 'ended') {
 				this.stopPlayback(message.action === 'stop', typeof message.error === 'string' ? message.error.slice(0, 4096) : '');

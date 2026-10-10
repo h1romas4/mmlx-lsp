@@ -1,9 +1,17 @@
-use super::{audio::Audio, ym2151::Ym2151};
+use super::{
+    audio::Audio,
+    okim6258::{ClockDivider, Okim6258},
+    ym2151::Ym2151,
+};
 use crate::audition::VoiceTestRegisters;
 use mmlx::mdx::frontend::{self, MdxLocation};
-use soundlog::chip::Ym2151Spec;
+use soundlog::chip::{Okim6258Spec, Ym2151Spec};
 use soundlog::mdx::command::MdxCommand;
-use soundlog::mdx::{convert::MdxToVgmOptions, document::MdxDocument, package::MdxPackage};
+use soundlog::mdx::{
+    convert::{AdpcmMode, MdxToVgmOptions},
+    document::MdxDocument,
+    package::MdxPackage,
+};
 use soundlog::vgm::{VgmCallbackStream, command::VgmCommand, stream::StreamResult};
 use std::{cell::RefCell, rc::Rc};
 
@@ -106,9 +114,87 @@ fn next_wait(
     Ok(())
 }
 
+struct Pcm {
+    chip: Okim6258,
+    clock: u32,
+    divider: u32,
+    pan: u8,
+    phase: u64,
+    sample: f32,
+    initialized: bool,
+}
+
+impl Pcm {
+    fn new() -> Self {
+        let mut chip = Okim6258::default();
+        chip.set_divider(ClockDivider::Div512);
+        Self {
+            chip,
+            clock: 8_000_000,
+            divider: 512,
+            pan: 0,
+            phase: 0,
+            sample: 0.0,
+            initialized: false,
+        }
+    }
+
+    fn write(&mut self, spec: Okim6258Spec) {
+        match spec.register {
+            0 => {
+                self.chip.write_control(spec.value);
+                if self.chip.status() != 0 {
+                    self.sample = 0.0;
+                }
+            }
+            1 => self.chip.write_data(spec.value),
+            2 => self.pan = spec.value & 3,
+            8..=11 => {
+                let shift = u32::from(spec.register - 8) * 8;
+                self.clock = (self.clock & !(0xff << shift)) | (u32::from(spec.value) << shift);
+                self.chip.set_clock(self.clock);
+            }
+            12 => {
+                let (divider, value) = match spec.value & 3 {
+                    0 => (ClockDivider::Div1024, 1024),
+                    1 => (ClockDivider::Div768, 768),
+                    _ => (ClockDivider::Div512, 512),
+                };
+                self.phase = self.phase * value / u64::from(self.divider);
+                self.divider = value as u32;
+                self.chip.set_divider(divider);
+            }
+            _ => {}
+        }
+    }
+
+    fn mix(&mut self, stereo: &mut [Vec<f32>], native_rate: u32) {
+        let period = u64::from(self.divider) * u64::from(native_rate);
+        for index in 0..stereo[0].len() {
+            while !self.initialized || self.phase >= period {
+                let mut sample = [0.0];
+                self.chip.render(&mut sample);
+                self.sample = sample[0];
+                if self.initialized {
+                    self.phase -= period;
+                }
+                self.initialized = true;
+            }
+            if self.pan & 1 == 0 {
+                stereo[0][index] += self.sample;
+            }
+            if self.pan & 2 == 0 {
+                stereo[1][index] += self.sample;
+            }
+            self.phase += u64::from(self.clock);
+        }
+    }
+}
+
 pub struct Playback {
     audio: Audio,
     chip: Rc<RefCell<Ym2151>>,
+    pcm: Rc<RefCell<Pcm>>,
     stream: VgmCallbackStream<'static>,
     native_rate: u32,
     pending: usize,
@@ -128,32 +214,88 @@ impl Playback {
         looped: bool,
         cursor: Option<usize>,
     ) -> Result<Self, String> {
-        Self::with_chip(
+        Self::with_assets(
             source,
             sample_rate,
             looped,
             cursor,
-            Rc::new(RefCell::new(Ym2151::default())),
+            None,
+            AdpcmMode::Resample,
         )
     }
 
-    pub(super) fn with_chip(
+    pub fn with_assets(
         source: &str,
         sample_rate: u32,
         looped: bool,
         cursor: Option<usize>,
-        chip: Rc<RefCell<Ym2151>>,
+        pdx: Option<Vec<u8>>,
+        adpcm_mode: AdpcmMode,
     ) -> Result<Self, String> {
-        let parsed = mmlx::mdx::parse(source).map_err(|error| error.to_string())?;
-        let mdx = mmlx::mdx::compile(&parsed).map_err(|error| error.to_string())?;
+        let package = Self::package(source, pdx)?;
+        if package.pdx.is_none()
+            && let Some(name) = package.pdx_name()
+            && package
+                .mdx
+                .tracks
+                .iter()
+                .skip(8)
+                .flatten()
+                .any(|command| matches!(command, MdxCommand::Note(_)))
+        {
+            return Err(format!("PDX file required: {name}"));
+        }
         let options = MdxToVgmOptions {
+            adpcm_mode,
             loop_count: if looped { None } else { Some(1) },
             ..MdxToVgmOptions::default()
         };
         let target = cursor
             .map(|offset| cursor_sample(source, offset, options))
             .transpose()?;
-        Self::with_document(mdx, sample_rate, looped, target, chip, None)
+        Self::with_document(
+            package,
+            sample_rate,
+            options,
+            target,
+            Rc::new(RefCell::new(Ym2151::default())),
+            None,
+        )
+    }
+
+    fn package(source: &str, pdx: Option<Vec<u8>>) -> Result<MdxPackage, String> {
+        let parsed = mmlx::mdx::parse(source).map_err(|error| error.to_string())?;
+        let mdx = mmlx::mdx::compile(&parsed).map_err(|error| error.to_string())?;
+        let audio = mdx
+            .tracks
+            .iter()
+            .skip(8)
+            .flatten()
+            .any(|command| matches!(command, MdxCommand::Note(_)));
+        MdxPackage::parse_owned(
+            mdx.to_bytes().map_err(|error| error.to_string())?,
+            if audio { pdx } else { None },
+        )
+        .map_err(|error| error.to_string())
+    }
+
+    pub fn info(source: &str) -> Result<(bool, Option<String>), String> {
+        let package = Self::package(source, None)?;
+        let audio = package
+            .mdx
+            .tracks
+            .iter()
+            .skip(8)
+            .flatten()
+            .any(|command| matches!(command, MdxCommand::Note(_)));
+        Ok((
+            audio,
+            if audio {
+                package.pdx_name().map(ToOwned::to_owned)
+            } else {
+                None
+            },
+        ))
     }
 
     pub(super) fn voice_test(
@@ -162,24 +304,34 @@ impl Playback {
         chip: Rc<RefCell<Ym2151>>,
         registers: Rc<RefCell<VoiceTestRegisters>>,
     ) -> Result<Self, String> {
-        Self::with_document(mdx, sample_rate, false, None, chip, Some(registers))
+        Self::with_document(
+            MdxPackage { mdx, pdx: None },
+            sample_rate,
+            MdxToVgmOptions {
+                loop_count: Some(1),
+                ..Default::default()
+            },
+            None,
+            chip,
+            Some(registers),
+        )
     }
 
     fn with_document(
-        mdx: MdxDocument,
+        package: MdxPackage,
         sample_rate: u32,
-        looped: bool,
+        options: MdxToVgmOptions,
         target: Option<u64>,
         chip: Rc<RefCell<Ym2151>>,
         registers: Option<Rc<RefCell<VoiceTestRegisters>>>,
     ) -> Result<Self, String> {
-        let options = MdxToVgmOptions {
-            loop_count: if looped { None } else { Some(1) },
-            ..MdxToVgmOptions::default()
-        };
-        let mut stream =
-            VgmCallbackStream::from_generator((MdxPackage { mdx, pdx: None }, options).into());
+        let mut stream = VgmCallbackStream::from_generator((package, options).into());
         let native_rate = chip.borrow().sample_rate();
+        let pcm = Rc::new(RefCell::new(Pcm::new()));
+        let pcm_writes = Rc::clone(&pcm);
+        stream.on_write(move |_instance, spec: Okim6258Spec, _sample, _events| {
+            pcm_writes.borrow_mut().write(spec);
+        });
         let writes = Rc::clone(&chip);
         stream.on_write(move |_instance, spec: Ym2151Spec, _sample, _events| {
             if let Some(registers) = &registers {
@@ -195,6 +347,7 @@ impl Playback {
         let mut playback = Self {
             audio: Audio::new(native_rate, sample_rate)?,
             chip,
+            pcm,
             stream,
             native_rate,
             pending: 0,
@@ -222,7 +375,8 @@ impl Playback {
                 break;
             }
             let count = self.pending.min((target - self.frames).min(1024) as usize);
-            self.chip.borrow_mut().generate(count);
+            let mut chunk = self.chip.borrow_mut().generate(count);
+            self.pcm.borrow_mut().mix(&mut chunk, self.native_rate);
             self.pending -= count;
             self.frames += count as u64;
         }
@@ -244,6 +398,7 @@ impl Playback {
         let Self {
             audio,
             chip,
+            pcm,
             stream,
             native_rate,
             pending,
@@ -262,7 +417,8 @@ impl Playback {
                     break;
                 }
                 let chunk_frames = (*pending).min(count - stereo[0].len());
-                let chunk = chip.borrow_mut().generate(chunk_frames);
+                let mut chunk = chip.borrow_mut().generate(chunk_frames);
+                pcm.borrow_mut().mix(&mut chunk, *native_rate);
                 for (channel, samples) in stereo.iter_mut().zip(chunk) {
                     channel.extend(samples);
                 }
@@ -279,6 +435,177 @@ mod tests {
     use super::*;
 
     pub const SOURCE: &str = "@1 = {\n31,0,0,15,0,32,0,1,0,0,0,\n31,0,0,15,0,32,0,1,0,0,0,\n31,0,0,15,0,32,0,1,0,0,0,\n31,0,0,15,0,32,0,1,0,0,0,\n7,0,15\n}\nA t120 @1 o4 l8 cdef\n";
+
+    #[test]
+    fn pcm_mix_obeys_clock_divider_pan_and_stop() {
+        for (pan, left, right) in [
+            (0, true, true),
+            (1, false, true),
+            (2, true, false),
+            (3, false, false),
+        ] {
+            let mut pcm = Pcm::new();
+            for (register, value) in [(0, 2), (1, 0x21), (2, pan)] {
+                pcm.write(Okim6258Spec { register, value });
+            }
+            let mut stereo = vec![vec![0.0; 8], vec![0.0; 8]];
+            pcm.mix(&mut stereo, 62500);
+            assert_eq!(stereo[0][0], if left { 64.0 / 32768.0 } else { 0.0 });
+            assert_eq!(stereo[1][4], if right { 224.0 / 32768.0 } else { 0.0 });
+            assert_eq!(stereo[0][3], if left { 64.0 / 32768.0 } else { 0.0 });
+            assert_eq!(stereo[1][3], if right { 64.0 / 32768.0 } else { 0.0 });
+            assert_eq!(stereo[0][7], if left { 224.0 / 32768.0 } else { 0.0 });
+            pcm.write(Okim6258Spec {
+                register: 0,
+                value: 1,
+            });
+            let mut stopped = vec![vec![0.0; 1], vec![0.0; 1]];
+            pcm.mix(&mut stopped, 62500);
+            assert_eq!(stopped, vec![vec![0.0], vec![0.0]]);
+        }
+        let mut pcm = Pcm::new();
+        pcm.write(Okim6258Spec {
+            register: 12,
+            value: 0,
+        });
+        for (register, value) in (8..=11).zip(4_000_000_u32.to_le_bytes()) {
+            pcm.write(Okim6258Spec { register, value });
+        }
+        pcm.write(Okim6258Spec {
+            register: 0,
+            value: 2,
+        });
+        pcm.write(Okim6258Spec {
+            register: 1,
+            value: 0x21,
+        });
+        let mut stereo = vec![vec![0.0; 17], vec![0.0; 17]];
+        pcm.mix(&mut stereo, 62500);
+        assert!(
+            stereo[0][..16]
+                .iter()
+                .all(|sample| *sample == 64.0 / 32768.0)
+        );
+        assert_eq!(stereo[0][16], 224.0 / 32768.0);
+    }
+
+    #[test]
+    fn pdx_playback_produces_pcm_and_applies_mml_pan() {
+        let mut builder = soundlog::mdx::pdx::PdxBuilder::new();
+        builder.set_sample(0, 9, vec![0x7f; 4096]).unwrap();
+        let pdx = builder.finalize().to_bytes();
+        for (pan, left, right) in [
+            (1, false, true),
+            (2, true, false),
+            (3, true, true),
+            (0, false, false),
+        ] {
+            let source = format!("#pcmfile \"drums\"\nP p{pan} F2 o1 c4");
+            assert_eq!(
+                Playback::info(&source).unwrap(),
+                (true, Some("drums".into()))
+            );
+            let mut playback = Playback::with_assets(
+                &source,
+                48000,
+                false,
+                None,
+                Some(pdx.clone()),
+                AdpcmMode::Through,
+            )
+            .unwrap();
+            let mut energy = [0.0_f32; 2];
+            for _ in 0..100 {
+                let bytes = playback.render().unwrap();
+                for frame in bytes.chunks_exact(8) {
+                    energy[0] += f32::from_le_bytes(frame[..4].try_into().unwrap()).abs();
+                    energy[1] += f32::from_le_bytes(frame[4..].try_into().unwrap()).abs();
+                }
+                if playback.finished() {
+                    break;
+                }
+            }
+            assert!(playback.finished());
+            assert_eq!(energy[0] > 1.0, left, "pan={pan}: {energy:?}");
+            assert_eq!(energy[1] > 1.0, right, "pan={pan}: {energy:?}");
+        }
+        let mut fm = Playback::new(SOURCE, 48000, false).unwrap();
+        let mut mixed = Playback::with_assets(
+            &format!("{SOURCE}P F2 o1 c4"),
+            48000,
+            false,
+            None,
+            Some(pdx.clone()),
+            AdpcmMode::Resample,
+        )
+        .unwrap();
+        assert_ne!(fm.render().unwrap(), mixed.render().unwrap());
+        let mut looped = Playback::with_assets(
+            "P t120 F2 o1 l32 L c",
+            48000,
+            true,
+            None,
+            Some(pdx),
+            AdpcmMode::Resample,
+        )
+        .unwrap();
+        for _ in 0..80 {
+            looped.render().unwrap();
+        }
+        assert!(!looped.finished());
+        assert!(looped.position() > 0.5);
+    }
+
+    #[test]
+    fn pcm_cursor_and_processing_modes_preserve_playback_state() {
+        let mut builder = soundlog::mdx::pdx::PdxBuilder::new();
+        builder.set_sample(0, 9, vec![0x7f; 8192]).unwrap();
+        builder.set_sample(0, 11, vec![0x7f; 8192]).unwrap();
+        let pdx = builder.finalize().to_bytes();
+        let source = "P t120 F2 o1 l8 c d";
+        let cursor = source.rfind('d').unwrap();
+        let options = MdxToVgmOptions {
+            adpcm_mode: AdpcmMode::Through,
+            loop_count: Some(1),
+            ..Default::default()
+        };
+        let target = cursor_sample(source, cursor, options).unwrap();
+        let mut reference = Playback::with_assets(
+            source,
+            48000,
+            false,
+            None,
+            Some(pdx.clone()),
+            AdpcmMode::Through,
+        )
+        .unwrap();
+        reference.advance_to(target).unwrap();
+        let mut playback = Playback::with_assets(
+            source,
+            48000,
+            false,
+            Some(cursor),
+            Some(pdx.clone()),
+            AdpcmMode::Through,
+        )
+        .unwrap();
+        assert!((0.24..0.26).contains(&playback.position()));
+        assert_eq!(playback.render().unwrap(), reference.render().unwrap());
+        let mut outputs = Vec::new();
+        for mode in [AdpcmMode::Through, AdpcmMode::Resample, AdpcmMode::Lpf] {
+            let mut playback =
+                Playback::with_assets("P F2 o1 c4", 48000, false, None, Some(pdx.clone()), mode)
+                    .unwrap();
+            let mut output = Vec::new();
+            for _ in 0..16 {
+                output.extend(playback.render().unwrap());
+            }
+            assert!(output.iter().any(|byte| *byte != 0));
+            outputs.push(output);
+        }
+        assert!(outputs[0] != outputs[2], "Through and LPF must differ");
+        assert!(outputs[1] != outputs[2], "Resample and LPF must differ");
+    }
 
     #[test]
     fn cursor_marker_reports_the_command_time() {

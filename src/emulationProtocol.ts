@@ -5,7 +5,8 @@ export class EmulationFrameDecoder {
 	private payloadOffset = 0;
 	constructor(private readonly onFrame: (kind: number, bytes: Uint8Array) => void,
 		private readonly valid = (kind: number, length: number) => (kind === 1 && length === 4)
-			|| (kind === 2 && length === 4096) || (kind === 3 && length === 9) || (kind === 4 && length === 0)) {}
+			|| (kind === 2 && length === 4096) || (kind === 3 && length === 9) || (kind === 4 && length === 0)
+			|| (kind === 5 && length > 0 && length <= 65536)) {}
 
 	push(data: Uint8Array): void {
 		let offset = 0;

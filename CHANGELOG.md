@@ -2,6 +2,10 @@
 
 All notable changes to the "mmlx-lsp" extension will be documented in this file.
 
+## [Unreleased]
+
+- Add OKIM6258 ADPCM to Emulation Playback, including PDX loading, clock/divider changes, pan and ADPCM processing settings.
+
 ## [0.13.0] - 2026-10-09
 
 - Use a 4 MHz FM Voice clock on Emulation and NanoDrive8 so MML, keyboard and MIDI audition stay in tune.

@@ -27,7 +27,10 @@ export class EmulationSession {
 		private readonly onPlayback: (progress: PlaybackProgress) => void = () => {},
 		private readonly onVoiceTest: (playing: boolean, error: boolean) => void = () => {}) {}
 
-	async connect(sampleRate: number, voice: unknown = null, playback?: { source: string; looped: boolean; cursor?: number }): Promise<void> {
+	async connect(sampleRate: number, voice: unknown = null, playback?: {
+		source: string; looped: boolean; cursor?: number; adpcmMode?: 'through' | 'resample' | 'lpf';
+		pdxConfigured?: boolean; loadPdx?: (name: string) => Promise<Uint8Array>;
+	}): Promise<void> {
 		this.stop();
 		const generation = this.generation;
 		this.onState({ connected: false, connecting: true, error: '' });
@@ -50,6 +53,7 @@ export class EmulationSession {
 			let resolveReady!: () => void;
 			let rejectReady!: (error: Error) => void;
 			let ready = false;
+			let assetsRequested = false;
 			const initialized = new Promise<void>((resolve, reject) => { resolveReady = resolve; rejectReady = reject; });
 			const timer = setTimeout(() => rejectReady(new Error('Emulator startup timed out.')), 15000);
 			this.cancelReady = () => { clearTimeout(timer); resolveReady(); };
@@ -60,6 +64,23 @@ export class EmulationSession {
 					if (ready || new DataView(bytes.buffer).getUint32(0, true) !== sampleRate) { throw new Error('Invalid emulator initialization.'); }
 					ready = true;
 					if (!playback) { clearTimeout(timer); resolveReady(); }
+				} else if (kind === 5) {
+					const info = JSON.parse(new TextDecoder().decode(bytes)) as { audio?: unknown; pdxName?: unknown };
+					if (!ready || !playback?.loadPdx || assetsRequested || typeof info.audio !== 'boolean'
+						|| (info.pdxName !== null && typeof info.pdxName !== 'string')) { throw new Error('Invalid playback assets.'); }
+					assetsRequested = true;
+					void (async () => {
+						if (info.audio && (info.pdxName || playback.pdxConfigured)) {
+							const bytes = await playback.loadPdx!(typeof info.pdxName === 'string' ? info.pdxName : '');
+							if (bytes.length > 16 * 1024 * 1024) { throw new Error('PDX is too large (maximum 16 MiB).'); }
+							for (let offset = 0; offset < bytes.length; offset += 8192) {
+								if (generation !== this.generation) { return; }
+								await this.command({ type: 'pdx', offset, bytes: Array.from(bytes.subarray(offset, offset + 8192)) });
+								if (generation !== this.generation) { return; }
+							}
+						}
+						if (generation === this.generation) { await this.command({ type: 'playback', ...playback }); }
+					})().catch(fail);
 				} else if (kind === 4) {
 					if (!ready || !this.resetReady) { throw new Error('Unexpected emulator reset.'); }
 					this.setVoiceTesting(false);
@@ -93,7 +114,7 @@ export class EmulationSession {
 				fail(new Error(stderr.trim() || `Emulator exited (${code}).`));
 			}, fail);
 			this.command({ type: 'init', sampleRate });
-			if (playback) { this.command({ type: 'playback', ...playback }); }
+			if (playback) { this.command(playback.loadPdx ? { type: 'playbackInfo', source: playback.source } : { type: 'playback', ...playback }); }
 			else { this.setVoice(voice); }
 			await initialized;
 			if (generation !== this.generation) { return; }
@@ -150,10 +171,10 @@ export class EmulationSession {
 		}
 	}
 
-	private command(command: object): void {
+	private command(command: object): Promise<void> {
 		const process = this.process;
-		if (!process) { return; }
-		if (this.queued >= 256) { this.disconnect('Emulator command queue overflow.'); return; }
+		if (!process) { return Promise.resolve(); }
+		if (this.queued >= 256) { this.disconnect('Emulator command queue overflow.'); return Promise.resolve(); }
 		this.queued++;
 		this.writes = this.writes.then(async () => {
 			if (this.process !== process) { return; }
@@ -162,6 +183,7 @@ export class EmulationSession {
 		}).catch(error => {
 			if (this.process === process) { this.disconnect(error instanceof Error ? error.message : String(error)); }
 		});
+		return this.writes;
 	}
 
 	private stop(): void {

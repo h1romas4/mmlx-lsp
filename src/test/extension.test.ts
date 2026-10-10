@@ -811,7 +811,7 @@ suite('mmlx extension', () => {
 		} finally { controls.render(null); }
 	});
 
-	test('Playback WASI compiles large MML and streams FM audio with position and completion', async function () {
+	test('Playback WASI compiles large MML and streams FM and PCM audio with position and completion', async function () {
 		this.timeout(20000);
 		const extension = vscode.extensions.all.find(extension => extension.packageJSON.name === 'mmlx-lsp');
 		assert.ok(extension);
@@ -820,9 +820,15 @@ suite('mmlx extension', () => {
 		let progress: PlaybackProgress = { position: 0, finished: false };
 		let blocks = 0;
 		let energy = 0;
+		let channelEnergy = [0, 0];
 		const positions: number[] = [];
 		const session = new EmulationSession(extension.extensionUri, await Wasm.load(), value => { state = value; },
-			pcm => { blocks++; energy += new Float32Array(pcm).reduce((total, sample) => total + Math.abs(sample), 0); changed.fire(); },
+			pcm => {
+				blocks++; const samples = new Float32Array(pcm);
+				energy += samples.reduce((total, sample) => total + Math.abs(sample), 0);
+				for (let index = 0; index < samples.length; index++) { channelEnergy[index % 2] += Math.abs(samples[index]); }
+				changed.fire();
+			},
 			value => { progress = value; positions.push(value.position); changed.fire(); });
 		async function render(): Promise<void> {
 			const target = blocks + 4;
@@ -860,6 +866,32 @@ suite('mmlx extension', () => {
 			await session.connect(44100, null, { source: playbackSource, looped: false });
 			assert.ok(state?.connected, state?.error);
 			await render();
+			const pdx = new Uint8Array(768 + 17000);
+			const table = new DataView(pdx.buffer);
+			table.setUint32(9 * 8, 768); table.setUint32(9 * 8 + 4, 17000); pdx.fill(0x7f, 768);
+			const pcmSource = '#pcmfile "drums"\nP p1 F2 o1 c4';
+			const loaded: string[] = [];
+			await session.connect(48000, null, { source: pcmSource, looped: false, adpcmMode: 'through',
+				loadPdx: async name => { loaded.push(name); return pdx; } });
+			assert.ok(state?.connected, state?.error);
+			assert.deepStrictEqual(loaded, ['drums']);
+			channelEnergy = [0, 0]; await render();
+			assert.strictEqual(channelEnergy[0], 0); assert.ok(channelEnergy[1] > 1, 'Right-panned PCM is audible');
+			await session.connect(48000, null, { source: pcmSource, looped: false,
+				loadPdx: async () => { throw new Error('PDX missing'); } });
+			assert.strictEqual(state?.connected, false); assert.match(state?.error ?? '', /PDX missing/);
+			await session.connect(48000, null, { source: 'P F2 o1 c4', looped: false, pdxConfigured: true,
+				loadPdx: async name => { assert.strictEqual(name, ''); return pdx; } });
+			assert.ok(state?.connected, state?.error); await render();
+			let releasePdx!: (bytes: Uint8Array) => void;
+			let loadingPdx!: () => void;
+			const delayed = new Promise<Uint8Array>(resolve => { releasePdx = resolve; });
+			const started = new Promise<void>(resolve => { loadingPdx = resolve; });
+			const canceled = session.connect(48000, null, { source: pcmSource, looped: false,
+				loadPdx: async () => { loadingPdx(); return delayed; } });
+			await started; session.disconnect(); await canceled;
+			releasePdx(pdx); await new Promise<void>(resolve => setImmediate(resolve));
+			assert.strictEqual(state?.connected, false, 'A canceled PDX load cannot restart playback');
 		} finally { session.dispose(); changed.dispose(); }
 	});
 
@@ -895,7 +927,7 @@ suite('mmlx extension', () => {
 		try {
 			await provider.resolveWebviewView(view);
 			assert.strictEqual(state.available, true);
-			assert.ok(view.webview.html.includes('OKI ADPCM is not supported yet'));
+			assert.ok(!view.webview.html.includes('OKI ADPCM is not supported yet'));
 			messages.fire({ type: 'playbackAction', action: 'play', id: 1, document: document.uri.toString(), sampleRate: 48000 });
 			await until(() => state.playing === true);
 			assert.ok(view.badge?.tooltip.includes('Playback'));
