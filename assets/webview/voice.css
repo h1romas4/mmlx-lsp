@@ -48,7 +48,14 @@ h1.empty { font-size: inherit; font-weight: 400; }
 .playback-header { padding: 6px 0 16px; }
 .playback-identity { flex: 1 1 180px; min-width: 0; }
 #playback-source { font-size: 16px; overflow-wrap: anywhere; }
-.playback-transport { display: flex; align-items: center; flex-wrap: wrap; gap: 10px; max-width: 480px; padding: 14px; margin-bottom: 14px; border: 1px solid var(--vscode-widget-border, var(--vscode-panel-border, #d7dce1)); border-radius: 8px; background: var(--playback-surface); color: var(--playback-foreground); }
+#playback-controls { --channel-key-width: 14px; --playback-width: calc(52 * var(--channel-key-width) + 142px); }
+.playback-dashboard, .playback-channels { width: 100%; max-width: var(--playback-width); }
+.playback-dashboard { display: flex; flex-wrap: wrap; align-items: stretch; gap: 12px; margin-bottom: 14px; }
+.playback-transport { display: flex; align-items: center; align-content: center; flex-wrap: wrap; gap: 10px; flex: 1 1 300px; max-width: 400px; min-width: 0; padding: 14px; border: 1px solid var(--vscode-widget-border, var(--vscode-panel-border, #d7dce1)); border-radius: 8px; background: var(--playback-surface); color: var(--playback-foreground); }
+.playback-monitors { flex: 1 1 240px; min-width: 0; }
+.playback-monitors .audio-monitor { height: 100%; }
+.playback-monitors .audio-monitor figcaption { color: #f0bc67; }
+.playback-monitors .audio-monitor canvas { height: 132px; }
 .transport-button { width: 32px; height: 32px; flex: 0 0 32px; display: grid; place-items: center; border: 1px solid var(--vscode-input-border, #ccc); border-radius: 6px; background: transparent; color: var(--vscode-editor-foreground, #292929); cursor: pointer; transition: background-color 120ms ease; }
 .transport-button::before, .playback-volume span { content: ''; display: block; width: 16px; height: 16px; background: currentColor; mask: url('play.svg') center / contain no-repeat; }
 .transport-play, .transport-stop { width: 44px; height: 44px; flex-basis: 44px; }
@@ -85,7 +92,7 @@ h1.empty { font-size: inherit; font-weight: 400; }
 .playback-volume input { width: 100%; padding: 0; border: 0; background: transparent; accent-color: var(--op1); }
 .playback-note { margin: 4px 0; padding: 3px 0 3px 10px; border-left: 2px solid var(--op4); color: var(--vscode-descriptionForeground, #666); font-size: 12px; overflow-wrap: anywhere; }
 #playback-error { color: var(--vscode-errorForeground, #b42318); overflow-wrap: anywhere; }
-.playback-channels { --channel-accent: var(--op1); --channel-key-width: 14px; width: 100%; max-width: calc(52 * var(--channel-key-width) + 142px); margin: 18px 0; padding: 10px 14px; border: 1px solid var(--vscode-widget-border, var(--vscode-panel-border, #d7dce1)); border-radius: 8px; background: var(--playback-surface); color: var(--playback-foreground); }
+.playback-channels { --channel-accent: var(--op1); margin: 18px 0; padding: 10px 14px; border: 1px solid var(--vscode-widget-border, var(--vscode-panel-border, #d7dce1)); border-radius: 8px; background: var(--playback-surface); color: var(--playback-foreground); }
 .playback-channel { display: grid; grid-template-columns: 102px minmax(0, 1fr); align-items: center; gap: 8px; height: 46px; padding: 4px 0; border-bottom: 1px solid var(--vscode-panel-border, #ddd); }
 .playback-channel:last-child { border-bottom: 0; }
 .playback-channel-pcm { --channel-accent: var(--op3); margin-top: 8px; border-top: 1px solid var(--vscode-panel-border, #ddd); }
@@ -263,7 +270,7 @@ dd select { display: block; width: 100%; padding: 2px; }
 .monitor-settings select { width: 48px; height: 20px; padding: 0 2px; border-color: #3c5046; background: #19221e; color: #c5ddd0; font-size: 10px; }
 .monitor-settings span { white-space: nowrap; }
 .audio-monitor canvas { display: block; width: 100%; height: 164px; }
-.audio-monitors[data-state="disconnected"] canvas { opacity: .55; }
+.audio-monitors[data-state="disconnected"] canvas, .playback-monitors[data-state="disconnected"] canvas { opacity: .55; }
 .p-keyboard { margin: 15px 0 0; }
 .p-keyboard__body { display: flex; align-items: stretch; gap: 8px; margin: 12px 0; }
 .p-keyboard__wrapper {

@@ -18,6 +18,7 @@ const playbackAudio = createEmulationAudio(
 	blocks => vscode.postMessage({ type: 'playbackRender', id: playbackId, blocks }),
 	error => {
 		playbackOperation++; playbackAudio.disconnect();
+		playbackMonitors.setConnected(false);
 		vscode.postMessage({ type: 'playbackAction', action: 'stop', id: playbackId, error });
 		playbackState = { ...playbackState, playing: false, paused: false, loading: false, error };
 		playbackControls.render(playbackState);
@@ -40,6 +41,7 @@ const emulationAudio = createEmulationAudio(
 		vscode.postMessage({ type: 'setOutputConnection', target: 'keyboard', id: outputId, mode: 'emulation', connected: false });
 	});
 const audioMonitors = createAudioMonitors(document.getElementById('audio-monitors'), () => emulationAudio.readAnalysis(), () => saveState());
+const playbackMonitors = createAudioMonitors(document.getElementById('playback-monitors'), () => playbackAudio.readAnalysis());
 const voiceControls = createVoiceControls(document.getElementById('voice-controls'), message => vscode.postMessage(message));
 const playbackControls = createPlaybackControls(document.getElementById('playback-controls'), mode => {
 	playbackMode = mode;
@@ -145,7 +147,7 @@ function sendPlaybackVolume() {
 
 async function playbackAction(action) {
 	if (action === 'stop') {
-		playbackOperation++; playbackAudio.disconnect();
+		playbackOperation++; playbackAudio.disconnect(); playbackMonitors.setConnected(false);
 		vscode.postMessage({ type: 'playbackAction', action, id: playbackId });
 		playbackState = { ...playbackState, playing: false, paused: false, loading: false, position: 0, error: '' };
 		playbackControls.render(playbackState); return;
@@ -169,6 +171,7 @@ async function playbackAction(action) {
 	} catch (error) {
 		if (operation !== playbackOperation) { return; }
 		playbackAudio.disconnect();
+		playbackMonitors.setConnected(false);
 		vscode.postMessage({ type: 'playbackAction', action: 'stop', id: playbackId, error: String(error) });
 		playbackState = { ...playbackState, playing: false, paused: false, loading: false, error: String(error) };
 		playbackControls.render(playbackState);
@@ -210,7 +213,7 @@ window.addEventListener('message', event => {
 				if (update.type === 'ready') {
 					playbackOrigin = update.position;
 					playbackState = { ...playbackState, playing: true, paused: false, loading: false, position: update.position };
-					playbackControls.render(playbackState); playbackAudio.start();
+					playbackControls.render(playbackState); playbackAudio.start(); playbackMonitors.setConnected(true);
 					vscode.postMessage({ type: 'browserPlaybackState', id, ready: true, position: update.position, finished: false });
 				} else if (update.type === 'progress') {
 					vscode.postMessage({ type: 'browserPlaybackState', id, position: update.position, finished: update.finished });
@@ -218,6 +221,7 @@ window.addEventListener('message', event => {
 				else if (update.type === 'asset') { vscode.postMessage({ type: 'browserPlaybackAsset', id, name: update.name }); }
 				else if (update.type === 'error') {
 					playbackAudio.disconnect();
+					playbackMonitors.setConnected(false);
 					vscode.postMessage({ type: 'playbackAction', action: 'stop', id, error: update.error });
 					playbackState = { ...playbackState, playing: false, paused: false, loading: false, error: update.error };
 					playbackControls.render(playbackState);
@@ -225,6 +229,7 @@ window.addEventListener('message', event => {
 			}).catch(error => {
 				if (id === playbackId) {
 					playbackAudio.disconnect();
+					playbackMonitors.setConnected(false);
 					vscode.postMessage({ type: 'playbackAction', action: 'stop', id, error: String(error) });
 				}
 			});
@@ -255,6 +260,7 @@ window.addEventListener('message', event => {
 		if (message.mode === 'nanodrive8') { playbackAudio.disconnect(); }
 		else if (message.playing) { playbackAudio.start(); if (message.finished) { playbackAudio.finish(); } }
 		else if (!message.paused && !message.loading) { playbackAudio.disconnect(); }
+		playbackMonitors.setConnected(message.mode !== 'nanodrive8' && (message.playing || message.paused));
 	} else if (message?.type === 'playbackKeys' && message.id === playbackId && message.mode === playbackMode) {
 		playbackControls.enqueueKeys(message.keys);
 	} else if (message?.type === 'nanoDrivePlayback') {
@@ -296,7 +302,7 @@ window.addEventListener('message', event => {
 		if (message.type === 'midiSettings') { keyboardControls.setMidiState(message); }
 	}
 });
-window.addEventListener('pagehide', () => { audioMonitors.dispose(); emulationAudio.disconnect(); playbackAudio.disconnect(); });
+window.addEventListener('pagehide', () => { audioMonitors.dispose(); playbackMonitors.dispose(); emulationAudio.disconnect(); playbackAudio.disconnect(); });
 voiceControls.render(snapshot);
 keyboardControls.setVoiceAvailable(!!snapshot.voice && !snapshot.error);
 keyboardControls.setTestMml(saved?.voiceTestMml);

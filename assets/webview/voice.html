@@ -48,8 +48,8 @@
 					<canvas id="oscilloscope" role="img" aria-label="Audio waveform synchronized to the reference note"></canvas>
 				</figure>
 				<figure class="audio-monitor">
-					<figcaption><span>Spectrum</span><span id="spectrum-state">Disconnected</span></figcaption>
-					<canvas id="spectrum" role="img" aria-label="Audio spectrum, logarithmic frequency in Hz and amplitude in dB"></canvas>
+					<figcaption><span>Spectrum</span><span id="spectrum-state" data-spectrum-state>Disconnected</span></figcaption>
+					<canvas id="spectrum" data-spectrum role="img" aria-label="Audio spectrum, logarithmic frequency in Hz and amplitude in dB"></canvas>
 				</figure>
 			</div>
 			<details id="keyboard" class="p-keyboard is-disconnected" aria-labelledby="keyboard-heading" open>
@@ -83,6 +83,7 @@
 					</select></label>
 				</div>
 			</header>
+			<div class="playback-dashboard">
 			<div class="playback-transport" role="group" aria-label="Playback transport">
 				<button id="playback-play" class="transport-button transport-play" type="button" title="Play" aria-label="Play" disabled></button>
 				<button id="playback-cursor" class="transport-button transport-play transport-cursor" type="button" title="Play from cursor" aria-label="Play from cursor" disabled></button>
@@ -90,6 +91,13 @@
 				<button id="playback-loop" class="transport-button transport-loop" type="button" title="Follow MML loop points" aria-label="Follow MML loop points" aria-pressed="false" disabled></button>
 				<div class="playback-clock"><span id="playback-time">0:00</span><span id="playback-message" role="status">Unavailable</span></div>
 				<label class="playback-volume" title="Volume"><span aria-hidden="true"></span><input id="playback-volume" type="range" min="0" max="100" step="1" value="100" aria-label="Playback volume" disabled></label>
+			</div>
+			<div id="playback-monitors" class="playback-monitors" role="group" aria-label="Playback spectrum" data-state="disconnected">
+				<figure class="audio-monitor">
+					<figcaption><span>Spectrum</span><span data-spectrum-state>Disconnected</span></figcaption>
+					<canvas id="playback-spectrum" data-spectrum role="img" aria-label="Playback audio spectrum, logarithmic frequency in Hz and amplitude in dB"></canvas>
+				</figure>
+			</div>
 			</div>
 			<div id="playback-channels" class="playback-channels" role="group" aria-label="Playback channels"></div>
 			<p id="playback-error" role="alert" hidden></p>

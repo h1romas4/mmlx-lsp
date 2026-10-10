@@ -44,11 +44,11 @@ export function findScopeStart(samples, period, span, previous) {
 
 export function createAudioMonitors(root, readAnalysis, onGainChange = () => {}) {
 	const scopeCanvas = root.querySelector('#oscilloscope');
-	const spectrumCanvas = root.querySelector('#spectrum');
+	const spectrumCanvas = root.querySelector('[data-spectrum]');
 	const referenceLabel = root.querySelector('#scope-reference');
-	const stateLabel = root.querySelector('#spectrum-state');
+	const stateLabel = root.querySelector('[data-spectrum-state]');
 	const gainInput = root.querySelector('#scope-gain');
-	const scopeContext = scopeCanvas.getContext('2d');
+	const scopeContext = scopeCanvas?.getContext('2d');
 	const spectrumContext = spectrumCanvas.getContext('2d');
 	const held = new Map();
 	const reference = new Float32Array(128);
@@ -105,35 +105,37 @@ export function createAudioMonitors(root, readAnalysis, onGainChange = () => {})
 		return plot;
 	}
 	function paint() {
-		if (!visible() || !scopeContext || !spectrumContext) { return; }
+		if (!visible() || !spectrumContext) { return; }
 		const data = connected ? readAnalysis() : null;
 		const period = data ? data.sampleRate / noteFrequency(note) : 0;
 		const span = data ? Math.min(period * 2, data.samples.length - 3) : 0;
 		const duration = data ? span * 1000 / data.sampleRate : 2000 / noteFrequency(note);
-		const scopePlot = grid(scopeCanvas, scopeContext, false, 20000, duration);
+		const scopePlot = scopeContext ? grid(scopeCanvas, scopeContext, false, 20000, duration) : null;
 		const maximum = data ? Math.min(20000, data.sampleRate / 2) : 20000;
 		const spectrumPlot = grid(spectrumCanvas, spectrumContext, true, maximum);
-		referenceLabel.textContent = connected ? `${['C', 'C#', 'D', 'D#', 'E', 'F', 'F#', 'G', 'G#', 'A', 'A#', 'B'][note % 12]}${Math.floor(note / 12) - 1} / ${noteFrequency(note).toFixed(1)} Hz` : '-';
+		if (referenceLabel) { referenceLabel.textContent = connected ? `${['C', 'C#', 'D', 'D#', 'E', 'F', 'F#', 'G', 'G#', 'A', 'A#', 'B'][note % 12]}${Math.floor(note / 12) - 1} / ${noteFrequency(note).toFixed(1)} Hz` : '-'; }
 		let peak = 0;
 		if (data) {
-			for (let index = data.samples.length - Math.ceil(span) - 2; index < data.samples.length; index++) { peak = Math.max(peak, Math.abs(data.samples[index])); }
+			for (let index = scopePlot ? data.samples.length - Math.ceil(span) - 2 : 0; index < data.samples.length; index++) { peak = Math.max(peak, Math.abs(data.samples[index])); }
 			const active = peak > .0001;
-			const start = active ? findScopeStart(data.samples, period, span, previous) : 0;
-			scopeContext.save(); scopeContext.beginPath(); scopeContext.rect(scopePlot.left, scopePlot.top, scopePlot.width, scopePlot.height); scopeContext.clip();
-			scopeContext.strokeStyle = active ? '#6de0b2' : '#416052'; scopeContext.lineWidth = 1.5;
-			scopeContext.beginPath();
-			const points = Math.max(2, Math.ceil(scopePlot.width * 2));
-			for (let index = 0; index <= points; index++) {
-				const value = active ? sampleAt(data.samples, start + span * index / points) : 0;
-				const horizontal = scopePlot.left + scopePlot.width * index / points;
-				const vertical = scopePlot.top + scopePlot.height * (1 - value * gain) / 2;
-				if (index === 0) { scopeContext.moveTo(horizontal, vertical); } else { scopeContext.lineTo(horizontal, vertical); }
+			if (scopePlot) {
+				const start = active ? findScopeStart(data.samples, period, span, previous) : 0;
+				scopeContext.save(); scopeContext.beginPath(); scopeContext.rect(scopePlot.left, scopePlot.top, scopePlot.width, scopePlot.height); scopeContext.clip();
+				scopeContext.strokeStyle = active ? '#6de0b2' : '#416052'; scopeContext.lineWidth = 1.5;
+				scopeContext.beginPath();
+				const points = Math.max(2, Math.ceil(scopePlot.width * 2));
+				for (let index = 0; index <= points; index++) {
+					const value = active ? sampleAt(data.samples, start + span * index / points) : 0;
+					const horizontal = scopePlot.left + scopePlot.width * index / points;
+					const vertical = scopePlot.top + scopePlot.height * (1 - value * gain) / 2;
+					if (index === 0) { scopeContext.moveTo(horizontal, vertical); } else { scopeContext.lineTo(horizontal, vertical); }
+				}
+				scopeContext.stroke(); scopeContext.restore();
+				if (active) {
+					for (let index = 0; index < reference.length; index++) { reference[index] = sampleAt(data.samples, start + span * index / (reference.length - 1)); }
+					previous = reference;
+				} else { previous = undefined; }
 			}
-			scopeContext.stroke(); scopeContext.restore();
-			if (active) {
-				for (let index = 0; index < reference.length; index++) { reference[index] = sampleAt(data.samples, start + span * index / (reference.length - 1)); }
-				previous = reference;
-			} else { previous = undefined; }
 			spectrumContext.save(); spectrumContext.beginPath(); spectrumContext.rect(spectrumPlot.left, spectrumPlot.top, spectrumPlot.width, spectrumPlot.height); spectrumContext.clip();
 			const binWidth = data.sampleRate / (data.decibels.length * 2);
 			spectrumContext.beginPath(); spectrumContext.moveTo(spectrumPlot.left, spectrumPlot.bottom);
@@ -150,7 +152,7 @@ export function createAudioMonitors(root, readAnalysis, onGainChange = () => {})
 			spectrumContext.strokeStyle = '#f0bc67'; spectrumContext.lineWidth = 1.5; spectrumContext.stroke();
 			spectrumContext.lineTo(spectrumPlot.right, spectrumPlot.bottom); spectrumContext.closePath(); spectrumContext.fillStyle = '#f0bc6718'; spectrumContext.fill();
 			const frequency = noteFrequency(note);
-			if (frequency >= 20 && frequency <= maximum) {
+			if (referenceLabel && frequency >= 20 && frequency <= maximum) {
 				const horizontal = spectrumPlot.left + spectrumPlot.width * Math.log(frequency / 20) / Math.log(maximum / 20);
 				spectrumContext.setLineDash([3, 4]); spectrumContext.strokeStyle = '#6de0b2';
 				spectrumContext.beginPath(); spectrumContext.moveTo(horizontal, spectrumPlot.top); spectrumContext.lineTo(horizontal, spectrumPlot.bottom); spectrumContext.stroke();
@@ -178,11 +180,11 @@ export function createAudioMonitors(root, readAnalysis, onGainChange = () => {})
 		const next = [...held.values()].at(-1);
 		if (next !== undefined && next !== note) { note = next; previous = undefined; }
 	}
-	function setGain(value) { gain = [1, 4, 16].includes(Number(value)) ? Number(value) : 4; gainInput.value = String(gain); refresh(); }
+	function setGain(value) { gain = [1, 4, 16].includes(Number(value)) ? Number(value) : 4; if (gainInput) { gainInput.value = String(gain); } refresh(); }
 	function changeGain() { setGain(gainInput.value); onGainChange(); }
-	gainInput.addEventListener('change', changeGain);
+	gainInput?.addEventListener('change', changeGain);
 	const resizeObserver = new ResizeObserver(refresh); resizeObserver.observe(root);
-	const visibilityObserver = new MutationObserver(refresh); visibilityObserver.observe(root.parentElement, { attributes: true, attributeFilter: ['hidden'] });
+	const visibilityObserver = new MutationObserver(refresh); visibilityObserver.observe(root.closest('[role="tabpanel"]') ?? root.parentElement, { attributes: true, attributeFilter: ['hidden'] });
 	document.addEventListener('visibilitychange', refresh);
 	refresh();
 	return {
@@ -211,7 +213,7 @@ export function createAudioMonitors(root, readAnalysis, onGainChange = () => {})
 			disposed = true;
 			if (frame !== undefined) { cancelAnimationFrame(frame); }
 			resizeObserver.disconnect(); visibilityObserver.disconnect(); document.removeEventListener('visibilitychange', refresh);
-			gainInput.removeEventListener('change', changeGain);
+			gainInput?.removeEventListener('change', changeGain);
 		}
 	};
 }

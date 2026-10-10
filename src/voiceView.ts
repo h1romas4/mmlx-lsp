@@ -209,6 +209,7 @@ export class VoiceViewProvider implements WebviewViewProvider {
 				if (event.affectsConfiguration('mmlx.serial') || event.affectsConfiguration('mmlx.midi')) { this.sendConnectionSettings(); }
 			}),
 			workspace.onDidChangeTextDocument(event => {
+				if (event.document === this.playbackDocument) { this.stopPlayback(); }
 				if (event.document.uri.toString() === this.editor?.document.uri.toString()) { this.schedule(); }
 			}),
 			workspace.onDidCloseTextDocument(document => {
@@ -465,6 +466,8 @@ export class VoiceViewProvider implements WebviewViewProvider {
 		if (reset) { this.playbackState.position = 0; }
 		this.playback?.disconnect(error);
 		void this.nanodrive.stopPlayback(error);
+		const document = window.activeTextEditor?.document;
+		this.playbackDocument = document?.languageId === 'mmlx' ? document : undefined;
 		this.sendPlayback();
 	}
 
@@ -748,7 +751,7 @@ export class VoiceViewProvider implements WebviewViewProvider {
 
 	private follow(editor: TextEditor | undefined): void {
 		const document = editor?.document.languageId === 'mmlx' ? editor.document : undefined;
-		if (document !== this.playbackDocument) {
+		if (document !== this.playbackDocument && !this.playbackState.playing && !this.playbackState.paused && !this.playbackState.loading) {
 			this.playbackDocument = document;
 			this.stopPlayback();
 		} else { this.sendPlayback(); }

@@ -482,15 +482,19 @@ suite('mmlx extension', () => {
 		const wasm = panel.webview.asWebviewUri(vscode.Uri.joinPath(wasmRoot, 'mmlx-emulator.wasm')).toString();
 		const source = '#pcmfile "drums"\n' + playbackSource.replace('A t120 @1 o4 l8 cdef', 'A t120 @1 o4 L c1\nP F2 o1 L c1');
 		panel.webview.html = `<!DOCTYPE html><html><head><meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'nonce-${nonce}' 'wasm-unsafe-eval' ${panel.webview.cspSource}; worker-src blob:; connect-src ${panel.webview.cspSource};"></head><body>
+		<div role="tabpanel"><div id="playback-monitors"><span data-spectrum-state></span><canvas data-spectrum></canvas></div></div>
 		<script type="module" nonce="${nonce}">
 		import {createEmulationAudio} from '${audioUri}';
+		import {createAudioMonitors} from '${panel.webview.asWebviewUri(vscode.Uri.joinPath(media, 'audioMonitors.js'))}';
 		const api=acquireVsCodeApi(); let position=0; let hostRequests=0; let assets=0; let ended=false; let ready;
 		const delay=milliseconds=>new Promise(resolve=>setTimeout(resolve,milliseconds));
 		const audio=createEmulationAudio(()=>hostRequests++,error=>api.postMessage({type:'failure',error}),()=>{ended=true;},value=>{position=value;});
+		const monitorRoot=document.getElementById('playback-monitors');
+		const monitor=createAudioMonitors(monitorRoot,()=>audio.readAnalysis());
 		const rms=()=>{const analysis=audio.readAnalysis();if(!analysis)return 0;const samples=analysis.samples.subarray(-1024);return Math.sqrt(samples.reduce((sum,value)=>sum+value*value,0)/samples.length);};
 		const onEvent=event=>{
 			api.postMessage({type:'stage',event:event.type});
-			if(event.type==='ready'){audio.start();ready();}
+			if(event.type==='ready'){audio.start();monitor.setConnected(true);ready();}
 			else if(event.type==='asset'){assets++;api.postMessage({type:'asset'});}
 			else if(event.type==='error'){api.postMessage({type:'failure',error:event.error});}
 		};
@@ -502,6 +506,10 @@ suite('mmlx extension', () => {
 			await started;audio.readAnalysis();await delay(100);
 			const before=position;api.postMessage({type:'block'});await delay(700);
 			const delta=position-before;const energy=rms();
+			if(monitorRoot.dataset.state!=='active')throw new Error('Playback spectrum must follow actual Worker PCM');
+			const canvas=monitorRoot.querySelector('canvas');const pixels=canvas.getContext('2d').getImageData(0,0,canvas.width,canvas.height).data;
+			let spectrumPixels=0;for(let index=0;index<pixels.length;index+=4){if(pixels[index]>180&&pixels[index+1]>100&&pixels[index+2]<150)spectrumPixels++;}
+			if(spectrumPixels<20)throw new Error('Actual Playback audio must draw spectrum peaks');
 			audio.setMuted(511);await delay(150);const mutedRms=rms();
 			await audio.pause();await delay(50);const paused=position;await delay(100);
 			if(position!==paused)throw new Error('Pause must hold consumed position');
@@ -511,8 +519,8 @@ suite('mmlx extension', () => {
 			const rate=await audio.connect();audio.setVolume(0);const finite=new Promise(resolve=>{ready=resolve;});
 			await audio.connectWorker({wasm:${JSON.stringify(wasm)},sampleRate:rate,options:{source:'A r64',looped:false,muted:0,pdxConfigured:false}},onEvent);
 			await finite;await delay(200);
-			api.postMessage({type:'result',delta,rms:energy,mutedRms,resumed,ended,hostRequests,assets});audio.disconnect();
-		}catch(error){api.postMessage({type:'failure',error:String(error)});audio.disconnect();}};
+			api.postMessage({type:'result',delta,rms:energy,mutedRms,resumed,ended,hostRequests,assets});monitor.dispose();audio.disconnect();
+		}catch(error){api.postMessage({type:'failure',error:String(error)});monitor.dispose();audio.disconnect();}};
 		api.postMessage({type:'loaded'});
 		</script></body></html>`;
 		const timer = setTimeout(() => reject(new Error('Browser Worker audio test timed out: ' + JSON.stringify(stages))), 15000);
@@ -606,7 +614,7 @@ suite('mmlx extension', () => {
 		}
 	});
 
-	test('FM Voice audio monitors draw signal, follow notes and stop rendering when hidden', async function () {
+	test('FM Voice and Playback audio monitors draw signal and adapt to panel widths', async function () {
 		this.timeout(15000);
 		const extension = vscode.extensions.all.find(extension => extension.packageJSON.name === 'mmlx-lsp');
 		assert.ok(extension);
@@ -691,6 +699,37 @@ suite('mmlx extension', () => {
 			check(reads === beforeDisconnected && root.dataset.state === 'disconnected', 'Disconnect must stop analysing');
 			monitors.setConnected(true); monitors.dispose(); const beforeDisposed = reads; await wait();
 			check(reads === beforeDisposed, 'Dispose must stop the animation');
+			section.hidden = true;
+			const playbackSection = document.getElementById('playback-controls'); playbackSection.hidden = false;
+			const playbackRoot = document.getElementById('playback-monitors');
+			data.samples.fill(.4); data.decibels[Math.round(440 * 8192 / 48000)] = -12;
+			let playbackReads = 0;
+			const playback = createAudioMonitors(playbackRoot, () => { playbackReads++; return data; });
+			try {
+				const spectrum = document.getElementById('playback-spectrum');
+				const context = spectrum.getContext('2d');
+				context.setLineDash = () => { throw new Error('Playback must not display a reference frequency'); };
+				playback.setConnected(true);
+				for (const width of [1200, 800, 320]) {
+					playbackSection.style.width = width + 'px'; await wait();
+					const transport = document.querySelector('.playback-transport').getBoundingClientRect();
+					const chart = playbackRoot.getBoundingClientRect();
+					const dashboard = document.querySelector('.playback-dashboard').getBoundingClientRect();
+					const channels = document.getElementById('playback-channels').getBoundingClientRect();
+					check(Math.abs(dashboard.left - channels.left) < 1 && Math.abs(dashboard.right - channels.right) < 1, 'Playback dashboard must align with both edges of the channel keyboards');
+					check(dashboard.width <= 870, 'Playback dashboard must share the keyboard maximum width');
+					check(width >= 800 ? chart.left >= transport.right + 10 : chart.top >= transport.bottom + 10, 'Playback spectrum must sit to the right or wrap below on narrow panels');
+					check(transport.width <= 430 && chart.width <= width, 'Playback controls and spectrum must fit their panel');
+					const pixels = context.getImageData(0, 0, spectrum.width, spectrum.height).data;
+					let signal = 0;
+					for (let index = 0; index < pixels.length; index += 4) { if (pixels[index] > 180 && pixels[index + 1] > 100 && pixels[index + 2] < 150) { signal++; } }
+					check(signal > 20, 'Playback spectrum must draw a visible peak');
+				}
+				const beforeHidden = playbackReads; playbackSection.hidden = true; await wait();
+				check(playbackReads === beforeHidden, 'Hidden Playback tab must stop analysing');
+				playbackSection.hidden = false; await wait(); check(playbackReads > beforeHidden, 'Playback tab must restart analysing');
+				playback.setConnected(false); check(playbackRoot.dataset.state === 'disconnected', 'Stopping Playback must clear its spectrum');
+			} finally { playback.dispose(); }
 			api.postMessage({ type: 'monitorResult' });
 		} catch (error) { api.postMessage({ type: 'monitorFailure', error: String(error) }); }
 		finally { monitors.dispose(); }
@@ -1233,9 +1272,11 @@ suite('mmlx extension', () => {
 			await until(() => blocks === 8);
 			const plain = await vscode.workspace.openTextDocument({ language: 'plaintext', content: 'Not MML' });
 			await vscode.window.showTextDocument(plain);
-			await until(() => state.available === false);
-			assert.strictEqual(state.playing, false); assert.strictEqual(state.position, 0);
-			assert.strictEqual(sources.ranges.length, 0, 'Switching documents clears editor highlights');
+			assert.strictEqual(state.available, true); assert.strictEqual(state.playing, true);
+			assert.strictEqual(state.document, document.uri.toString(), 'Switching editors keeps the playback source');
+			assert.ok(sources.ranges.some(range => document.getText(range) === 'c'), 'Switching editors keeps source tracking');
+			messages.fire({ type: 'playbackRender', id: 1, blocks: 4 });
+			await until(() => blocks === 12);
 			await vscode.window.showTextDocument(document);
 			await until(() => state.available === true);
 			messages.fire({ type: 'playbackAction', action: 'play', id: 2, document: document.uri.toString(), sampleRate: 48000 });
@@ -1248,9 +1289,9 @@ suite('mmlx extension', () => {
 			messages.fire({ type: 'playbackAction', action: 'playFromCursor', id: 3, document: document.uri.toString(), sampleRate: 48000 });
 			await until(() => state.playing === true && state.id === 3);
 			assert.ok(Number(state.position) > 0.49 && Number(state.position) < 0.51);
-			assert.strictEqual(blocks, 8);
+			assert.strictEqual(blocks, 12);
 			messages.fire({ type: 'playbackRender', id: 3, blocks: 4 });
-			await until(() => blocks === 12);
+			await until(() => blocks === 16);
 			await until(() => keyMessages.some(message => message.id === 3 && message.keys.some(event => event.channel === 0 && event.note === 64)));
 			messages.fire({ type: 'playbackPosition', id: 3, mode: 'emulation', position: Number(state.position) + 0.001 });
 			await highlighted('e');
@@ -1277,15 +1318,24 @@ suite('mmlx extension', () => {
 			assert.deepStrictEqual(browserAsset.bytes, Uint8Array.of(1, 2, 3), 'PDX excludes Buffer pool padding');
 			messages.fire({ type: 'browserPlaybackState', id: 6, ready: true, position: 0, finished: false });
 			assert.strictEqual(state.loading, false); assert.strictEqual(state.playing, true);
+			const other = await vscode.workspace.openTextDocument({ language: 'mmlx', content: 'A r1' });
+			await vscode.window.showTextDocument(other);
+			assert.strictEqual(state.playing, true); assert.strictEqual(state.document, document.uri.toString());
 			messages.fire({ type: 'playbackRender', id: 6, blocks: 4 });
-			assert.strictEqual(blocks, 12, 'Browser playback does not generate PCM in the host');
+			assert.strictEqual(blocks, 16, 'Browser playback does not generate PCM in the host');
 			messages.fire({ type: 'playbackPosition', id: 6, mode: 'emulation', position: 0 }); await highlighted('c');
 			messages.fire({ type: 'playbackAction', action: 'pause', id: 6 }); assert.strictEqual(state.paused, true);
+			await vscode.window.showTextDocument(plain);
+			assert.strictEqual(state.paused, true); assert.strictEqual(state.document, document.uri.toString());
 			messages.fire({ type: 'playbackAction', action: 'resume', id: 6 }); assert.strictEqual(state.playing, true);
-			messages.fire({ type: 'playbackAction', action: 'stop', id: 6 }); assert.strictEqual(sources.ranges.length, 0);
+			const edit = new vscode.WorkspaceEdit(); edit.insert(document.uri, new vscode.Position(0, 0), ' ');
+			await vscode.workspace.applyEdit(edit);
+			await until(() => state.playing === false);
+			assert.strictEqual(state.available, false); assert.strictEqual(sources.ranges.length, 0);
 			messages.fire({ type: 'browserPlaybackState', id: 6, ready: true, position: 1, finished: false });
 			assert.strictEqual(state.playing, false, 'Stopped browser sessions cannot be revived by stale messages');
-			editor.selection = new vscode.Selection(cursor, cursor);
+			const reopened = await vscode.window.showTextDocument(document);
+			reopened.selection = new vscode.Selection(cursor, cursor);
 			messages.fire({ type: 'playbackAction', action: 'playFromCursor', browser: true, id: 7, document: document.uri.toString(), sampleRate: 48000 });
 			await until(() => browserInit?.id === 7);
 			assert.strictEqual((browserInit?.options as { cursor: number }).cursor,
