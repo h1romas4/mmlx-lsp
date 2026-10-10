@@ -10,9 +10,11 @@ export function createKeyboardControls(root, onModeChange = () => {}, onNote = (
 	let resetting = false;
 	let testPlaying = false;
 	let testError = false;
+	let voiceTestChangedChip = false;
 	let voiceAvailable = false;
 	function updateTestControls() {
 		if (!testInput) { return; }
+		root.classList.toggle('is-voice-test-pending-reset', voiceTestChangedChip);
 		testInput.disabled = testPlaying || resetting;
 		testPlay.disabled = resetting || !testPlaying && (!outputConnected || !voiceAvailable || !testInput.value.trim());
 		testPlay.classList.toggle('is-busy', resetting && outputConnected && voiceAvailable && !!testInput.value.trim());
@@ -188,7 +190,14 @@ export function createKeyboardControls(root, onModeChange = () => {}, onNote = (
 		},
 		setVoiceAvailable(value) { voiceAvailable = value === true; updateTestControls(); },
 		setResetting(value) { resetting = value === true; this.setConnected(outputConnected); },
-		setVoiceTest(playing, error = false) { testPlaying = playing === true; testError = error === true; this.setConnected(outputConnected); },
+		setVoiceTest(playing, error = false) {
+			if (error) { voiceTestChangedChip = false; }
+			else if (playing) { voiceTestChangedChip = true; }
+			testPlaying = playing === true; testError = error === true; this.setConnected(outputConnected);
+		},
+		setOutputReset(connected) {
+			if (connected) { voiceTestChangedChip = false; updateTestControls(); }
+		},
 		get testMml() { return testInput?.value ?? ''; },
 		setTestMml(value) {
 			if (!testInput) { return; }

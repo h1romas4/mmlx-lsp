@@ -149,6 +149,8 @@ input:disabled, select:disabled { opacity: .6; }
 .refresh-ports:hover, .output-connection:hover { background: var(--vscode-toolbar-hoverBackground, #eee); }
 .refresh-ports:focus-visible, .output-connection:focus-visible { outline: 1px solid var(--vscode-focusBorder, #39a9c7); }
 .refresh-ports:disabled, .output-connection:disabled { opacity: .6; cursor: default; }
+#keyboard.is-voice-test-pending-reset #keyboard-reset { border-color: transparent; background: var(--vscode-button-background, #0078d4); color: var(--vscode-button-foreground, #fff); }
+#keyboard.is-voice-test-pending-reset #keyboard-reset:hover { background: var(--vscode-button-hoverBackground, #006cbe); }
 #serial-settings-status, #midi-settings-status { flex: 0 0 38%; min-width: 0; height: 1.5em; line-height: 1.5; margin: 0; color: var(--vscode-descriptionForeground, #666); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 @container (max-width: 460px) {
 	.connection-settings .build-field { grid-template-columns: minmax(0, 1fr); gap: 4px; }

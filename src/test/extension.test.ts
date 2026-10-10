@@ -2738,6 +2738,8 @@ suite('mmlx extension', () => {
 							check(getComputedStyle(testPlay).boxShadow !== 'none' && testPlay.getBoundingClientRect().width === 28, 'MML feedback is visible without changing button size');
 							check(messages.at(-1).type === 'voiceTestAction' && messages.at(-1).action === 'play' && messages.at(-1).mml === testInput.value && messages.at(-1).id === request.id, 'Voice test routes to Keyboard Output');
 							check(!testPlay.disabled && testPlay.classList.contains('transport-stop') && testPlay.getAttribute('aria-pressed') === 'true' && testInput.disabled && key.getAttribute('aria-disabled') === 'true', 'Voice test toggle stops while keys are locked');
+							check(getComputedStyle(reset).backgroundColor === getComputedStyle(testPlay).backgroundColor
+								&& getComputedStyle(reset).color === getComputedStyle(testPlay).color, 'Reset button matches the Chip State MML accent while the test is playing');
 							check(stableControls.every((control, index) => getComputedStyle(control).opacity === opacities[index]), 'MML sending keeps control opacity stable');
 							const sent = messages.length;
 							testInput.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true, cancelable: true }));
@@ -2748,6 +2750,8 @@ suite('mmlx extension', () => {
 							check(testInput.disabled && key.getAttribute('aria-disabled') === 'true', 'Stop keeps the input lock until completion');
 							send({ type: 'voiceTest', id: request.id, playing: false });
 							check(!testPlay.disabled && testPlay.classList.contains('transport-play') && !testInput.disabled && key.getAttribute('aria-disabled') === 'false', 'Voice test end restores the keyboard');
+							check(document.getElementById('keyboard').classList.contains('is-voice-test-pending-reset')
+								&& getComputedStyle(reset).backgroundColor === getComputedStyle(testPlay).backgroundColor, 'Chip State MML accent remains after playback ends until reset');
 							const playOpacity = getComputedStyle(testPlay).opacity;
 							const matchMedia = window.matchMedia;
 							window.matchMedia = () => ({ matches: true });
@@ -2758,9 +2762,14 @@ suite('mmlx extension', () => {
 							check(testPlay.disabled && getComputedStyle(testPlay).opacity === playOpacity, 'Reset locks an available MML toggle without dimming it');
 							send({ type: 'outputReset', id: request.id, connected: false });
 							check(reset.disabled && !button.disabled && !testInput.disabled && testPlay.disabled && key.getAttribute('aria-disabled') === 'true', 'Failed reset releases the temporary lock and leaves output disconnected');
+							check(document.getElementById('keyboard').classList.contains('is-voice-test-pending-reset'), 'Failed reset keeps the Chip State MML reset indicator');
 							check(getComputedStyle(keyboardBody).opacity === '0.42' && button.getAttribute('aria-pressed') === 'false', 'Failed reset shows the actual disconnected state');
 							send({ type: 'outputConnection', target: 'keyboard', id: request.id, mode: 'nanodrive8', connected: true, connecting: false });
 							check(!testPlay.disabled && key.getAttribute('aria-disabled') === 'false', 'Connection recovery restores controls after reset failure');
+							reset.click();
+							check(messages.at(-1).type === 'resetOutput', 'Reset can be retried after reconnection');
+							send({ type: 'outputReset', id: request.id, connected: true });
+							check(!document.getElementById('keyboard').classList.contains('is-voice-test-pending-reset'), 'Successful reset clears the Chip State MML reset indicator');
 							send({ type: 'voiceTest', id: request.id, playing: false, error: true });
 							check(testPlay.classList.contains('is-error') && testPlay.title === 'MML error' && testInput.getAttribute('aria-invalid') === 'true', 'MML error is indicated on the toggle');
 							const errorColor = document.createElement('span'); errorColor.style.color = 'var(--vscode-errorForeground, #f48771)'; document.body.append(errorColor);

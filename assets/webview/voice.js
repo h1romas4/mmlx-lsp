@@ -212,7 +212,8 @@ window.addEventListener('message', event => {
 		resettingOutput = false;
 		emulationAudio.clear(); outputConnections.keyboard.setState({ connected: message.connected, connecting: false });
 		outputConnections.keyboard.setResetting(false);
-		keyboardControls.setVoiceTest(false); keyboardControls.setConnected(message.connected); keyboardControls.setResetting(false);
+		keyboardControls.setVoiceTest(false); keyboardControls.setOutputReset(message.connected);
+		keyboardControls.setConnected(message.connected); keyboardControls.setResetting(false);
 		if (!message.connected) { emulationAudio.disconnect(); audioMonitors.setConnected(false); }
 	} else if (message?.type === 'playback') {
 		const changed = message.document !== playbackState?.document;
