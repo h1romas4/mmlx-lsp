@@ -1322,6 +1322,8 @@ suite('mmlx extension', () => {
 		};
 		const send = data => window.dispatchEvent(new MessageEvent('message', { data }));
 		const check = (condition, text) => { if (!condition) { throw new Error(text); } };
+		window.addEventListener('error', event => probeApi?.postMessage({ type: 'keyboardFailure', error: event.message }));
+		window.addEventListener('unhandledrejection', event => probeApi?.postMessage({ type: 'keyboardFailure', error: String(event.reason) }));
 		let startProbed = false;
 		async function runProbe() {
 			try {
@@ -1385,8 +1387,29 @@ suite('mmlx extension', () => {
 					voice: { number: 1, algorithm: 2, feedback: 7, operatorMask, operators: Array.from({ length: 4 }, () => ({ ...operator, ...values })) }, ...state });
 				renderVoice();
 				const sections = [...document.querySelectorAll('#operators .operator')];
+				const algorithmSelect = document.querySelector('#algorithm');
+				check(algorithmSelect.closest('label').hidden, 'Redundant algorithm dropdown must be hidden');
+				const algorithmDiagram = document.querySelector('[data-algorithm="5"]');
+				algorithmDiagram.dispatchEvent(new MouseEvent('click', { bubbles: true }));
+				check(messages.at(-1).type === 'editVoice' && messages.at(-1).index === 44 && messages.at(-1).value === 5, 'Algorithm diagrams must remain selectable without the dropdown');
+				renderVoice();
+				const feedback = document.querySelector('#feedback');
+				const op1Ks = sections[0].querySelector('select[aria-label="OP 1 KS"]').parentElement.parentElement;
+				const feedbackPair = op1Ks.nextElementSibling;
+				const ksBounds = op1Ks.getBoundingClientRect();
+				const feedbackBounds = feedbackPair.getBoundingClientRect();
+				check(feedbackPair.querySelector('dt').textContent === 'FL' && feedbackPair.querySelector('#feedback') === feedback,
+					'FL must appear immediately to the right of OP 1 KS');
+				check(feedbackBounds.left > ksBounds.left && Math.abs(feedbackBounds.top - ksBounds.top) < 1,
+					'FL must share OP 1 KS row in the adjacent column');
+				feedback.value = '3';
+				feedback.dispatchEvent(new Event('change'));
+				check(messages.at(-1).type === 'editVoice' && messages.at(-1).index === 45 && messages.at(-1).value === 3, 'Moved FL control must retain its voice parameter binding');
+				renderVoice();
 				for (const section of sections) {
-					check([...section.querySelectorAll('dt')].map(term => term.textContent).join(',') === 'MUL,TL,DT1,DT2,AR,D1R,D1L,D2R,RR,KS,AME', 'Parameter display order must be independent of MML order');
+					const expectedFields = section === sections[0] ? 'MUL,TL,DT1,DT2,AR,D1R,D1L,D2R,RR,KS,FL,AME'
+						: 'MUL,TL,DT1,DT2,AR,D1R,D1L,D2R,RR,KS,AME';
+					check([...section.querySelectorAll('dt')].map(term => term.textContent).join(',') === expectedFields, 'Parameter display order must be independent of MML order');
 					const releaseWidth = section.querySelector('input[aria-label$=" RR"]').getBoundingClientRect().width;
 					const levelWidth = section.querySelector('input[aria-label$=" TL"]').getBoundingClientRect().width;
 					check(Math.abs(releaseWidth - levelWidth) < 1, 'RR must have the same width as other numeric fields');
@@ -1398,24 +1421,49 @@ suite('mmlx extension', () => {
 					const detune = section.querySelector('select[aria-label$=" DT2"]');
 					check([...detune.options].map(option => option.textContent).join(',') === '0: 0c,1: 600c,2: 781c,3: 950c', 'DT2 must show coarse detune in cents');
 					check(detune.title.includes('100 cents = 1 semitone'), 'DT2 must explain the cents unit');
-					const modulation = section.querySelector('[aria-label$=" AME"]');
+					const modulation = section.querySelector('input[aria-label$=" AME"]');
 					check(modulation.type === 'checkbox' && modulation.getAttribute('role') === 'switch' && modulation.title.includes('AMS'), 'AME must be an amplitude modulation switch with its dependencies');
+					const ameToggle = section.querySelector('.operator-ame-toggle');
+					const opToggle = section.querySelector('.operator-op-toggle');
+					const toggleBar = section.querySelector(':scope > h2 > .operator-toggle-bar');
+					check(ameToggle.getAttribute('role') === 'switch' && ameToggle.getAttribute('aria-label').endsWith('AME'), 'AME must be available as an SVG switch on the envelope graph');
+					check([ameToggle, opToggle].every(toggle => toggle.tabIndex === -1), 'OP and AME switches must be skipped by Tab navigation');
+					opToggle.focus();
+					check(getComputedStyle(opToggle).outlineStyle === 'none', 'OP and AME switches must not show a focus outline when clicked');
+					check([...section.querySelectorAll('.envelope-handle')].every(handle => handle.tabIndex === -1), 'ADSR handles must be skipped by Tab navigation');
+					check(ameToggle.parentElement === toggleBar && opToggle.parentElement === toggleBar
+						&& toggleBar.children[0] === ameToggle && toggleBar.children[1] === opToggle, 'AME and OP switches must appear in that order at the upper-right of the operator heading');
+					check(Math.abs(toggleBar.getBoundingClientRect().height - section.querySelector('.operator-badge').getBoundingClientRect().height) < 1,
+						'Operator toggles must match the adjacent OP badge scale');
+					const headingBounds = section.querySelector('h2').getBoundingClientRect();
+					const toggleBounds = toggleBar.getBoundingClientRect();
+					check(Math.abs((toggleBounds.top + toggleBounds.height / 2) - (headingBounds.top + headingBounds.height / 2)) < 1,
+						'Operator toggles must be vertically centered in their heading row');
+					check(toggleBounds.right <= headingBounds.right, 'Operator toggles must not overflow the heading row');
 				}
 				for (const [field, parameter, value] of [['MUL', 7, 0], ['MUL', 7, 15], ['KS', 6, 0], ['KS', 6, 3], ['DT2', 9, 0], ['DT2', 9, 1], ['DT2', 9, 2], ['DT2', 9, 3], ['AME', 10, 0], ['AME', 10, 1]]) {
 					renderVoice(15, { ame: field === 'AME' ? 1 - value : 0, dt2: value === 0 ? 1 : 0 });
-					const input = sections[1].querySelector('[aria-label="OP 2 ' + field + '"]');
-					if (input.type === 'checkbox') { input.checked = Boolean(value); } else { input.value = String(value); }
-					input.dispatchEvent(new Event('change'));
+					const input = sections[1].querySelector('input[aria-label="OP 2 ' + field + '"], select[aria-label="OP 2 ' + field + '"]');
+					const ameToggle = sections[1].querySelector('.operator-ame-toggle');
+					if (field === 'AME') {
+						if (value) { ameToggle.dispatchEvent(new KeyboardEvent('keydown', { key: ' ', bubbles: true })); }
+						else { ameToggle.dispatchEvent(new MouseEvent('click', { bubbles: true })); }
+					} else {
+						if (input.type === 'checkbox') { input.checked = Boolean(value); } else { input.value = String(value); }
+						input.dispatchEvent(new Event('change'));
+					}
 					const edit = messages.at(-1);
 					check(edit.type === 'editVoice' && edit.token === 42 && edit.index === 11 + parameter && edit.value === value, 'Meaningful controls must preserve MML parameter indices and values');
 					const displayedValue = () => input.type === 'checkbox' ? Number(input.checked) : Number(input.value);
 					check(!input.disabled && input.getAttribute('aria-disabled') === 'true' && getComputedStyle(input).opacity === '1', 'Pending controls must lock without disabled styling');
 					check(displayedValue() === value, 'Pending edit must preserve its displayed value');
+					if (field === 'AME') { check(ameToggle.classList.contains('is-active') === Boolean(value), 'AME background must reflect the toggled value'); }
 					check(document.querySelector('#voice-controls').getAttribute('aria-busy') === 'true' && document.querySelector('#status').textContent === '', 'Pending edit must announce busy state without flashing status text');
 					renderVoice(15, {}, { editing: true, editable: false, editToken: null });
 					check(displayedValue() === value, 'Server busy snapshot must not reset the optimistic value');
 					const count = messages.filter(message => message.type === 'editVoice').length;
-					input.click();
+					if (field === 'AME') { ameToggle.dispatchEvent(new MouseEvent('click', { bubbles: true })); }
+					else { input.click(); }
 					input.dispatchEvent(new Event('change'));
 					check(messages.filter(message => message.type === 'editVoice').length === count && displayedValue() === value, 'Pending edits must block duplicate input');
 					if (field === 'MUL' && value === 0) {
@@ -1426,26 +1474,33 @@ suite('mmlx extension', () => {
 					}
 					renderVoice(15, { [field.toLowerCase()]: value });
 					check(displayedValue() === value && input.getAttribute('aria-disabled') === 'false' && document.querySelector('#voice-controls').getAttribute('aria-busy') === 'false', 'Confirmed edit must unlock without reverting');
+					if (field === 'AME') { check(ameToggle.getAttribute('aria-checked') === String(Boolean(value)), 'AME SVG switch must follow confirmed values'); }
 				}
 				const maskInputs = [...document.querySelectorAll('#operator-mask input')];
-				check(maskInputs.length === 4, 'OP must have four operator checkboxes');
+				const opToggles = sections.map(section => section.querySelector('.operator-op-toggle'));
+				check(maskInputs.length === 4 && opToggles.every(toggle => toggle?.getAttribute('role') === 'switch'), 'OP must have four SVG switches on the envelope graphs');
 				for (let mask = 0; mask <= 15; mask++) {
 					for (let index = 0; index < 4; index++) {
 						renderVoice(mask);
 						check(maskInputs.every((input, bit) => input.checked === Boolean(mask & (1 << bit))), 'OP checkboxes must reflect every mask');
+						check(opToggles.every((toggle, bit) => toggle.getAttribute('aria-checked') === String(Boolean(mask & (1 << bit)))), 'OP SVG switches must reflect every mask');
+						check(opToggles.every((toggle, bit) => toggle.classList.contains('is-active') === Boolean(mask & (1 << bit))), 'OP backgrounds must reflect every mask');
 						check(sections[index].classList.contains('disabled') === !(mask & (1 << index)), 'OP state must match the operator panel');
 						check(sections[index].querySelector('.operator-badge').classList.contains('inactive') === !(mask & (1 << index)), 'Disabled operator badges must match algorithm nodes');
 						const opacity = (mask & (1 << index)) ? '1' : '0.3';
-						check(getComputedStyle(sections[index].querySelector(':scope > svg')).opacity === opacity, 'Entire ADSR graph must dim and restore with its OP checkbox');
+						const graph = sections[index].querySelector(':scope > svg');
+						check(getComputedStyle(graph).opacity === opacity, 'ADSR graph must dim and restore with its OP switch');
 						check(getComputedStyle(sections[index].querySelector('.envelope')).opacity === '1', 'Envelope must not be dimmed twice');
 						check([...document.querySelectorAll('#algorithms .algorithm-node[data-operator="' + (index + 1) + '"]')].every(node => getComputedStyle(node).opacity === opacity), 'Matching operator nodes must dim and restore in every algorithm');
 						check([...sections[index].querySelectorAll('input, select')].every(input => !input.disabled), 'Off operators must remain editable');
-						maskInputs[index].checked = !maskInputs[index].checked;
-						maskInputs[index].dispatchEvent(new Event('change'));
+						if (mask === 0 && index === 0) { opToggles[index].dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true })); }
+						else { opToggles[index].dispatchEvent(new MouseEvent('click', { bubbles: true })); }
 						const edit = messages.at(-1);
 						check(edit.type === 'editVoice' && edit.index === 46 && edit.value === (mask ^ (1 << index)), 'OP edits must toggle only the selected bit');
-						check(maskInputs[index].checked === Boolean((mask ^ (1 << index)) & (1 << index)), 'OP checkbox must not flash back to its old state');
-						check(getComputedStyle(sections[index].querySelector(':scope > svg')).opacity === ((mask & (1 << index)) ? '0.3' : '1'), 'OP visual state must update immediately while pending');
+						check(maskInputs[index].checked === Boolean((mask ^ (1 << index)) & (1 << index)), 'OP state must update without flashing back');
+						check(opToggles[index].getAttribute('aria-checked') === String(maskInputs[index].checked), 'OP SVG switch state must update immediately');
+						check(getComputedStyle(sections[index].querySelector('.operator-op-toggle')).opacity === '1', 'OP switch must not flash dim while an edit is pending');
+						check(!sections[index].querySelector('h2').textContent.includes('Off'), 'Disabled OP must not add an OFF label next to the heading');
 					}
 				}
 				renderVoice(9, { ame: 1 });
@@ -1458,7 +1513,9 @@ suite('mmlx extension', () => {
 						check(sections[index].querySelector('h2').getAttribute('aria-label') === 'OP ' + (index + 1) + ' ' + (carrier ? 'Carrier' : 'Modulator') + ((9 & (1 << index)) ? '' : ', Off'), 'Accessible headings must include operator numbers, roles and disabled state');
 					}
 				}
-				check(sections[1].querySelector('[aria-label="OP 2 AME"]').checked && sections[1].querySelector('.parameter-toggle span').textContent === 'On', 'AME must render the enabled state');
+				check(sections[1].querySelector('input[aria-label="OP 2 AME"]').checked
+					&& sections[1].querySelector('.operator-ame-toggle').getAttribute('aria-checked') === 'true'
+					&& sections[1].querySelector('.parameter-toggle span').textContent === 'On', 'AME must render the enabled state');
 				renderVoice();
 				const failedInput = sections[1].querySelector('[aria-label="OP 2 MUL"]');
 				failedInput.value = '15'; failedInput.dispatchEvent(new Event('change'));
@@ -1470,6 +1527,8 @@ suite('mmlx extension', () => {
 				check(failedInput.value === '12', 'Switching sources must discard pending preview');
 				send({ type: 'voice', editable: false, editToken: 42, source: 'test.mml', voice: null });
 				check([...document.querySelectorAll('#operators input, #operators select, #operator-mask input')].every(input => input.disabled), 'Missing voice must disable all meaningful controls');
+				check([...document.querySelectorAll('.operator-toggle')].every(toggle => toggle.getAttribute('aria-disabled') === 'true' && toggle.tabIndex === -1), 'Missing voice must disable SVG operator switches');
+				check([...document.querySelectorAll('.envelope-handle')].every(handle => handle.tabIndex === -1), 'Missing voice must remove ADSR handles from Tab navigation');
 				probeApi.postMessage({ type: 'keyboardResult' });
 			} catch (error) { probeApi.postMessage({ type: 'keyboardFailure', error: String(error) }); }
 		}

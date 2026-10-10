@@ -140,10 +140,51 @@ export function createVoiceControls(root, onEdit = () => {}) {
 		return element;
 	}
 
+	function syncOperatorToggle(toggle) {
+		const checked = toggle.input.checked;
+		const disabled = toggle.input.disabled || toggle.input.getAttribute('aria-disabled') === 'true';
+		toggle.control.classList.toggle('is-disabled', toggle.input.disabled);
+		toggle.control.classList.toggle('is-active', checked);
+		toggle.control.setAttribute('aria-checked', String(checked));
+		toggle.control.setAttribute('aria-disabled', String(disabled));
+		toggle.control.setAttribute('tabindex', '-1');
+	}
+
+	function createOperatorToggle(kind, label, input, x, width) {
+		const control = svgElement('g', {
+			class: `operator-toggle operator-${kind}-toggle`,
+			role: 'switch',
+			'aria-label': input.getAttribute('aria-label'),
+			'data-parameter': input.dataset.parameter
+		});
+		if (input.title) { control.setAttribute('aria-description', input.title); }
+		const background = svgElement('rect', { x, y: 1, width, height: 14, rx: 2 });
+		const text = svgElement('text', { x: x + width / 2, y: 11, 'text-anchor': 'middle' });
+		text.textContent = label;
+		control.append(background, text);
+		const toggle = { control, input };
+		const activate = () => {
+			if (control.getAttribute('aria-disabled') === 'true') { return; }
+			input.checked = !input.checked;
+			input.dispatchEvent(new Event('change'));
+		};
+		control.addEventListener('click', activate);
+		control.addEventListener('keydown', event => {
+			if (event.key !== ' ' && event.key !== 'Enter') { return; }
+			event.preventDefault();
+			activate();
+		});
+		syncOperatorToggle(toggle);
+		return toggle;
+	}
+
 	function lockControls(disabled) {
 		for (const input of inputs) {
 			input.disabled = disabled && !voicePanel.classList.contains('voice-editing');
 			input.setAttribute('aria-disabled', String(disabled));
+		}
+		for (const element of elements) {
+			for (const toggle of element.toggles) { syncOperatorToggle(toggle); }
 		}
 		for (const { figure } of diagrams) {
 			figure.setAttribute('aria-disabled', String(disabled));
@@ -156,7 +197,7 @@ export function createVoiceControls(root, onEdit = () => {}) {
 					|| operator.tl * 0.75 + (operator.d1l === 15 ? 93 : operator.d1l * 3) >= 96);
 				handle.classList.toggle('edit-locked', disabled && !inactive);
 				handle.setAttribute('aria-disabled', String(disabled || inactive));
-				handle.setAttribute('tabindex', disabled || inactive ? -1 : 0);
+				handle.setAttribute('tabindex', '-1');
 			}
 		}
 	}
@@ -300,9 +341,9 @@ export function createVoiceControls(root, onEdit = () => {}) {
 		const role = document.createElement('span');
 		role.className = 'operator-role';
 		identity.append('OP ', badge, role);
-		const enabled = document.createElement('span');
-		heading.append(identity, enabled);
 		const graph = svgElement('svg', { viewBox: '0 0 320 145', role: 'group', 'aria-label': `OP ${index + 1} normalized envelope` });
+		const toggleBar = svgElement('svg', { class: 'operator-toggle-bar', viewBox: '0 0 86 22', role: 'group', 'aria-label': `OP ${index + 1} toggles` });
+		const opToggle = createOperatorToggle('op', 'OP', maskInputs[index], 50, 32);
 		graph.append(svgElement('path', { d: 'M 12 16 V 116 H 308 M 12 66 H 308', class: 'axis', fill: 'none' }));
 		graph.append(svgElement('path', { d: 'M 234 12 V 116', class: 'key-off' }));
 		const curve = svgElement('path', { class: 'envelope', d: '' });
@@ -372,6 +413,7 @@ export function createVoiceControls(root, onEdit = () => {}) {
 			const fieldIndex = fields.indexOf(field);
 			const pair = document.createElement('div');
 			if (field === 'rr') { pair.className = 'single-parameter'; }
+			if (field === 'ame') { pair.hidden = true; }
 			const term = document.createElement('dt');
 			term.textContent = field.toUpperCase();
 			const value = document.createElement('dd');
@@ -414,9 +456,24 @@ export function createVoiceControls(root, onEdit = () => {}) {
 			pair.append(term, value);
 			list.append(pair);
 		}
+		if (index === 0) {
+			const feedback = root.querySelector('#feedback');
+			const feedbackLabel = feedback.closest('label');
+			const feedbackPair = document.createElement('div');
+			const term = document.createElement('dt');
+			term.textContent = 'FL';
+			const value = document.createElement('dd');
+			value.append(feedback);
+			feedbackPair.append(term, value);
+			values.ks.parentElement.parentElement.after(feedbackPair);
+			feedbackLabel.remove();
+		}
+		const ameToggle = createOperatorToggle('ame', 'AME', values.ame, 0, 46);
+		toggleBar.append(ameToggle.control, opToggle.control);
+		heading.append(identity, toggleBar);
 		section.append(heading, graph, list);
 		operators.append(section);
-		elements.push({ section, heading, enabled, badge, role, curve, values, handles });
+		elements.push({ section, heading, badge, role, curve, values, handles, toggles: [opToggle, ameToggle] });
 	}
 
 	function envelope(operator) {
@@ -496,12 +553,12 @@ export function createVoiceControls(root, onEdit = () => {}) {
 			const enabled = (voice.operatorMask & (1 << index)) !== 0;
 			const carrier = algorithmConnections[voice.algorithm].carriers.includes(index);
 			element.section.classList.toggle('disabled', !enabled);
-			element.enabled.textContent = enabled ? '' : 'Off';
 			element.badge.classList.toggle('carrier', carrier);
 			element.role.textContent = carrier ? 'Carrier' : 'Modulator';
 			element.heading.setAttribute('aria-label', `OP ${index + 1} ${element.role.textContent}${enabled ? '' : ', Off'}`);
 			element.badge.classList.toggle('inactive', !enabled);
 			drawOperator(operator, index);
+			for (const toggle of element.toggles) { syncOperatorToggle(toggle); }
 		});
 	}
 
