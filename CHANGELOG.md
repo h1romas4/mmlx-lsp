@@ -4,10 +4,12 @@ All notable changes to the "mmlx-lsp" extension will be documented in this file.
 
 ## [Unreleased]
 
-- Run NanoDrive8 generation and serial playback in dedicated workers to keep FM timing and PCM supply independent of Extension Host stalls.
-- Generate Emulation Playback audio in a Webview worker and supply AudioWorklet directly, preserving PDX, mute/solo, pause and cursor playback without Extension Host PCM relays.
-- Keep Playback and source tracking running when switching editors, retaining the original MML while playing, loading or paused. Editing or closing the playback source still stops playback.
-- Show a live Emulation Playback spectrum beside compact transport controls, using the FM Voice frequency and dB scales without a reference note, with stacked layout in narrow panels.
+## [0.15.0] - 2026-10-10
+
+- Reduce audio dropouts and timing disruptions in Emulation and NanoDrive8 Playback when VS Code is under heavy load.
+- Continue playing the original MML when switching editors, keeping playback highlights and paused sessions intact. Editing or closing the playback source stops playback.
+- View a live spectrum during Emulation Playback, with the same frequency and dB scales as FM Voice but no reference frequency. Compact playback controls and the spectrum align with the channel keyboards and stack in narrow panels.
+- Fix Emulation Playback getting stuck during preparation or failing to play MML that uses PDX samples.
 
 ## [0.14.0] - 2026-10-10
 
