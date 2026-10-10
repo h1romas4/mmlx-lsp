@@ -3,6 +3,7 @@ import * as path from 'node:path';
 import { EventEmitter as NodeEventEmitter } from 'node:events';
 import { randomUUID } from 'node:crypto';
 import { Worker } from 'node:worker_threads';
+import { fork, execFile } from 'node:child_process';
 import { tmpdir } from 'node:os';
 import * as vscode from 'vscode';
 import { Wasm } from '@vscode/wasm-wasi/v1';
@@ -15,7 +16,7 @@ import { EmulationSession, type EmulationState, type PlaybackProgress } from '..
 import type { FmKeyEvent } from '../emulationProtocol';
 import { NanoDriveWorker } from '../nanodriveWorker';
 import { NanoDriveRuntime } from '../nanodriveRuntime';
-import { NanoDriveThreadClient } from '../nanodriveThreadClient';
+import { NanoDriveThreadClient, type NanoDriveThreadEvent } from '../nanodriveThreadClient';
 import { PlaybackSourceTracker } from '../playbackSource';
 import type { NanoDriveConnection } from '../nanodrive';
 import { Port as NanoDriveTestPort, codec as nanoDriveTestCodec } from './nanodrive.test';
@@ -2191,14 +2192,25 @@ suite('mmlx extension', () => {
 			assert.strictEqual(client.state.connected, false); assert.ok(client.state.error);
 			await client.disconnect();
 		} finally { await client.dispose(); }
+		const failed = new NanoDriveThreadClient(entry, wasmPath, () => {}, () => {}, () => {}, () => {}, () => {}, () => {});
+		try {
+			const pending = failed.setMuted(0);
+			const rejected = assert.rejects(pending, /service (exited|disconnected)/);
+			const child = Reflect.get(failed, 'worker') as import('node:child_process').ChildProcess;
+			child.kill(); await rejected;
+			assert.strictEqual(failed.state.connected, false); assert.strictEqual(failed.playbackState.busy, false);
+			await failed.connect(path.join(tmpdir(), `missing-nanodrive-${randomUUID()}`));
+			assert.ok(failed.state.error, 'A failed child service can be restarted');
+		} finally { await failed.dispose(); }
 	});
 
 	test('NanoDrive8 independent supply keeps FM and PCM running while Extension Host is blocked', async function () {
 		this.timeout(15000);
 		for (const audio of [false, true]) {
-			const metrics = new Int32Array(new SharedArrayBuffer(12));
-			const worker = new Worker(`
-				const {parentPort,workerData}=require('node:worker_threads');
+			let metrics = [0, 0, 0];
+			const worker = fork('-e', [`
+				const workerData=JSON.parse(process.argv[1]);
+				const metrics=[0,0,0];
 				global.suite=()=>{};
 				const {Port,codec}=require(workerData.testPath);
 				const {NanoDriveConnection}=require(workerData.connectionPath);
@@ -2206,13 +2218,17 @@ suite('mmlx extension', () => {
 				const port=new Port(); port.detectUnderflow=true;
 				const write=port.write.bind(port);
 				port.write=async bytes=>{ await write(bytes); const request=port.commands.at(-1);
-					if(request.command===(workerData.audio?'audioData':'fmBurst')) Atomics.add(workerData.metrics,0,1);
-					if(request.command==='audioStatus' && port.underflowed) Atomics.store(workerData.metrics,1,1);
+					if(request.command===(workerData.audio?'audioData':'fmBurst')) metrics[0]++;
+					if(request.command==='audioStatus' && port.underflowed) metrics[1]=1;
 				};
 				let position=0;
 				const generate=async params=>{
-					if(params.operation==='upload'||params.operation==='playbackStop') return null;
-					if(params.operation==='playbackInfo') return {audio:workerData.audio,pdxName:null};
+					if(params.operation==='upload') {
+						if(params.asset==='pdx' && params.bytes.length) require('node:assert/strict').deepEqual(params.bytes,[1,2,3]);
+						return null;
+					}
+					if(params.operation==='playbackStop') return null;
+					if(params.operation==='playbackInfo') return {audio:workerData.audio,pdxName:workerData.audio?'drums':null};
 					if(params.operation==='playbackInit') {position=0;return {audio:workerData.audio};}
 					if(params.operation==='playbackNext') {
 						position+=workerData.audio?160:882;
@@ -2223,13 +2239,18 @@ suite('mmlx extension', () => {
 					return codec(params);
 				};
 				const connection=new NanoDriveConnection(generate,()=>{},async()=>port,100,undefined,
-					state=>{if(state.playing) Atomics.store(workerData.metrics,2,1);},message=>parentPort.postMessage({type:'failure',message}));
-				runNanoDriveService(connection,event=>parentPort.postMessage(event));
-			`, { eval: true, workerData: { audio, metrics, testPath: path.join(__dirname, 'nanodrive.test.js'),
-				connectionPath: path.join(__dirname, '..', 'nanodrive.js'), servicePath: path.join(__dirname, '..', 'nanodriveThread.js') } });
+					state=>{if(state.playing) metrics[2]=1;},message=>process.send({type:'failure',message}));
+				runNanoDriveService(connection,event=>process.send(event));
+				process.on('message',message=>{if(message.type==='metrics')process.send({type:'metrics',metrics});});
+			`, JSON.stringify({ audio, testPath: path.join(__dirname, 'nanodrive.test.js'),
+				connectionPath: path.join(__dirname, '..', 'nanodrive.js'), servicePath: path.join(__dirname, '..', 'nanodriveThread.js') })],
+			{ execArgv: [], serialization: 'advanced', env: { ...process.env, ELECTRON_RUN_AS_NODE: '1' }, stdio: ['ignore', 'ignore', 'pipe', 'ipc'] });
 			const replies = new Map<number, { resolve: () => void; reject: (error: Error) => void }>();
 			const failures: string[] = [];
-			worker.on('message', event => {
+			let metricReply: (() => void) | undefined;
+			worker.on('message', (event: NanoDriveThreadEvent | { type: 'metrics'; metrics: number[] } | { type: 'failure'; message: string }) => {
+				if (event.type === 'metrics') { metrics = event.metrics; metricReply?.(); }
+				if (event.type === 'asset') { worker.send({ asset: event.id, bytes: Buffer.from([99, 1, 2, 3, 99]).subarray(1, 4) }); }
 				if (event.type === 'failure') { failures.push(event.message); }
 				if (event.type === 'reply') {
 					const pending = replies.get(event.id); replies.delete(event.id);
@@ -2239,23 +2260,59 @@ suite('mmlx extension', () => {
 			worker.on('error', error => { for (const pending of replies.values()) { pending.reject(error instanceof Error ? error : new Error(String(error))); } });
 			let id = 0;
 			const call = (method: string, args: unknown[] = []) => new Promise<void>((resolve, reject) => {
-				const requestId = id++; replies.set(requestId, { resolve, reject }); worker.postMessage({ id: requestId, method, args });
+				const requestId = id++; replies.set(requestId, { resolve, reject }); worker.send({ id: requestId, method, args });
 			});
+			const readMetrics = () => new Promise<void>(resolve => { metricReply = resolve; worker.send({ type: 'metrics' }); });
 			try {
 				await call('connect', ['test']);
 				const playing = call('startPlayback', ['A c1', true, {}]);
-				for (let attempt = 0; attempt < 200 && Atomics.load(metrics, 2) === 0; attempt++) { await new Promise(resolve => setTimeout(resolve, 5)); }
-				assert.strictEqual(Atomics.load(metrics, 2), 1);
-				const before = Atomics.load(metrics, 0);
+				for (let attempt = 0; attempt < 200 && metrics[2] === 0; attempt++) { await new Promise(resolve => setTimeout(resolve, 5)); await readMetrics(); }
+				assert.strictEqual(metrics[2], 1);
+				const before = metrics[0]!;
 				const until = performance.now() + 600;
-				while (performance.now() < until) { Atomics.load(metrics, 0); }
-				assert.ok(Atomics.load(metrics, 0) - before >= 20, `Supply must continue independently (audio=${audio})`);
-				assert.strictEqual(Atomics.load(metrics, 1), 0, 'No simulated PCM underflow');
+				while (performance.now() < until) { Math.sqrt(performance.now()); }
+				await readMetrics();
+				assert.ok(metrics[0]! - before >= 20, `Supply must continue independently (audio=${audio})`);
+				assert.strictEqual(metrics[1], 0, 'No simulated PCM underflow');
 				await call('setMuted', [257]); await call('setVolume', [.5]);
 				await call('stopPlayback'); await playing; await call('disconnect');
 				assert.deepStrictEqual(failures, []);
-			} finally { await worker.terminate(); }
+			} finally { await new Promise<void>(resolve => { worker.once('exit', () => resolve()); worker.kill(); }); }
 		}
+	});
+
+	test('NanoDrive8 child service survives native serial receive callbacks', async function () {
+		this.timeout(20000);
+		if (process.platform !== 'linux') { this.skip(); }
+		const extension = vscode.extensions.all.find(extension => extension.packageJSON.name === 'mmlx-lsp'); assert.ok(extension);
+		const entry = vscode.Uri.joinPath(extension.extensionUri, 'dist', 'nanodriveThread.js').fsPath;
+		const wasmPath = vscode.Uri.joinPath(extension.extensionUri, 'server', 'target', 'wasm32-wasip1-threads', 'release', 'mmlx-nanodrive.wasm').fsPath;
+		const clientPath = path.join(__dirname, '..', 'nanodriveThreadClient.js');
+		const script = `
+import os,pty,subprocess,json,sys
+master,slave=pty.openpty()
+source="const {NanoDriveThreadClient}=require("+json.dumps(sys.argv[2])+");const client=new NanoDriveThreadClient("+json.dumps(sys.argv[3])+","+json.dumps(sys.argv[4])+",()=>{},()=>{},()=>{},()=>{},()=>{},()=>{});(async()=>{await client.connect("+json.dumps(os.ttyname(slave))+");console.log(JSON.stringify(client.state));await client.dispose();})().catch(error=>{console.error(error);process.exitCode=1;});"
+child=subprocess.Popen([sys.argv[1],'-e',source],stdout=subprocess.PIPE,stderr=subprocess.PIPE,text=True)
+try:
+ os.read(master,4096)
+ os.write(master,b'\\0invalid response\\0')
+ output,error=child.communicate(timeout=12)
+ print(json.dumps({'code':child.returncode,'stdout':output,'stderr':error}))
+finally:
+ if child.poll() is None: child.kill();child.wait()
+ os.close(master);os.close(slave)
+`;
+		const output = await new Promise<string>((resolve, reject) => {
+			execFile('python3', ['-c', script, process.execPath, clientPath, entry, wasmPath],
+				{ timeout: 15000, env: { ...process.env, ELECTRON_RUN_AS_NODE: '1' } },
+				(error, stdout) => { if (error) { reject(error); } else { resolve(stdout); } });
+		});
+		const result = JSON.parse(output) as { code: number; stdout: string; stderr: string };
+		assert.strictEqual(result.code, 0, JSON.stringify(result));
+		const state = JSON.parse(result.stdout) as { connected: boolean; error: string };
+		assert.strictEqual(state.connected, false);
+		assert.match(state.error, /timed out/i);
+		assert.ok(!result.stderr.includes('FATAL ERROR'), result.stderr);
 	});
 
 	test('NanoDrive8 worker correlates split replies and cancels pending calls on shutdown or failure', async function () {

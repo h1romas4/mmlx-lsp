@@ -1,4 +1,4 @@
-import { Worker } from 'node:worker_threads';
+import { fork, type ChildProcess } from 'node:child_process';
 import type { FmKeyEvent } from './emulationProtocol';
 import type { NanoDriveConnection, NanoDriveState, NanoDriveOutputState, NanoDrivePlaybackState } from './nanodrive';
 
@@ -11,7 +11,7 @@ export type NanoDriveThreadEvent = { type: 'state'; state: NanoDriveState } | { 
 	| { type: 'reply'; id: number; error?: string } | { type: 'asset'; id: number; name: string };
 
 export class NanoDriveThreadClient implements Pick<NanoDriveConnection, Method | 'state' | 'outputState' | 'playbackState'> {
-	private worker?: Worker;
+	private worker?: ChildProcess;
 	private id = 0;
 	private disposed = false;
 	private snapshot: NanoDriveState = { port: '', connected: false, connecting: false, closing: false, phase: '', model: '', firmware: '', error: '' };
@@ -31,11 +31,15 @@ export class NanoDriveThreadClient implements Pick<NanoDriveConnection, Method |
 	get outputState(): NanoDriveOutputState { return { ...this.output }; }
 	get playbackState(): NanoDrivePlaybackState { return { ...this.playback }; }
 
-	private start(): Worker {
+	private start(): ChildProcess {
 		if (this.disposed) { throw new Error('NanoDrive8 worker disposed.'); }
 		if (this.worker) { return this.worker; }
-		const worker = new Worker(this.entry, { workerData: { wasmPath: this.wasmPath } });
+		const worker = fork(this.entry, ['--nanodrive-service', this.wasmPath], {
+			serialization: 'advanced', execArgv: [], env: { ...process.env, ELECTRON_RUN_AS_NODE: '1' },
+			stdio: ['ignore', 'ignore', 'pipe', 'ipc']
+		});
 		this.worker = worker;
+		worker.stderr?.on('data', (bytes: Buffer) => this.onDiagnostic(bytes.toString().slice(0, 4096)));
 		worker.on('message', (event: NanoDriveThreadEvent) => {
 			if (this.worker !== worker) { return; }
 			switch (event.type) {
@@ -57,9 +61,9 @@ export class NanoDriveThreadClient implements Pick<NanoDriveConnection, Method |
 							if (!loadPdx) { throw new Error('NanoDrive8 playback canceled.'); }
 							const bytes = await loadPdx(event.name);
 							if (bytes.length > 16 * 1024 * 1024) { throw new Error('PDX is too large (maximum 16 MiB).'); }
-							if (this.worker === worker && this.pending.has(event.id)) { worker.postMessage({ asset: event.id, bytes }); }
+							if (this.worker === worker && this.pending.has(event.id)) { this.send(worker, { asset: event.id, bytes }); }
 						} catch (error) {
-							if (this.worker === worker) { worker.postMessage({ asset: event.id, error: String(error) }); }
+							if (this.worker === worker) { this.send(worker, { asset: event.id, error: String(error) }); }
 						}
 					})();
 					break;
@@ -67,8 +71,13 @@ export class NanoDriveThreadClient implements Pick<NanoDriveConnection, Method |
 			}
 		});
 		worker.on('error', error => this.fail(worker, error instanceof Error ? error : new Error(String(error))));
-		worker.on('exit', code => this.fail(worker, new Error(`NanoDrive8 worker exited (${code}).`)));
+		worker.on('exit', (code, signal) => this.fail(worker, new Error(`NanoDrive8 service exited (${signal ?? code}).`)));
+		worker.on('disconnect', () => this.fail(worker, new Error('NanoDrive8 service disconnected.')));
 		return worker;
+	}
+
+	private send(worker: ChildProcess, message: NanoDriveThreadRequest | { asset: number; bytes?: Uint8Array; error?: string }): void {
+		worker.send(message, error => { if (error) { this.fail(worker, error); } });
 	}
 
 	private async call(method: Method, args: unknown[], loadPdx?: (name: string) => Promise<Uint8Array>): Promise<void> {
@@ -77,16 +86,16 @@ export class NanoDriveThreadClient implements Pick<NanoDriveConnection, Method |
 		const id = this.id++;
 		return new Promise((resolve, reject) => {
 			this.pending.set(id, { resolve, reject, loadPdx });
-			try { worker.postMessage({ id, method, args } satisfies NanoDriveThreadRequest); }
+			try { this.send(worker, { id, method, args } satisfies NanoDriveThreadRequest); }
 			catch (error) { this.pending.delete(id); reject(error); }
 		});
 	}
 
-	private fail(worker: Worker, error: Error): void {
+	private fail(worker: ChildProcess, error: Error): void {
 		if (this.worker !== worker) { return; }
 		this.worker = undefined;
 		for (const pending of this.pending.values()) { pending.reject(error); } this.pending.clear();
-		void worker.terminate();
+		worker.kill();
 		this.snapshot = { ...this.snapshot, connected: false, connecting: false, closing: false, phase: '', error: error.message };
 		this.output = { connected: false, connecting: false, error: error.message };
 		this.playback = { ...this.playback, busy: false, playing: false, loading: false, error: error.message };
@@ -116,7 +125,9 @@ export class NanoDriveThreadClient implements Pick<NanoDriveConnection, Method |
 			this.disposed = true;
 			const worker = this.worker; this.worker = undefined;
 			for (const pending of this.pending.values()) { pending.reject(new Error('NanoDrive8 worker disposed.')); } this.pending.clear();
-			await worker?.terminate();
+			if (worker && worker.exitCode === null && worker.signalCode === null) {
+				await new Promise<void>(resolve => { worker.once('exit', () => resolve()); worker.kill(); });
+			}
 		}
 	}
 }

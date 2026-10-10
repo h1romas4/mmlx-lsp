@@ -4,7 +4,7 @@ import { NanoDriveConnection } from './nanodrive';
 import type { NanoDriveThreadEvent, NanoDriveThreadRequest } from './nanodriveThreadClient';
 
 export function runNanoDriveService(connection: NanoDriveConnection, send: (event: NanoDriveThreadEvent) => void): void {
-	const port = parentPort!;
+	const port = parentPort ?? process;
 	const assets = new Map<number, { resolve: (bytes: Uint8Array) => void; reject: (error: Error) => void }>();
 	port.on('message', (message: NanoDriveThreadRequest | { asset: number; bytes?: Uint8Array; error?: string }) => {
 		if ('asset' in message) {
@@ -37,11 +37,16 @@ export function runNanoDriveService(connection: NanoDriveConnection, send: (even
 
 if (workerData?.engine && parentPort) {
 	void runNanoDriveEngine(workerData.wasmPath, parentPort, workerData.signal);
-} else if (parentPort && workerData?.wasmPath) {
-	const send = (event: NanoDriveThreadEvent) => parentPort!.postMessage(event);
-	const runtime = new NanoDriveRuntime(__filename, workerData.wasmPath, error => { void connection.disconnect(error.message); });
+} else if (process.send && process.argv[2] === '--nanodrive-service' && process.argv[3]) {
+	const send = (event: NanoDriveThreadEvent) => {
+		if (process.connected) { process.send!(event, error => { if (error) { process.exit(1); } }); }
+	};
+	const runtime = new NanoDriveRuntime(__filename, process.argv[3], error => { void connection.disconnect(error.message); });
 	const connection = new NanoDriveConnection(runtime.request, state => send({ type: 'state', state }), undefined, undefined,
 		state => send({ type: 'output', state }), state => send({ type: 'playback', state }), message => send({ type: 'diagnostic', message }),
 		(playing, error) => send({ type: 'voiceTest', playing, error }), keys => send({ type: 'keys', keys }));
 	runNanoDriveService(connection, send);
+	process.once('disconnect', () => {
+		void connection.disconnect().finally(() => runtime.dispose()).finally(() => process.exit(0));
+	});
 }

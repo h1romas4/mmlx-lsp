@@ -157,7 +157,7 @@ Dedicated bottom panel opened with **mmlx: Show mmlx Panel**.
 - **Play from cursor:** Emulation starts at the current command or the next command on the same line. Repeats start at the first occurrence; seeking may take a moment.
 - **Outputs:** Emulation mixes YM2151 FM and OKIM6258 ADPCM with clock, divider and pan control. Both outputs use the configured PDX file or discover it beside the MML, and apply the ADPCM processing setting. NanoDrive8 uses FM bursts for FM-only songs and ADPCM streaming for songs with PCM notes.
 - **NanoDrive8 diagnostics:** Playback failures are recorded before RESET in **Output > mmlx NanoDrive8**, including USB/PCM/event fault reasons, raw status, generation timing, supply callback gaps (`maxSupplyGapMs`), and host serial-write statistics.
-- **Playback isolation:** Emulation generates FM/PCM in a Webview worker and supplies AudioWorklet directly, without routing PCM through the Extension Host. NanoDrive8 generation, serial communication and scheduling run in dedicated workers. Editor highlights and panel updates may briefly lag during host stalls without blocking audio supply. FM Voice keyboard audition is unchanged.
+- **Playback isolation:** Emulation generates FM/PCM in a Webview worker and supplies AudioWorklet directly, without routing PCM through the Extension Host. NanoDrive8 serial communication and scheduling run in a dedicated child process, with audio generation in its own worker. Editor highlights and panel updates may briefly lag during host stalls without blocking audio supply. FM Voice keyboard audition is unchanged.
 
 ### Settings
 

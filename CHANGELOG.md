@@ -4,6 +4,10 @@ All notable changes to the "mmlx-lsp" extension will be documented in this file.
 
 ## [Unreleased]
 
+## [0.15.1] - 2026-10-10
+
+- Fix a crash when connecting to NanoDrive8 introduced in v0.15.0, while keeping playback independent of VS Code load.
+
 ## [0.15.0] - 2026-10-10
 
 - Reduce audio dropouts and timing disruptions in Emulation and NanoDrive8 Playback when VS Code is under heavy load.
