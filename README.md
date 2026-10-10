@@ -14,7 +14,8 @@ For installation, see [VS Code](#manual-installation-in-vs-code) or
 - **Parameter hints** while entering command arguments.
 - **Japanese and English** command descriptions and parameter hints.
 - **Built-in VS Code build tasks** for MML to MDX and MML/MDX to VGM.
-- **FM voice panel prototype** with cursor-linked operator envelopes and two-way parameter editing.
+- **FM Voice panel** with cursor-linked operator envelopes and two-way parameter editing.
+- **MML playback** with editor highlighting that follows the playback position.
 
 <img src="https://raw.githubusercontent.com/h1romas4/mmlx-lsp/main/assets/docs/mmlx-007.png" alt="FM Voice panel with YM2151 algorithms and operator envelopes" width="720">
 
@@ -122,7 +123,7 @@ command palette. Diagnostic messages are not translated.
 
 ## mmlx Panel
 
-- **Dedicated bottom panel** opened with **mmlx: Show mmlx Panel**.
+Dedicated bottom panel opened with **mmlx: Show mmlx Panel**.
 
 ### Get Started
 
