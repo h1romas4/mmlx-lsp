@@ -10,6 +10,7 @@ import { EmulationSession } from './emulation';
 import { createMidiInput, MidiInputConnection, type MidiInputPort } from './midiInput';
 import { NanoDriveConnection, openNanoDrivePort, type NanoDriveAdpcmMode, type NanoDriveCodec, type NanoDriveInput, type NanoDrivePort } from './nanodrive';
 import { NanoDriveWorker } from './nanodriveWorker';
+import { NanoDriveThreadClient } from './nanodriveThreadClient';
 import { PlaybackSourceTracker } from './playbackSource';
 import { findPdx, resolveUri } from './tasks';
 
@@ -81,7 +82,7 @@ export class VoiceViewProvider implements WebviewViewProvider {
 	private serialPorts: SerialPortInfo[] = [];
 	private serialLoading = false;
 	private serialError = '';
-	private readonly nanodrive: NanoDriveConnection;
+	private readonly nanodrive: NanoDriveConnection | NanoDriveThreadClient;
 	private readonly nanodriveWorker?: NanoDriveWorker;
 	private readonly nanodriveAvailable: boolean;
 	private nanodriveLog?: OutputChannel;
@@ -119,17 +120,17 @@ export class VoiceViewProvider implements WebviewViewProvider {
 		private readonly getMidiInputPorts: () => Promise<string[]> = listMidiInputPorts,
 		createInput: () => Promise<MidiInputPort> = createMidiInput, wasm?: Wasm,
 		openSerial: (path: string) => Promise<NanoDrivePort> = openNanoDrivePort, codec?: NanoDriveCodec) {
-		this.nanodriveWorker = wasm ? new NanoDriveWorker(context.extensionUri, wasm,
+		const threaded = !!wasm && !codec && openSerial === openNanoDrivePort;
+		this.nanodriveWorker = wasm && !threaded ? new NanoDriveWorker(context.extensionUri, wasm,
 			error => { void this.nanodrive.disconnect(error); }) : undefined;
-		this.nanodriveAvailable = !!codec || !!this.nanodriveWorker;
+		this.nanodriveAvailable = threaded || !!codec || !!this.nanodriveWorker;
 		this.playbackSources = wasm ? new PlaybackSourceTracker(new NanoDriveWorker(context.extensionUri, wasm), message => {
 			if (this.playbackState.playing || this.playbackState.loading) { void window.showWarningMessage(`Playback highlighting: ${message}`); }
 		}) : undefined;
-		this.nanodrive = new NanoDriveConnection(async params => {
-			if (codec) { return codec(params); }
-			if (!this.nanodriveWorker) { throw new Error('NanoDrive8 engine is not available.'); }
-			return this.nanodriveWorker.request(params);
-		}, () => { this.updateConnectionMarker(); this.sendSerialSettings(); }, openSerial, undefined, state => {
+		const callbacks: ConstructorParameters<typeof NanoDriveThreadClient> = [
+			Uri.joinPath(context.extensionUri, 'dist', 'nanodriveThread.js').fsPath,
+			Uri.joinPath(context.extensionUri, 'server', 'target', 'wasm32-wasip1-threads', 'release', 'mmlx-nanodrive.wasm').fsPath,
+			() => { this.updateConnectionMarker(); this.sendSerialSettings(); }, state => {
 			if (this.keyboardOutputMode !== 'nanodrive8') { return; }
 			if (state.connected) { this.nanodrive.setVoice(this.snapshot.voice); this.restorePitchBends(); }
 			void this.view?.webview.postMessage({ type: 'outputConnection', target: 'keyboard', mode: 'nanodrive8', id: this.outputId, ...state });
@@ -147,7 +148,13 @@ export class VoiceViewProvider implements WebviewViewProvider {
 			}
 			this.nanodriveLog.appendLine(`${new Date().toISOString()} ${message}`);
 		}, (playing, error) => { if (this.keyboardOutputMode === 'nanodrive8') { this.setVoiceTesting(playing, error); } },
-		keys => { if (this.playbackMode === 'nanodrive8') { void this.view?.webview.postMessage({ type: 'playbackKeys', id: this.playbackId, mode: 'nanodrive8', keys }); } });
+		keys => { if (this.playbackMode === 'nanodrive8') { void this.view?.webview.postMessage({ type: 'playbackKeys', id: this.playbackId, mode: 'nanodrive8', keys }); } }];
+		const [, , onState, ...outputCallbacks] = callbacks;
+		this.nanodrive = threaded ? new NanoDriveThreadClient(...callbacks) : new NanoDriveConnection(async params => {
+			if (codec) { return codec(params); }
+			if (!this.nanodriveWorker) { throw new Error('NanoDrive8 engine is not available.'); }
+			return this.nanodriveWorker.request(params);
+		}, onState, openSerial, undefined, ...outputCallbacks);
 		this.emulation = wasm ? new EmulationSession(context.extensionUri, wasm,
 			state => {
 				this.emulationConnected = state.connected;
@@ -833,7 +840,8 @@ export class VoiceViewProvider implements WebviewViewProvider {
 	dispose(): void {
 		this.playbackSources?.dispose();
 		this.view = undefined;
-		void this.disconnectNanoDrive();
+		if (this.nanodrive instanceof NanoDriveThreadClient) { void this.nanodrive.dispose(); }
+		else { void this.disconnectNanoDrive(); }
 		this.emulation?.dispose();
 		this.playback?.dispose();
 		this.midiInput.disconnect();

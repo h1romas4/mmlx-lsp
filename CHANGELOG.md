@@ -2,6 +2,10 @@
 
 All notable changes to the "mmlx-lsp" extension will be documented in this file.
 
+## [Unreleased]
+
+- Run NanoDrive8 generation and serial playback in dedicated workers to keep FM timing and PCM supply independent of Extension Host stalls.
+
 ## [0.14.0] - 2026-10-10
 
 - Follow playback in the MML editor with theme-aware note, rest and whole-line highlights on Emulation and NanoDrive8, including repeats and loops without moving the cursor. Pause holds highlights; Stop, completion and edits clear them.

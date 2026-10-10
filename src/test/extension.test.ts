@@ -2,6 +2,7 @@ import * as assert from 'assert';
 import * as path from 'node:path';
 import { EventEmitter as NodeEventEmitter } from 'node:events';
 import { randomUUID } from 'node:crypto';
+import { Worker } from 'node:worker_threads';
 import { tmpdir } from 'node:os';
 import * as vscode from 'vscode';
 import { Wasm } from '@vscode/wasm-wasi/v1';
@@ -13,6 +14,8 @@ import { MidiInputConnection } from '../midiInput';
 import { EmulationSession, type EmulationState, type PlaybackProgress } from '../emulation';
 import type { FmKeyEvent } from '../emulationProtocol';
 import { NanoDriveWorker } from '../nanodriveWorker';
+import { NanoDriveRuntime } from '../nanodriveRuntime';
+import { NanoDriveThreadClient } from '../nanodriveThreadClient';
 import { PlaybackSourceTracker } from '../playbackSource';
 import type { NanoDriveConnection } from '../nanodrive';
 import { Port as NanoDriveTestPort, codec as nanoDriveTestCodec } from './nanodrive.test';
@@ -1977,6 +1980,106 @@ suite('mmlx extension', () => {
 			for (const subscription of context.subscriptions) { subscription.dispose(); }
 			await configuration.update('midi.input', previous, vscode.ConfigurationTarget.WorkspaceFolder);
 			events.dispose(); messages.dispose(); updates.dispose();
+		}
+	});
+
+	test('NanoDrive8 independent runtime encodes real WASM, streams playback and releases failed ports', async function () {
+		this.timeout(20000);
+		const extension = vscode.extensions.all.find(extension => extension.packageJSON.name === 'mmlx-lsp'); assert.ok(extension);
+		const entry = vscode.Uri.joinPath(extension.extensionUri, 'dist', 'nanodriveThread.js').fsPath;
+		const wasmPath = vscode.Uri.joinPath(extension.extensionUri, 'server', 'target', 'wasm32-wasip1-threads', 'release', 'mmlx-nanodrive.wasm').fsPath;
+		const runtime = new NanoDriveRuntime(entry, wasmPath);
+		try {
+			const ping = await runtime.request({ operation: 'encode', command: 'ping', requestId: 1, payload: [0x4e, 0x44, 0x38] });
+			assert.ok(ping && 'bytes' in ping);
+			assert.deepStrictEqual(ping.bytes, Uint8Array.from([0, 6, 0x4e, 0x44, 1, 1, 1, 2, 3, 6, 0x4e, 0x44, 0x38, 0x33, 0x96, 0]));
+			assert.deepStrictEqual(await runtime.request({ operation: 'decode', body: [6, 0x4e, 0x44, 1, 0x81, 1, 2, 4, 1, 6, 0x4e, 0x44, 0x38, 0xe4, 0x56], request: Array.from(ping.bytes) }), { status: 0 });
+			for (const audio of [false, true]) {
+				const source = new TextEncoder().encode(playbackSource + (audio ? 'P o1 c4' : ''));
+				await runtime.request({ operation: 'upload', asset: 'source', offset: 0, bytes: Array.from(source) });
+				assert.deepStrictEqual(await runtime.request({ operation: 'playbackInit', looped: false }), { audio });
+				let ended = false; let position = 0;
+				for (let index = 0; index < 1000 && !ended; index++) {
+					const chunk = await runtime.request({ operation: 'playbackNext', requestId: index * 128 });
+					assert.ok(chunk && 'bytes' in chunk && chunk.bytes instanceof Uint8Array);
+					assert.ok(chunk.position! >= position); position = chunk.position!; ended = chunk.ended!;
+				}
+				assert.ok(ended && position > 0); await runtime.request({ operation: 'playbackStop' });
+			}
+			await assert.rejects(runtime.request({ operation: 'encode', command: 'setOutputVolume', requestId: 42, payload: [97] }));
+		} finally { await runtime.dispose(); }
+		await assert.rejects(runtime.request({ operation: 'playbackInfo' }), /stopped/);
+		const diagnostics: string[] = [];
+		const client = new NanoDriveThreadClient(entry, wasmPath, () => {}, () => {}, () => {}, message => diagnostics.push(message), () => {}, () => {});
+		try {
+			await client.connect(path.join(tmpdir(), `missing-nanodrive-${randomUUID()}`));
+			assert.strictEqual(client.state.connected, false); assert.ok(client.state.error);
+			await client.disconnect();
+		} finally { await client.dispose(); }
+	});
+
+	test('NanoDrive8 independent supply keeps FM and PCM running while Extension Host is blocked', async function () {
+		this.timeout(15000);
+		for (const audio of [false, true]) {
+			const metrics = new Int32Array(new SharedArrayBuffer(12));
+			const worker = new Worker(`
+				const {parentPort,workerData}=require('node:worker_threads');
+				global.suite=()=>{};
+				const {Port,codec}=require(workerData.testPath);
+				const {NanoDriveConnection}=require(workerData.connectionPath);
+				const {runNanoDriveService}=require(workerData.servicePath);
+				const port=new Port(); port.detectUnderflow=true;
+				const write=port.write.bind(port);
+				port.write=async bytes=>{ await write(bytes); const request=port.commands.at(-1);
+					if(request.command===(workerData.audio?'audioData':'fmBurst')) Atomics.add(workerData.metrics,0,1);
+					if(request.command==='audioStatus' && port.underflowed) Atomics.store(workerData.metrics,1,1);
+				};
+				let position=0;
+				const generate=async params=>{
+					if(params.operation==='upload'||params.operation==='playbackStop') return null;
+					if(params.operation==='playbackInfo') return {audio:workerData.audio,pdxName:null};
+					if(params.operation==='playbackInit') {position=0;return {audio:workerData.audio};}
+					if(params.operation==='playbackNext') {
+						position+=workerData.audio?160:882;
+						const command=workerData.audio?'audioData':'fmBurst';
+						return {bytes:Uint8Array.from([0,...Buffer.from(JSON.stringify({command,requestId:params.requestId,position,ended:false})),0]),
+							count:1,position,ended:false,...(workerData.audio?{}:{fm:true,synchronize:false})};
+					}
+					return codec(params);
+				};
+				const connection=new NanoDriveConnection(generate,()=>{},async()=>port,100,undefined,
+					state=>{if(state.playing) Atomics.store(workerData.metrics,2,1);},message=>parentPort.postMessage({type:'failure',message}));
+				runNanoDriveService(connection,event=>parentPort.postMessage(event));
+			`, { eval: true, workerData: { audio, metrics, testPath: path.join(__dirname, 'nanodrive.test.js'),
+				connectionPath: path.join(__dirname, '..', 'nanodrive.js'), servicePath: path.join(__dirname, '..', 'nanodriveThread.js') } });
+			const replies = new Map<number, { resolve: () => void; reject: (error: Error) => void }>();
+			const failures: string[] = [];
+			worker.on('message', event => {
+				if (event.type === 'failure') { failures.push(event.message); }
+				if (event.type === 'reply') {
+					const pending = replies.get(event.id); replies.delete(event.id);
+					if (event.error) { pending?.reject(new Error(event.error)); } else { pending?.resolve(); }
+				}
+			});
+			worker.on('error', error => { for (const pending of replies.values()) { pending.reject(error instanceof Error ? error : new Error(String(error))); } });
+			let id = 0;
+			const call = (method: string, args: unknown[] = []) => new Promise<void>((resolve, reject) => {
+				const requestId = id++; replies.set(requestId, { resolve, reject }); worker.postMessage({ id: requestId, method, args });
+			});
+			try {
+				await call('connect', ['test']);
+				const playing = call('startPlayback', ['A c1', true, {}]);
+				for (let attempt = 0; attempt < 200 && Atomics.load(metrics, 2) === 0; attempt++) { await new Promise(resolve => setTimeout(resolve, 5)); }
+				assert.strictEqual(Atomics.load(metrics, 2), 1);
+				const before = Atomics.load(metrics, 0);
+				const until = performance.now() + 600;
+				while (performance.now() < until) { Atomics.load(metrics, 0); }
+				assert.ok(Atomics.load(metrics, 0) - before >= 20, `Supply must continue independently (audio=${audio})`);
+				assert.strictEqual(Atomics.load(metrics, 1), 0, 'No simulated PCM underflow');
+				await call('setMuted', [257]); await call('setVolume', [.5]);
+				await call('stopPlayback'); await playing; await call('disconnect');
+				assert.deepStrictEqual(failures, []);
+			} finally { await worker.terminate(); }
 		}
 	});
 

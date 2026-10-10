@@ -34,7 +34,8 @@ async function main() {
 	copyFileSync(require.resolve('lucide-static/LICENSE'), 'assets/webview/lucide-LICENSE');
 	const ctx = await esbuild.context({
 		entryPoints: [
-			'src/extension.ts'
+			'src/extension.ts',
+			'src/nanodriveThread.ts'
 		],
 		bundle: true,
 		format: 'cjs',
@@ -42,7 +43,7 @@ async function main() {
 		sourcemap: !production,
 		sourcesContent: false,
 		platform: 'node',
-		outfile: 'dist/extension.js',
+		outdir: 'dist',
 		external: ['vscode', '@serialport/bindings-cpp', '@julusian/midi'],
 		logLevel: 'silent',
 		plugins: [
