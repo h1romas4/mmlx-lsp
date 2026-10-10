@@ -11,6 +11,7 @@ import { createMidiInput, MidiInputConnection, type MidiInputPort } from './midi
 import { NanoDriveConnection, openNanoDrivePort, type NanoDriveAdpcmMode, type NanoDriveCodec, type NanoDriveInput, type NanoDrivePort } from './nanodrive';
 import { NanoDriveWorker } from './nanodriveWorker';
 import { NanoDriveThreadClient } from './nanodriveThreadClient';
+import { NanoDriveProcess } from './nanodriveProcess';
 import { PlaybackSourceTracker } from './playbackSource';
 import { findPdx, resolveUri } from './tasks';
 
@@ -82,7 +83,7 @@ export class VoiceViewProvider implements WebviewViewProvider {
 	private serialPorts: SerialPortInfo[] = [];
 	private serialLoading = false;
 	private serialError = '';
-	private readonly nanodrive: NanoDriveConnection | NanoDriveThreadClient;
+	private readonly nanodrive: NanoDriveConnection | NanoDriveThreadClient | NanoDriveProcess;
 	private readonly nanodriveWorker?: NanoDriveWorker;
 	private readonly nanodriveAvailable: boolean;
 	private nanodriveLog?: OutputChannel;
@@ -152,7 +153,9 @@ export class VoiceViewProvider implements WebviewViewProvider {
 		}, (playing, error) => { if (this.keyboardOutputMode === 'nanodrive8') { this.setVoiceTesting(playing, error); } },
 		keys => { if (this.playbackMode === 'nanodrive8') { void this.view?.webview.postMessage({ type: 'playbackKeys', id: this.playbackId, mode: 'nanodrive8', keys }); } }];
 		const [, , onState, ...outputCallbacks] = callbacks;
-		this.nanodrive = threaded ? new NanoDriveThreadClient(...callbacks) : new NanoDriveConnection(async params => {
+		this.nanodrive = threaded ? (process.platform === 'win32' && process.arch === 'x64'
+			? new NanoDriveProcess(context.extensionUri.fsPath, onState, ...outputCallbacks)
+			: new NanoDriveThreadClient(...callbacks)) : new NanoDriveConnection(async params => {
 			if (codec) { return codec(params); }
 			if (!this.nanodriveWorker) { throw new Error('NanoDrive8 engine is not available.'); }
 			return this.nanodriveWorker.request(params);
@@ -879,6 +882,7 @@ export class VoiceViewProvider implements WebviewViewProvider {
 	async disconnectNanoDrive(): Promise<void> {
 		await this.nanodrive.disconnect();
 		await this.nanodriveWorker?.dispose();
+		if (this.nanodrive instanceof NanoDriveProcess) { await this.nanodrive.dispose(); }
 	}
 
 	dispose(): void {

@@ -43,8 +43,37 @@ jobs:
           fs.appendFileSync(process.env.GITHUB_OUTPUT, `version=${version}\n`);
           NODE
 
+  nanodrive-windows:
+    runs-on: windows-2022
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+          cache: npm
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: x86_64-pc-windows-msvc
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: server
+          key: nanodrive-windows
+      - uses: ilammy/msvc-dev-cmd@v1
+        with:
+          arch: x64
+      - run: npm ci
+      - run: npm run build:nanodrive-native
+      - run: npm run compile-tests
+      - name: Test dedicated NanoDrive8 process
+        run: node node_modules/mocha/bin/mocha.js --ui tdd --timeout 15000 out/test/nanodrive.test.js out/test/nanodriveProcess.test.js
+      - uses: actions/upload-artifact@v4
+        with:
+          name: nanodrive-windows
+          path: dist/native/mmlx-nanodrive.exe
+          if-no-files-found: error
+
   vsix:
-    needs: metadata
+    needs: [metadata, nanodrive-windows]
     runs-on: ubuntu-26.04
     env:
       VERSION: ${{ needs.metadata.outputs.version }}
@@ -89,6 +118,10 @@ jobs:
           manifest.repository ??= { type: 'git', url: `https://github.com/${process.env.GITHUB_REPOSITORY}.git` };
           fs.writeFileSync('package.json', JSON.stringify(manifest, null, 2) + '\n');
           NODE
+      - uses: actions/download-artifact@v4
+        with:
+          name: nanodrive-windows
+          path: dist/native
       - name: Package universal VSIX
         shell: bash
         run: |
