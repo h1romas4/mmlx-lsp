@@ -28,12 +28,14 @@ export type NanoDriveCodec = (params: { operation: 'encode'; command: NanoDriveC
     | { operation: 'audition'; session: number; requestId: number; command: NanoDriveInput }
     | { operation: 'upload'; asset: 'source' | 'pdx'; offset: number; bytes: number[] }
     | { operation: 'playbackInfo' | 'playbackStop' }
+    | { operation: 'sourceTraceInit'; looped: boolean }
+    | { operation: 'sourceTraceNext'; until: number }
     | { operation: 'playbackInit'; looped: boolean; adpcmMode?: NanoDriveAdpcmMode; muted?: number }
     | { operation: 'playbackNext'; requestId: number }
     | { operation: 'playbackFilter'; bytes: number[] }
     | { operation: 'playbackMute'; muted: number; requestId: number; position: number }
     | { operation: 'voiceTestInit'; session: number; mml: string; voice: unknown }
-    | { operation: 'voiceTestNext' | 'voiceTestStop'; session: number; requestId: number }) => Promise<{ bytes: number[] | Uint8Array; count?: number; position?: number; ended?: boolean; fm?: boolean; synchronize?: boolean; keys?: FmKeyEvent[] } | { pdxName?: string | null; audio?: boolean } | NanoDriveReply | null>;
+    | { operation: 'voiceTestNext' | 'voiceTestStop'; session: number; requestId: number }) => Promise<{ bytes: number[] | Uint8Array; count?: number; position?: number; ended?: boolean; fm?: boolean; synchronize?: boolean; keys?: FmKeyEvent[] } | { pdxName?: string | null; audio?: boolean } | import('./playbackSource').SourceBatch | NanoDriveReply | null>;
 type NanoDriveChunk = Extract<Awaited<ReturnType<NanoDriveCodec>>, { bytes: number[] | Uint8Array }>;
 export interface NanoDriveState {
     port: string; connected: boolean; connecting: boolean; closing: boolean;

@@ -6,3 +6,5 @@ pub mod emulation;
 pub mod playback_events;
 #[cfg(any(feature = "emulation", feature = "nanodrive"))]
 pub mod playback_mute;
+#[cfg(any(feature = "emulation", feature = "nanodrive"))]
+pub mod playback_source;

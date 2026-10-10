@@ -1,4 +1,5 @@
 use mmlx_lsp_server::audition::{Audition, CLOCK, polyphony::Note, voice::Voice};
+use mmlx_lsp_server::playback_source::SourceTrace;
 use ndsif::{
     Chip, Command, CommandEncoder, Divider, Frame, OkiClock, RegisterWrite, Reply, Response, Status,
 };
@@ -35,6 +36,12 @@ enum Operation {
         bytes: Vec<u8>,
     },
     PlaybackInfo,
+    SourceTraceInit {
+        looped: bool,
+    },
+    SourceTraceNext {
+        until: f64,
+    },
     PlaybackInit {
         looped: bool,
         #[serde(default)]
@@ -133,6 +140,7 @@ pub struct Bridge {
     playback: Option<playback::Playback>,
     mute: playback::MuteFilter,
     voice_test: Option<playback::FmPlayback>,
+    source_trace: Option<SourceTrace>,
 }
 
 pub enum Output {
@@ -160,6 +168,26 @@ impl Bridge {
         let operation: Operation =
             serde_json::from_value(params).map_err(|error| error.to_string())?;
         match operation {
+            Operation::SourceTraceInit { looped } => {
+                self.source_trace = None;
+                self.source_trace = Some(SourceTrace::new(
+                    std::str::from_utf8(&self.source).map_err(|error| error.to_string())?,
+                    looped,
+                )?);
+                Ok(Output::Json(
+                    json!({"events":[],"position":0.0,"finished":false}),
+                ))
+            }
+            Operation::SourceTraceNext { until } => {
+                let trace = self
+                    .source_trace
+                    .as_mut()
+                    .ok_or("Playback source trace not initialized")?;
+                let (events, finished) = trace.next(until)?;
+                Ok(Output::Json(
+                    json!({"events":events,"position":trace.position(),"finished":finished}),
+                ))
+            }
             Operation::VoiceTestInit {
                 session,
                 mml,
@@ -489,6 +517,49 @@ impl Bridge {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn source_trace_reports_ranges_and_discards_failed_initialization() {
+        let mut bridge = Bridge::default();
+        assert!(
+            bridge
+                .handle(json!({"operation":"sourceTraceNext","until":0}))
+                .is_err()
+        );
+        bridge
+            .handle(json!({"operation":"upload","asset":"source","offset":0,"bytes":b"A c4"}))
+            .unwrap();
+        bridge
+            .handle(json!({"operation":"sourceTraceInit","looped":false}))
+            .unwrap();
+        let result = bridge
+            .handle(json!({"operation":"sourceTraceNext","until":0}))
+            .unwrap()
+            .value();
+        assert!(
+            result["events"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|event| event["channel"] == 0
+                    && event["start"] == 2
+                    && event["end"] == 4
+                    && event["position"] == 0.0)
+        );
+        bridge
+            .handle(json!({"operation":"upload","asset":"source","offset":0,"bytes":b"A [c4"}))
+            .unwrap();
+        assert!(
+            bridge
+                .handle(json!({"operation":"sourceTraceInit","looped":false}))
+                .is_err()
+        );
+        assert!(
+            bridge
+                .handle(json!({"operation":"sourceTraceNext","until":0}))
+                .is_err()
+        );
+    }
     use ndsif::{AudioStatus, DeviceInfo, StatusFlags};
 
     #[test]

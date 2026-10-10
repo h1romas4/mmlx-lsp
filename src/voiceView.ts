@@ -10,6 +10,7 @@ import { EmulationSession } from './emulation';
 import { createMidiInput, MidiInputConnection, type MidiInputPort } from './midiInput';
 import { NanoDriveConnection, openNanoDrivePort, type NanoDriveAdpcmMode, type NanoDriveCodec, type NanoDriveInput, type NanoDrivePort } from './nanodrive';
 import { NanoDriveWorker } from './nanodriveWorker';
+import { PlaybackSourceTracker } from './playbackSource';
 import { findPdx, resolveUri } from './tasks';
 
 interface VoiceDefinition {
@@ -92,6 +93,7 @@ export class VoiceViewProvider implements WebviewViewProvider {
 	private readonly emulation?: EmulationSession;
 	private emulationConnected = false;
 	private readonly playback?: EmulationSession;
+	private readonly playbackSources?: PlaybackSourceTracker;
 	private playbackDocument?: TextDocument;
 	private playbackConnected = false;
 	private playbackMode = 'emulation';
@@ -120,6 +122,9 @@ export class VoiceViewProvider implements WebviewViewProvider {
 		this.nanodriveWorker = wasm ? new NanoDriveWorker(context.extensionUri, wasm,
 			error => { void this.nanodrive.disconnect(error); }) : undefined;
 		this.nanodriveAvailable = !!codec || !!this.nanodriveWorker;
+		this.playbackSources = wasm ? new PlaybackSourceTracker(new NanoDriveWorker(context.extensionUri, wasm), message => {
+			if (this.playbackState.playing || this.playbackState.loading) { void window.showWarningMessage(`Playback highlighting: ${message}`); }
+		}) : undefined;
 		this.nanodrive = new NanoDriveConnection(async params => {
 			if (codec) { return codec(params); }
 			if (!this.nanodriveWorker) { throw new Error('NanoDrive8 engine is not available.'); }
@@ -132,6 +137,8 @@ export class VoiceViewProvider implements WebviewViewProvider {
 			void this.view?.webview.postMessage({ type: 'nanoDrivePlayback', busy: state.busy });
 			if (this.playbackMode !== 'nanodrive8') { return; }
 			Object.assign(this.playbackState, state, { paused: false });
+			if (state.playing) { void this.playbackSources?.setPosition(state.position); }
+			else if (!state.busy) { this.playbackSources?.stop(); }
 			this.sendPlayback();
 		}, message => {
 			if (!this.nanodriveLog) {
@@ -160,6 +167,7 @@ export class VoiceViewProvider implements WebviewViewProvider {
 				this.playbackState.playing = state.connected;
 				this.playbackState.paused = false;
 				this.playbackState.error = state.error;
+				if (!state.connected && !state.connecting) { this.playbackSources?.stop(); }
 				this.updateConnectionMarker();
 				this.sendPlayback();
 			},
@@ -239,6 +247,10 @@ export class VoiceViewProvider implements WebviewViewProvider {
 				else if (message?.type === 'resetOutput') { void this.resetOutput(message); }
 				else if (message?.type === 'voiceTestAction') { void this.voiceTestAction(message); }
 				else if (message?.type === 'playbackAction') { void this.playbackAction(message); }
+				else if (message?.type === 'playbackPosition' && message.id === this.playbackId && message.mode === 'emulation'
+					&& this.playbackMode === 'emulation' && this.playbackState.playing && workspace.isTrusted
+					&& typeof message.position === 'number' && Number.isFinite(message.position) && message.position >= 0
+					&& message.position <= this.playbackState.position + 0.1) { void this.playbackSources?.setPosition(message.position); }
 				else if (message?.type === 'playbackMute' && workspace.isTrusted && Number.isInteger(message.muted)
 					&& message.muted >= 0 && message.muted <= 511 && message.id === this.playbackId && message.mode === this.playbackMode) {
 					this.playbackMuted = message.muted;
@@ -408,6 +420,7 @@ export class VoiceViewProvider implements WebviewViewProvider {
 	}
 
 	private stopPlayback(reset = true, error = ''): void {
+		this.playbackSources?.stop();
 		this.playbackState.playing = false;
 		this.playbackState.paused = false;
 		this.playbackState.loading = false;
@@ -443,6 +456,7 @@ export class VoiceViewProvider implements WebviewViewProvider {
 			const adpcmMode = configuration.get<NanoDriveAdpcmMode>('build.adpcmMode', 'resample');
 			const configured = configuration.get<string>('build.pdx', '');
 			const loadPdx = async (name: string) => workspace.fs.readFile(configured ? resolveUri(configured, folder) : await findPdx(document.uri, name));
+			void this.playbackSources?.start(document, message.looped === true);
 			if (hardware) {
 				if (typeof message.volume === 'number' && Number.isFinite(message.volume) && message.volume >= 0 && message.volume <= 1) {
 					void this.nanodrive.setVolume(message.volume);
@@ -817,6 +831,7 @@ export class VoiceViewProvider implements WebviewViewProvider {
 	}
 
 	dispose(): void {
+		this.playbackSources?.dispose();
 		this.view = undefined;
 		void this.disconnectNanoDrive();
 		this.emulation?.dispose();

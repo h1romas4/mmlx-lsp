@@ -23,7 +23,13 @@ const playbackAudio = createEmulationAudio(
 		playbackControls.render(playbackState);
 	},
 	() => vscode.postMessage({ type: 'playbackAction', action: 'ended', id: playbackId }),
-	position => playbackControls.setPosition(playbackOrigin + position));
+	position => {
+		const consumed = playbackOrigin + position;
+		playbackControls.setPosition(consumed);
+		if (playbackState?.playing && playbackMode === 'emulation') {
+			vscode.postMessage({ type: 'playbackPosition', id: playbackId, mode: playbackMode, position: consumed });
+		}
+	});
 const emulationAudio = createEmulationAudio(
 	blocks => vscode.postMessage({ type: 'emulationRender', id: outputId, blocks }),
 	error => {

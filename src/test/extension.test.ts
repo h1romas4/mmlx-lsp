@@ -13,6 +13,8 @@ import { MidiInputConnection } from '../midiInput';
 import { EmulationSession, type EmulationState, type PlaybackProgress } from '../emulation';
 import type { FmKeyEvent } from '../emulationProtocol';
 import { NanoDriveWorker } from '../nanodriveWorker';
+import { PlaybackSourceTracker } from '../playbackSource';
+import type { NanoDriveConnection } from '../nanodrive';
 import { Port as NanoDriveTestPort, codec as nanoDriveTestCodec } from './nanodrive.test';
 
 const playbackSource = '@1 = {\n' + '31,0,0,15,0,32,0,1,0,0,0,\n'.repeat(4) + '7,0,15\n}\nA t120 @1 o4 l8 cdef\n';
@@ -821,6 +823,125 @@ suite('mmlx extension', () => {
 		} finally { controls.render(null); }
 	});
 
+	test('NanoDrive8 playback source highlights follow the hardware clock without browser audio', async function () {
+		this.timeout(20000);
+		const extension = vscode.extensions.all.find(extension => extension.packageJSON.name === 'mmlx-lsp'); assert.ok(extension);
+		const context = { extensionUri: extension.extensionUri, subscriptions: [] as vscode.Disposable[] };
+		const document = await vscode.workspace.openTextDocument({ language: 'mmlx', content: playbackSource.replace('l8 cdef', 'l4 cde') });
+		await vscode.window.showTextDocument(document);
+		const folder = vscode.workspace.workspaceFolders?.[0]; assert.ok(folder);
+		const configuration = vscode.workspace.getConfiguration('mmlx', folder.uri);
+		const originalConnection = configuration.inspect<string>('serial.connection')?.workspaceFolderValue;
+		await configuration.update('serial.connection', 'test', vscode.ConfigurationTarget.WorkspaceFolder);
+		const messages = new vscode.EventEmitter<unknown>(); const events = new vscode.EventEmitter<void>();
+		const port = new NanoDriveTestPort(); let step = 0; let state: Record<string, unknown> = {}; let serial: Record<string, unknown> = {};
+		const provider = new VoiceViewProvider(context as unknown as vscode.ExtensionContext, () => undefined,
+			async () => [{ path: 'test' }], async () => [], async () => { throw new Error('MIDI is not used'); }, await Wasm.load(), async () => port,
+			async params => {
+				if (params.operation === 'upload' || params.operation === 'playbackStop') { return null; }
+				if (params.operation === 'playbackInfo') { return { audio: false, pdxName: null }; }
+				if (params.operation === 'playbackInit') { step = 0; return { audio: false }; }
+				if (params.operation === 'playbackNext') {
+					const current = step++; const position = Math.max(0, current - 1) * 21676;
+					return { bytes: Uint8Array.from([0, ...Buffer.from(JSON.stringify({ command: 'fmBurst', requestId: params.requestId, payload: [8, current === 4 ? 0 : 120] })), 0]),
+						fm: true, count: 1, position, synchronize: current === 0, ended: current === 4, keys: [] };
+				}
+				return nanoDriveTestCodec(params);
+			});
+		const sources = Reflect.get(provider, 'playbackSources') as PlaybackSourceTracker;
+		const connection = Reflect.get(provider, 'nanodrive') as NanoDriveConnection;
+		const view = { visible: true, onDidChangeVisibility: events.event, onDidDispose: events.event,
+			webview: { cspSource: 'https://test.invalid', asWebviewUri: (uri: vscode.Uri) => uri, onDidReceiveMessage: messages.event,
+				options: {}, html: '', postMessage: async (message: Record<string, unknown>) => { if (message.type === 'playback') { state = message; } if (message.type === 'serialSettings') { serial = message; } return true; } }
+		} as unknown as vscode.WebviewView;
+		async function wait(predicate: () => boolean): Promise<void> {
+			for (let count = 0; count < 800 && !predicate(); count++) { await new Promise(resolve => setTimeout(resolve, 5)); }
+			assert.ok(predicate(), JSON.stringify(state));
+		}
+		try {
+			await sources.start(document, false);
+			await provider.resolveWebviewView(view); await wait(() => state.available === true);
+			messages.fire({ type: 'getSerialPorts' }); await wait(() => serial.canConnect === true);
+			messages.fire({ type: 'setSerialConnection', connected: true, folder: folder.uri.toString() });
+			await wait(() => connection.state.connected);
+			messages.fire({ type: 'playbackAction', action: 'play', mode: 'nanodrive8', id: 10, document: document.uri.toString() });
+			await wait(() => sources.ranges.some(range => document.getText(range) === 'c'));
+			await wait(() => sources.ranges.some(range => document.getText(range) === 'd'));
+			assert.ok(Number(state.position) > 0.48, 'Hardware playback position, not generation, advances the editor');
+			await wait(() => sources.ranges.some(range => document.getText(range) === 'e'));
+			await wait(() => state.finished === true && state.playing === false);
+			assert.strictEqual(sources.ranges.length, 0); assert.strictEqual(state.error, '');
+		} finally {
+			await connection.disconnect(); provider.dispose();
+			for (const subscription of context.subscriptions) { subscription.dispose(); }
+			messages.dispose(); events.dispose();
+			await configuration.update('serial.connection', originalConnection, vscode.ConfigurationTarget.WorkspaceFolder);
+		}
+	});
+
+	test('Playback source tracker cancels stale initialization and rejects invalid UTF-8 ranges', async () => {
+		const document = await vscode.workspace.openTextDocument({ language: 'mmlx', content: ';日本😀\nA c4' });
+		let release!: () => void; let entered!: () => void;
+		const initializing = new Promise<void>(resolve => { entered = resolve; });
+		const delayed = new Promise<void>(resolve => { release = resolve; });
+		const errors: string[] = [];
+		const worker = { dispose: async () => {}, request: async (params: Parameters<NanoDriveWorker['request']>[0]) => {
+			if (params.operation === 'sourceTraceInit') { entered(); await delayed; return { events: [], position: 0, finished: false }; }
+			if (params.operation === 'sourceTraceNext') { return { events: [{ position: 0, channel: 0, start: 2, end: 4 }], position: 1, finished: false }; }
+			return null;
+		} };
+		const tracker = new PlaybackSourceTracker(worker, error => errors.push(error));
+		try {
+			const starting = tracker.start(document, false); await initializing;
+			tracker.stop(); release(); await starting; await tracker.setPosition(0);
+			assert.strictEqual(tracker.ranges.length, 0, 'A canceled trace cannot restart highlighting');
+			assert.deepStrictEqual(errors, []);
+			await tracker.start(document, false); await tracker.setPosition(0);
+			assert.strictEqual(tracker.ranges.length, 0, 'Non-boundary UTF-8 offsets cannot decorate unrelated text');
+			assert.deepStrictEqual(errors, ['Invalid playback source range.']);
+		} finally { release(); tracker.dispose(); }
+	});
+
+	test('Playback source WASI highlights consumed FM and PCM positions, loops and clears on edits', async function () {
+		this.timeout(20000);
+		const extension = vscode.extensions.all.find(extension => extension.packageJSON.name === 'mmlx-lsp'); assert.ok(extension);
+		const worker = new NanoDriveWorker(extension.extensionUri, await Wasm.load());
+		const errors: string[] = [];
+		const tracker = new PlaybackSourceTracker(worker, message => errors.push(message));
+		const source = '; 日本語 😀\n' + playbackSource.replace('A t120 @1 o4 l8 cdef', 'A t120 @1 o4 L c8 r8\nH @1 o5 L d4\nP o1 L r8 c8');
+		const document = await vscode.workspace.openTextDocument({ language: 'mmlx', content: source });
+		const editor = await vscode.window.showTextDocument(document);
+		const selection = editor.selection;
+		const tokens = () => tracker.ranges.map(range => document.getText(range));
+		try {
+			await tracker.start(document, true);
+			assert.strictEqual(tracker.ranges.length, 0, 'Compilation and prefetch must not highlight before the playback clock');
+			await tracker.setPosition(0);
+			assert.deepStrictEqual(tokens().sort(), ['c8', 'd4', 'r8'].sort(), 'FM and PCM highlight together, with correct UTF-8 to UTF-16 conversion');
+			await tracker.setPosition(0.1);
+			assert.ok(tokens().includes('c8'), 'Prefetched next note cannot advance the editor early');
+			await tracker.setPosition(0.25);
+			assert.deepStrictEqual(tokens().sort(), ['r8', 'd4', 'c8'].sort(), 'The consumed clock follows FM rest and PCM note');
+			const paused = tracker.ranges.map(range => [range.start.line, range.start.character, range.end.character]);
+			await new Promise(resolve => setTimeout(resolve, 40));
+			assert.deepStrictEqual(tracker.ranges.map(range => [range.start.line, range.start.character, range.end.character]), paused, 'Without playback clock updates, pause holds the highlights');
+			await tracker.setPosition(0.5);
+			assert.deepStrictEqual(tokens().sort(), ['c8', 'd4', 'r8'].sort(), 'Native loops return to the original MML ranges');
+			assert.deepStrictEqual(editor.selection, selection, 'Playback decorations never move the cursor or selection');
+			tracker.stop(); assert.strictEqual(tracker.ranges.length, 0);
+			await tracker.start(document, false); await tracker.setPosition(0.3);
+			assert.ok(tokens().includes('r8'), 'A cursor-style start restores the current spans without displaying old positions');
+			await tracker.setPosition(2);
+			assert.strictEqual(tracker.ranges.length, 0, 'Track end clears completed ranges');
+			await tracker.start(document, true); await tracker.setPosition(0);
+			const edit = new vscode.WorkspaceEdit(); edit.insert(document.uri, new vscode.Position(0, 0), '; edit\n');
+			assert.ok(await vscode.workspace.applyEdit(edit));
+			assert.strictEqual(tracker.ranges.length, 0, 'Editing invalidates the source snapshot immediately');
+			await tracker.setPosition(0.5); assert.strictEqual(tracker.ranges.length, 0, 'Stale positions cannot restore invalid ranges');
+			assert.deepStrictEqual(errors, []);
+		} finally { tracker.dispose(); await worker.dispose(); }
+	});
+
 	test('Playback WASI compiles large MML and streams FM and PCM audio with position and completion', async function () {
 		this.timeout(20000);
 		const extension = vscode.extensions.all.find(extension => extension.packageJSON.name === 'mmlx-lsp');
@@ -949,6 +1070,14 @@ suite('mmlx extension', () => {
 		const keyMessages: { id: number; keys: FmKeyEvent[] }[] = [];
 		const provider = new VoiceViewProvider(context as unknown as vscode.ExtensionContext, () => undefined,
 			async () => [], async () => [], async () => { throw new Error('MIDI is not used'); }, await Wasm.load());
+		const sources = Reflect.get(provider, 'playbackSources') as PlaybackSourceTracker;
+		assert.ok(sources);
+		async function highlighted(token: string): Promise<void> {
+			for (let count = 0; count < 300 && !sources.ranges.some(range => document.getText(range) === token); count++) {
+				await new Promise(resolve => setTimeout(resolve, 5));
+			}
+			assert.ok(sources.ranges.some(range => document.getText(range) === token), `Expected playback highlight: ${token}`);
+		}
 		const view = { visible: true, onDidChangeVisibility: events.event, onDidDispose: events.event,
 			webview: { cspSource: 'https://test.invalid', asWebviewUri: (uri: vscode.Uri) => uri,
 				onDidReceiveMessage: messages.event, options: {}, html: '',
@@ -977,8 +1106,17 @@ suite('mmlx extension', () => {
 			messages.fire({ type: 'playbackRender', id: 1, blocks: 4 });
 			await until(() => blocks === 4);
 			await until(() => keyMessages.some(message => message.id === 1 && message.keys.some(event => event.channel === 0 && event.note === 60)));
+			assert.strictEqual(sources.ranges.length, 0, 'Generated PCM must not advance editor highlights');
+			messages.fire({ type: 'playbackPosition', id: 999, mode: 'emulation', position: 0 });
+			messages.fire({ type: 'playbackPosition', id: 1, mode: 'nanodrive8', position: 0 });
+			messages.fire({ type: 'playbackPosition', id: 1, mode: 'emulation', position: 1000 });
+			assert.strictEqual(sources.ranges.length, 0, 'Wrong sessions, outputs and future clocks are ignored');
+			messages.fire({ type: 'playbackPosition', id: 1, mode: 'emulation', position: 0 });
+			await highlighted('c');
 			messages.fire({ type: 'playbackAction', action: 'pause', id: 1 });
 			assert.strictEqual(state.paused, true); assert.strictEqual(state.playing, false);
+			messages.fire({ type: 'playbackPosition', id: 1, mode: 'emulation', position: 0.04 });
+			assert.ok(sources.ranges.some(range => document.getText(range) === 'c'), 'Pause keeps the consumed source position');
 			messages.fire({ type: 'playbackAction', action: 'resume', id: 1 });
 			assert.strictEqual(state.playing, true); assert.strictEqual(state.paused, false);
 			messages.fire({ type: 'playbackRender', id: 1, blocks: 4 });
@@ -987,6 +1125,7 @@ suite('mmlx extension', () => {
 			await vscode.window.showTextDocument(plain);
 			await until(() => state.available === false);
 			assert.strictEqual(state.playing, false); assert.strictEqual(state.position, 0);
+			assert.strictEqual(sources.ranges.length, 0, 'Switching documents clears editor highlights');
 			await vscode.window.showTextDocument(document);
 			await until(() => state.available === true);
 			messages.fire({ type: 'playbackAction', action: 'play', id: 2, document: document.uri.toString(), sampleRate: 48000 });
@@ -1003,7 +1142,10 @@ suite('mmlx extension', () => {
 			messages.fire({ type: 'playbackRender', id: 3, blocks: 4 });
 			await until(() => blocks === 12);
 			await until(() => keyMessages.some(message => message.id === 3 && message.keys.some(event => event.channel === 0 && event.note === 64)));
+			messages.fire({ type: 'playbackPosition', id: 3, mode: 'emulation', position: Number(state.position) + 0.001 });
+			await highlighted('e');
 			messages.fire({ type: 'playbackAction', action: 'stop', id: 3 });
+			assert.strictEqual(sources.ranges.length, 0, 'Stop clears cursor playback highlights');
 			editor.selection = new vscode.Selection(0, 0, 0, 0);
 			messages.fire({ type: 'playbackAction', action: 'playFromCursor', id: 4, document: document.uri.toString(), sampleRate: 48000 });
 			await until(() => state.loading === false && state.id === 4 && !!state.error);
