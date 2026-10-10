@@ -428,6 +428,102 @@ suite('mmlx extension', () => {
 			assert.ok(result.spectrumPeak > -80 && result.spectrumPeak <= 0, JSON.stringify(result));
 		} finally { clearTimeout(timer); listener.dispose(); session.dispose(); panel.dispose(); }
 	});
+	test('Browser Emulation Worker supplies real FM and PCM while Extension Host is blocked', async function () {
+		this.timeout(20000);
+		const extension = vscode.extensions.all.find(extension => extension.packageJSON.name === 'mmlx-lsp'); assert.ok(extension);
+		const media = vscode.Uri.joinPath(extension.extensionUri, 'assets', 'webview');
+		const wasmRoot = vscode.Uri.joinPath(extension.extensionUri, 'server', 'target', 'wasm32-wasip1', 'release');
+		const panel = vscode.window.createWebviewPanel('mmlx.browserAudioTest', 'Browser Audio Test', vscode.ViewColumn.Beside,
+			{ enableScripts: true, retainContextWhenHidden: true, localResourceRoots: [media, wasmRoot] });
+		const pdx = new Uint8Array(768 + 17000); const table = new DataView(pdx.buffer);
+		table.setUint32(9 * 8, 768); table.setUint32(9 * 8 + 4, 17000); pdx.fill(0x7f, 768);
+		let resolve!: (message: { delta: number; rms: number; mutedRms: number; resumed: number; ended: boolean; hostRequests: number; assets: number }) => void;
+		let reject!: (error: Error) => void;
+		const result = new Promise<Parameters<typeof resolve>[0]>((done, failed) => { resolve = done; reject = failed; });
+		const stages: unknown[] = [];
+		async function start(): Promise<void> {
+			const targets = await (await fetch('http://127.0.0.1:9237/json')).json() as { webSocketDebuggerUrl?: string }[];
+			for (const target of targets) {
+				if (!target.webSocketDebuggerUrl) { continue; }
+				const socket = new WebSocket(target.webSocketDebuggerUrl); const contexts: number[] = []; let id = 0;
+				const pending = new Map<number, (value: { result?: { value?: unknown } }) => void>();
+				socket.addEventListener('message', event => {
+					const message = JSON.parse(String(event.data));
+					if (message.method === 'Runtime.executionContextCreated') { contexts.push(message.params.context.id); }
+					const callback = pending.get(message.id); if (callback) { pending.delete(message.id); callback(message.result); }
+				});
+				const command = (method: string, params = {}) => new Promise<{ result?: { value?: unknown } }>(done => {
+					const sequence = ++id; pending.set(sequence, done); socket.send(JSON.stringify({ id: sequence, method, params }));
+				});
+				try {
+					await new Promise<void>((done, failed) => { socket.addEventListener('open', () => done(), { once: true }); socket.addEventListener('error', () => failed(new Error('Renderer connection failed')), { once: true }); });
+					await command('Runtime.enable');
+					for (const contextId of contexts) {
+						const probe = await command('Runtime.evaluate', { expression: 'typeof window.__mmlxBrowserAudio', contextId, returnByValue: true });
+						if (probe.result?.value === 'function') {
+							await command('Runtime.evaluate', { expression: 'window.__mmlxBrowserAudio()', contextId, userGesture: true }); return;
+						}
+					}
+				} finally { socket.close(); }
+			}
+			throw new Error('Browser audio test renderer not found');
+		}
+		const listener = panel.webview.onDidReceiveMessage(message => {
+			stages.push(message.type === 'asset' ? { type: 'asset' } : message);
+			if (message.type === 'loaded') { void start().catch(reject); }
+			else if (message.type === 'asset') { void panel.webview.postMessage({ type: 'asset', bytes: new Uint8Array(Buffer.from(pdx)) }); }
+			else if (message.type === 'block') {
+				const until = performance.now() + 600; while (performance.now() < until) { Math.sqrt(performance.now()); }
+			} else if (message.type === 'result') { resolve(message); }
+			else if (message.type === 'failure') { reject(new Error(message.error)); }
+		});
+		const nonce = randomUUID();
+		const audioUri = panel.webview.asWebviewUri(vscode.Uri.joinPath(media, 'emulationAudio.js')).toString();
+		const wasm = panel.webview.asWebviewUri(vscode.Uri.joinPath(wasmRoot, 'mmlx-emulator.wasm')).toString();
+		const source = '#pcmfile "drums"\n' + playbackSource.replace('A t120 @1 o4 l8 cdef', 'A t120 @1 o4 L c1\nP F2 o1 L c1');
+		panel.webview.html = `<!DOCTYPE html><html><head><meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'nonce-${nonce}' 'wasm-unsafe-eval' ${panel.webview.cspSource}; worker-src blob:; connect-src ${panel.webview.cspSource};"></head><body>
+		<script type="module" nonce="${nonce}">
+		import {createEmulationAudio} from '${audioUri}';
+		const api=acquireVsCodeApi(); let position=0; let hostRequests=0; let assets=0; let ended=false; let ready;
+		const delay=milliseconds=>new Promise(resolve=>setTimeout(resolve,milliseconds));
+		const audio=createEmulationAudio(()=>hostRequests++,error=>api.postMessage({type:'failure',error}),()=>{ended=true;},value=>{position=value;});
+		const rms=()=>{const analysis=audio.readAnalysis();if(!analysis)return 0;const samples=analysis.samples.subarray(-1024);return Math.sqrt(samples.reduce((sum,value)=>sum+value*value,0)/samples.length);};
+		const onEvent=event=>{
+			api.postMessage({type:'stage',event:event.type});
+			if(event.type==='ready'){audio.start();ready();}
+			else if(event.type==='asset'){assets++;api.postMessage({type:'asset'});}
+			else if(event.type==='error'){api.postMessage({type:'failure',error:event.error});}
+		};
+		window.addEventListener('message',event=>{if(event.data.type==='asset')audio.workerAsset(event.data.bytes);});
+		window.__mmlxBrowserAudio=async()=>{try{
+			const sampleRate=await audio.connect();audio.setVolume(0);api.postMessage({type:'stage',event:'audioConnected'});
+			const started=new Promise(resolve=>{ready=resolve;});
+			await audio.connectWorker({type:'browserPlaybackInit',id:1,wasm:${JSON.stringify(wasm)},sampleRate,options:{source:${JSON.stringify(source)},looped:true,muted:0,adpcmMode:'through',pdxConfigured:false}},onEvent);
+			await started;audio.readAnalysis();await delay(100);
+			const before=position;api.postMessage({type:'block'});await delay(700);
+			const delta=position-before;const energy=rms();
+			audio.setMuted(511);await delay(150);const mutedRms=rms();
+			await audio.pause();await delay(50);const paused=position;await delay(100);
+			if(position!==paused)throw new Error('Pause must hold consumed position');
+			audio.setMuted(0);await audio.resume();await delay(150);const resumed=position-paused;
+			if(rms()<.0001)throw new Error('Unmute and resume must restore PCM');
+			audio.disconnect();position=0;
+			const rate=await audio.connect();audio.setVolume(0);const finite=new Promise(resolve=>{ready=resolve;});
+			await audio.connectWorker({wasm:${JSON.stringify(wasm)},sampleRate:rate,options:{source:'A r64',looped:false,muted:0,pdxConfigured:false}},onEvent);
+			await finite;await delay(200);
+			api.postMessage({type:'result',delta,rms:energy,mutedRms,resumed,ended,hostRequests,assets});audio.disconnect();
+		}catch(error){api.postMessage({type:'failure',error:String(error)});audio.disconnect();}};
+		api.postMessage({type:'loaded'});
+		</script></body></html>`;
+		const timer = setTimeout(() => reject(new Error('Browser Worker audio test timed out: ' + JSON.stringify(stages))), 15000);
+		try {
+			const values = await result; console.log('Browser Worker audio:', JSON.stringify(values));
+			assert.ok(values.delta >= .6, JSON.stringify(values)); assert.ok(values.rms > .0001, JSON.stringify(values));
+			assert.strictEqual(values.mutedRms, 0); assert.ok(values.resumed > .1); assert.ok(values.ended);
+			assert.strictEqual(values.hostRequests, 0); assert.strictEqual(values.assets, 1);
+		} finally { clearTimeout(timer); listener.dispose(); panel.dispose(); }
+	});
+
 	test('FM Voice audio analysis preserves output and releases buffers on reconnect', async () => {
 		const extension = vscode.extensions.all.find(extension => extension.packageJSON.name === 'mmlx-lsp');
 		assert.ok(extension);
@@ -1078,6 +1174,8 @@ suite('mmlx extension', () => {
 		let state: Record<string, unknown> = {};
 		let blocks = 0;
 		const keyMessages: { id: number; keys: FmKeyEvent[] }[] = [];
+		let browserInit: Record<string, unknown> | undefined;
+		let browserAsset: Record<string, unknown> | undefined;
 		const provider = new VoiceViewProvider(context as unknown as vscode.ExtensionContext, () => undefined,
 			async () => [], async () => [], async () => { throw new Error('MIDI is not used'); }, await Wasm.load());
 		const sources = Reflect.get(provider, 'playbackSources') as PlaybackSourceTracker;
@@ -1093,6 +1191,8 @@ suite('mmlx extension', () => {
 				onDidReceiveMessage: messages.event, options: {}, html: '',
 				postMessage: async (message: Record<string, unknown>) => {
 					if (message.type === 'playback') { state = message; }
+					if (message.type === 'browserPlaybackInit') { browserInit = message; }
+					if (message.type === 'browserPlaybackAsset') { browserAsset = message; }
 					if (message.type === 'playbackPcm') { assert.ok(message.pcm instanceof ArrayBuffer); blocks++; }
 					if (message.type === 'playbackKeys') {
 						assert.strictEqual(message.mode, 'emulation'); keyMessages.push(message as unknown as { id: number; keys: FmKeyEvent[] });
@@ -1166,6 +1266,31 @@ suite('mmlx extension', () => {
 			messages.fire({ type: 'playbackAction', action: 'stop', id: 5, error: 'Audio output was suspended.' });
 			assert.strictEqual(state.error, 'Audio output was suspended.');
 			assert.strictEqual(document.getText(), playbackSource);
+			messages.fire({ type: 'playbackAction', action: 'play', browser: true, id: 6, document: document.uri.toString(), sampleRate: 48000 });
+			await until(() => browserInit?.id === 6);
+			assert.strictEqual(state.loading, true); assert.strictEqual(state.playing, false);
+			assert.match(String(browserInit?.wasm), /wasm32-wasip1\/release\/mmlx-emulator.wasm/);
+			Reflect.set(provider, 'browserPdxLoader', async () => Buffer.from([99, 1, 2, 3, 99]).subarray(1, 4));
+			messages.fire({ type: 'browserPlaybackAsset', id: 6, name: 'drums' });
+			await until(() => browserAsset?.id === 6);
+			assert.ok(browserAsset?.bytes instanceof Uint8Array && !Buffer.isBuffer(browserAsset.bytes), 'PDX must cross the Webview boundary as a plain Uint8Array');
+			assert.deepStrictEqual(browserAsset.bytes, Uint8Array.of(1, 2, 3), 'PDX excludes Buffer pool padding');
+			messages.fire({ type: 'browserPlaybackState', id: 6, ready: true, position: 0, finished: false });
+			assert.strictEqual(state.loading, false); assert.strictEqual(state.playing, true);
+			messages.fire({ type: 'playbackRender', id: 6, blocks: 4 });
+			assert.strictEqual(blocks, 12, 'Browser playback does not generate PCM in the host');
+			messages.fire({ type: 'playbackPosition', id: 6, mode: 'emulation', position: 0 }); await highlighted('c');
+			messages.fire({ type: 'playbackAction', action: 'pause', id: 6 }); assert.strictEqual(state.paused, true);
+			messages.fire({ type: 'playbackAction', action: 'resume', id: 6 }); assert.strictEqual(state.playing, true);
+			messages.fire({ type: 'playbackAction', action: 'stop', id: 6 }); assert.strictEqual(sources.ranges.length, 0);
+			messages.fire({ type: 'browserPlaybackState', id: 6, ready: true, position: 1, finished: false });
+			assert.strictEqual(state.playing, false, 'Stopped browser sessions cannot be revived by stale messages');
+			editor.selection = new vscode.Selection(cursor, cursor);
+			messages.fire({ type: 'playbackAction', action: 'playFromCursor', browser: true, id: 7, document: document.uri.toString(), sampleRate: 48000 });
+			await until(() => browserInit?.id === 7);
+			assert.strictEqual((browserInit?.options as { cursor: number }).cursor,
+				new TextEncoder().encode(document.getText().slice(0, document.offsetAt(cursor))).length);
+			messages.fire({ type: 'playbackAction', action: 'stop', id: 7 });
 		} finally {
 			provider.dispose();
 			for (const disposable of context.subscriptions) { disposable.dispose(); }

@@ -12,8 +12,12 @@ class EmulationProcessor extends AudioWorkletProcessor {
 		this.playing = false;
 		this.finishing = false;
 		this.ended = false;
+		this.engine = undefined;
 		this.port.onmessage = event => {
-			if (event.data?.type === 'start') { this.started = true; this.request(); }
+			if (event.data?.type === 'engine') {
+				this.engine = event.data.port;
+				this.engine.onmessage = incoming => this.port.onmessage(incoming);
+			} else if (event.data?.type === 'start') { this.started = true; this.request(); }
 			else if (event.data?.type === 'clear') { this.read = 0; this.write = 0; this.frames = 0; this.consumed = 0; this.reported = 0; this.playing = false; this.request(); }
 			else if (event.data?.type === 'finish') { this.finishing = true; }
 			else if (event.data?.type === 'pcm' && event.data.pcm instanceof ArrayBuffer && event.data.pcm.byteLength === 4096 && this.pending > 0) {
@@ -33,7 +37,7 @@ class EmulationProcessor extends AudioWorkletProcessor {
 	request() {
 		if (!this.started || this.finishing) { return; }
 		const blocks = Math.min(4 - this.pending, Math.max(0, Math.ceil((2048 - this.frames) / 512) - this.pending));
-		if (blocks > 0) { this.pending += blocks; this.port.postMessage({ type: 'request', blocks }); }
+		if (blocks > 0) { this.pending += blocks; (this.engine || this.port).postMessage({ type: 'request', blocks }); }
 	}
 	process(_inputs, outputs) {
 		const output = outputs[0];

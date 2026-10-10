@@ -57,7 +57,7 @@ jobs:
           cache: npm
       - uses: dtolnay/rust-toolchain@stable
         with:
-          targets: wasm32-wasip1-threads
+          targets: wasm32-wasip1-threads,wasm32-wasip1
       - uses: Swatinem/rust-cache@v2
         with:
           workspaces: server

@@ -48,6 +48,7 @@ const playbackControls = createPlaybackControls(document.getElementById('playbac
 }, action => { void playbackAction(action); }, volume => {
 	playbackAudio.setVolume(volume); saveState(); sendPlaybackVolume();
 }, muted => {
+	if (playbackMode === 'emulation') { playbackAudio.setMuted(muted); }
 	saveState(); vscode.postMessage({ type: 'playbackMute', id: playbackId, mode: playbackMode, muted });
 });
 const settingsControls = createSettingsControls(document.getElementById('settings-controls'), message => vscode.postMessage(message));
@@ -159,7 +160,7 @@ async function playbackAction(action) {
 			if (playbackMode === 'nanodrive8' && action === 'playFromCursor') { return; }
 			const sampleRate = playbackMode === 'nanodrive8' ? undefined : await playbackAudio.connect();
 			if (operation !== playbackOperation) { return; }
-			vscode.postMessage({ type: 'playbackAction', action, mode: playbackMode, id, document, sampleRate, looped: playbackControls.looped, volume: playbackControls.volume, muted: playbackControls.outputMuted });
+			vscode.postMessage({ type: 'playbackAction', action, mode: playbackMode, id, document, sampleRate, browser: playbackMode === 'emulation', looped: playbackControls.looped, volume: playbackControls.volume, muted: playbackControls.outputMuted });
 		} else {
 			if (action === 'pause') { await playbackAudio.pause(); }
 			else if (action === 'resume') { await playbackAudio.resume(); }
@@ -201,7 +202,36 @@ for (const tab of tabs) {
 
 window.addEventListener('message', event => {
 	const message = event.data;
-	if (message?.type === 'voice') {
+	if (message?.type === 'browserPlaybackInit' && message.id === playbackId && playbackMode === 'emulation') {
+		const id = playbackId;
+		try {
+			void playbackAudio.connectWorker(message, update => {
+				if (id !== playbackId) { return; }
+				if (update.type === 'ready') {
+					playbackOrigin = update.position;
+					playbackState = { ...playbackState, playing: true, paused: false, loading: false, position: update.position };
+					playbackControls.render(playbackState); playbackAudio.start();
+					vscode.postMessage({ type: 'browserPlaybackState', id, ready: true, position: update.position, finished: false });
+				} else if (update.type === 'progress') {
+					vscode.postMessage({ type: 'browserPlaybackState', id, position: update.position, finished: update.finished });
+				} else if (update.type === 'keys') { playbackControls.enqueueKeys(update.keys); }
+				else if (update.type === 'asset') { vscode.postMessage({ type: 'browserPlaybackAsset', id, name: update.name }); }
+				else if (update.type === 'error') {
+					playbackAudio.disconnect();
+					vscode.postMessage({ type: 'playbackAction', action: 'stop', id, error: update.error });
+					playbackState = { ...playbackState, playing: false, paused: false, loading: false, error: update.error };
+					playbackControls.render(playbackState);
+				}
+			}).catch(error => {
+				if (id === playbackId) {
+					playbackAudio.disconnect();
+					vscode.postMessage({ type: 'playbackAction', action: 'stop', id, error: String(error) });
+				}
+			});
+		} catch (error) { vscode.postMessage({ type: 'playbackAction', action: 'stop', id, error: String(error) }); }
+	} else if (message?.type === 'browserPlaybackAsset' && message.id === playbackId) {
+		playbackAudio.workerAsset(message.bytes, message.error);
+	} else if (message?.type === 'voice') {
 		snapshot = message;
 		voiceControls.render(message);
 		keyboardControls.setVoiceAvailable(!!message.voice && !message.error);

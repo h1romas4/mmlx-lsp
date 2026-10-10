@@ -1,5 +1,6 @@
 node_modules/
 dist/
+assets/webview/emulationBrowserWorker.js
 out/
 .vscode-test/
 server/target/

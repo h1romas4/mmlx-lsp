@@ -72,10 +72,7 @@ pub fn frame(output: &mut impl Write, kind: u8, data: &[u8]) -> io::Result<()> {
 }
 
 pub fn run(input: impl BufRead, mut output: impl Write) -> Result<(), String> {
-    let mut engine = None;
-    let mut playback = None;
-    let mut pdx = Vec::new();
-    let mut output_rate = 0;
+    let mut session = Session::default();
     let mut reader = input;
     loop {
         let mut line = Vec::new();
@@ -90,21 +87,44 @@ pub fn run(input: impl BufRead, mut output: impl Write) -> Result<(), String> {
         if length > 2 * 1024 * 1024 || line.last() != Some(&b'\n') {
             return Err("Invalid command length".into());
         }
-        let command: Command = serde_json::from_slice(&line).map_err(|error| error.to_string())?;
+        session.execute(&line, &mut output)?;
+    }
+}
+
+#[derive(Default)]
+pub struct Session {
+    engine: Option<Emulation>,
+    playback: Option<Playback>,
+    pdx: Vec<u8>,
+    output_rate: u32,
+}
+
+impl Session {
+    pub fn execute(&mut self, line: &[u8], mut output: impl Write) -> Result<(), String> {
+        if line.len() > 2 * 1024 * 1024 {
+            return Err("Invalid command length".into());
+        }
+        let Self {
+            engine,
+            playback,
+            pdx,
+            output_rate,
+        } = self;
+        let command: Command = serde_json::from_slice(line).map_err(|error| error.to_string())?;
         if let Command::Init { sample_rate } = command {
             if engine.is_some() {
                 return Err("Already initialized".into());
             }
-            engine = Some(Emulation::new(sample_rate)?);
-            output_rate = sample_rate;
+            *engine = Some(Emulation::new(sample_rate)?);
+            *output_rate = sample_rate;
             frame(&mut output, 1, &sample_rate.to_le_bytes()).map_err(|error| error.to_string())?;
-            continue;
+            return Ok(());
         }
         let engine = engine.as_mut().ok_or("Emulator not initialized")?;
         match command {
             Command::Voice { voice } => engine.set_voice(voice)?,
             Command::Reset { voice } => {
-                playback = None;
+                *playback = None;
                 engine.reset(voice)?;
                 voice_test_state(&mut output, false, false)?;
                 frame(&mut output, 4, &[]).map_err(|error| error.to_string())?;
@@ -172,11 +192,11 @@ pub fn run(input: impl BufRead, mut output: impl Write) -> Result<(), String> {
                 let asset = if pdx.is_empty() {
                     None
                 } else {
-                    Some(std::mem::take(&mut pdx))
+                    Some(std::mem::take(pdx))
                 };
-                playback = Some(Playback::with_assets(
+                *playback = Some(Playback::with_assets(
                     &source,
-                    output_rate,
+                    *output_rate,
                     looped,
                     cursor,
                     asset,
@@ -227,6 +247,7 @@ pub fn run(input: impl BufRead, mut output: impl Write) -> Result<(), String> {
             }
             Command::Init { .. } => unreachable!(),
         }
+        Ok(())
     }
 }
 

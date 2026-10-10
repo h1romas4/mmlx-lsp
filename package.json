@@ -280,7 +280,8 @@
     "build": "npm run build:wasm && npm run compile",
     "build:wasm": "npm run build:server && npm run build:compiler && npm run build:emulator && npm run build:nanodrive",
     "build:nanodrive": "cargo build --locked -j 1 --manifest-path server/Cargo.toml --features nanodrive --bin mmlx-nanodrive --release --target wasm32-wasip1-threads",
-    "build:emulator": "cargo build --locked -j 1 --manifest-path server/Cargo.toml --features emulation --bin mmlx-emulator --release --target wasm32-wasip1-threads",
+    "build:emulator": "cargo build --locked -j 1 --manifest-path server/Cargo.toml --features emulation --bin mmlx-emulator --release --target wasm32-wasip1-threads && npm run build:browser-emulator",
+    "build:browser-emulator": "cargo build --locked -j 1 --manifest-path server/Cargo.toml --features emulation --bin mmlx-emulator --release --target wasm32-wasip1",
     "build:server": "cargo build --locked -j 1 --manifest-path server/Cargo.toml --bin mmlx-lsp-server --release --target wasm32-wasip1-threads",
     "build:compiler": "cargo build --locked -j 1 --manifest-path server/Cargo.toml --bin mmlx-build --release --target wasm32-wasip1-threads",
     "test:server": "cargo test --manifest-path server/Cargo.toml",
@@ -298,6 +299,7 @@
     "test": "vscode-test"
   },
   "dependencies": {
+    "@bjorn3/browser_wasi_shim": "^0.4.2",
     "@julusian/midi": "^3.8.1",
     "@serialport/bindings-cpp": "^13.0.1",
     "@vscode/wasm-wasi": "^1.0.1",

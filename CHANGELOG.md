@@ -5,6 +5,7 @@ All notable changes to the "mmlx-lsp" extension will be documented in this file.
 ## [Unreleased]
 
 - Run NanoDrive8 generation and serial playback in dedicated workers to keep FM timing and PCM supply independent of Extension Host stalls.
+- Generate Emulation Playback audio in a Webview worker and supply AudioWorklet directly, preserving PDX, mute/solo, pause and cursor playback without Extension Host PCM relays.
 
 ## [0.14.0] - 2026-10-10
 

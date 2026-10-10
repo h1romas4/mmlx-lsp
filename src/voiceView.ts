@@ -97,6 +97,8 @@ export class VoiceViewProvider implements WebviewViewProvider {
 	private readonly playbackSources?: PlaybackSourceTracker;
 	private playbackDocument?: TextDocument;
 	private playbackConnected = false;
+	private browserPlayback = false;
+	private browserPdxLoader?: (name: string) => Promise<Uint8Array>;
 	private playbackMode = 'emulation';
 	private playbackId = 0;
 	private playbackState = { playing: false, paused: false, loading: false, position: 0, finished: false, error: '' };
@@ -168,6 +170,7 @@ export class VoiceViewProvider implements WebviewViewProvider {
 			(playing, error) => { if (this.keyboardOutputMode === 'emulation') { this.setVoiceTesting(playing, error); } }) : undefined;
 		this.playback = wasm ? new EmulationSession(context.extensionUri, wasm,
 			state => {
+				if (this.browserPlayback) { return; }
 				this.playbackConnected = state.connected;
 				if (this.playbackMode !== 'emulation') { return; }
 				this.playbackState.loading = state.connecting;
@@ -226,7 +229,8 @@ export class VoiceViewProvider implements WebviewViewProvider {
 		this.updateConnectionMarker();
 		const media = Uri.joinPath(this.context.extensionUri, 'assets', 'webview');
 		const icons = Uri.joinPath(this.context.extensionUri, 'assets', 'icon');
-		view.webview.options = { enableScripts: true, localResourceRoots: [media, icons] };
+		view.webview.options = { enableScripts: true, localResourceRoots: [media, icons,
+			Uri.joinPath(this.context.extensionUri, 'server', 'target', 'wasm32-wasip1', 'release')] };
 		this.context.subscriptions.push(
 			view.webview.onDidReceiveMessage(message => {
 				if (message?.type === 'ready') {
@@ -254,6 +258,30 @@ export class VoiceViewProvider implements WebviewViewProvider {
 				else if (message?.type === 'resetOutput') { void this.resetOutput(message); }
 				else if (message?.type === 'voiceTestAction') { void this.voiceTestAction(message); }
 				else if (message?.type === 'playbackAction') { void this.playbackAction(message); }
+				else if (message?.type === 'browserPlaybackState' && this.browserPlayback && message.id === this.playbackId
+					&& this.playbackMode === 'emulation' && workspace.isTrusted && typeof message.position === 'number'
+					&& Number.isFinite(message.position) && message.position >= 0 && typeof message.finished === 'boolean') {
+					this.playbackState.position = message.position; this.playbackState.finished = message.finished;
+					if (message.ready === true) {
+						this.playbackConnected = true; this.playbackState.loading = false; this.playbackState.playing = true;
+						this.updateConnectionMarker();
+					}
+					this.sendPlayback();
+				}
+				else if (message?.type === 'browserPlaybackAsset' && this.browserPlayback && message.id === this.playbackId
+					&& workspace.isTrusted && typeof message.name === 'string' && message.name.length <= 4096) {
+					const id = this.playbackId; const load = this.browserPdxLoader;
+					void (async () => {
+						try {
+							if (!load) { throw new Error('Playback canceled.'); }
+							const bytes = await load(message.name);
+							if (bytes.length > 16 * 1024 * 1024) { throw new Error('PDX is too large (maximum 16 MiB).'); }
+							if (id === this.playbackId && this.browserPlayback) { void this.view?.webview.postMessage({ type: 'browserPlaybackAsset', id, bytes: new Uint8Array(bytes) }); }
+						} catch (error) {
+							if (id === this.playbackId && this.browserPlayback) { void this.view?.webview.postMessage({ type: 'browserPlaybackAsset', id, error: String(error) }); }
+						}
+					})();
+				}
 				else if (message?.type === 'playbackPosition' && message.id === this.playbackId && message.mode === 'emulation'
 					&& this.playbackMode === 'emulation' && this.playbackState.playing && workspace.isTrusted
 					&& typeof message.position === 'number' && Number.isFinite(message.position) && message.position >= 0
@@ -427,6 +455,7 @@ export class VoiceViewProvider implements WebviewViewProvider {
 	}
 
 	private stopPlayback(reset = true, error = ''): void {
+		this.browserPlayback = false; this.browserPdxLoader = undefined;
 		this.playbackSources?.stop();
 		this.playbackState.playing = false;
 		this.playbackState.paused = false;
@@ -439,7 +468,7 @@ export class VoiceViewProvider implements WebviewViewProvider {
 		this.sendPlayback();
 	}
 
-	private async playbackAction(message: { action?: unknown; mode?: unknown; id?: unknown; document?: unknown; sampleRate?: unknown; looped?: unknown; volume?: unknown; muted?: unknown; error?: unknown }): Promise<void> {
+	private async playbackAction(message: { action?: unknown; mode?: unknown; id?: unknown; document?: unknown; sampleRate?: unknown; browser?: unknown; looped?: unknown; volume?: unknown; muted?: unknown; error?: unknown }): Promise<void> {
 		if (!Number.isSafeInteger(message.id)) { return; }
 		if (message.action === 'play' || message.action === 'playFromCursor') {
 			const document = this.playbackDocument;
@@ -456,6 +485,8 @@ export class VoiceViewProvider implements WebviewViewProvider {
 				? new TextEncoder().encode(source.slice(0, document.offsetAt(editor.selection.active))).length : undefined;
 			this.playbackId = message.id as number;
 			this.playbackMode = hardware ? 'nanodrive8' : 'emulation';
+			this.browserPlayback = !hardware && message.browser === true;
+			if (this.browserPlayback) { this.playbackConnected = false; }
 			this.playbackMuted = Number.isInteger(message.muted) && (message.muted as number) >= 0 && (message.muted as number) <= 511 ? message.muted as number : 0;
 			this.playbackState = { playing: false, paused: false, loading: true, position: 0, finished: false, error: '' };
 			const folder = workspace.getWorkspaceFolder(document.uri);
@@ -471,7 +502,17 @@ export class VoiceViewProvider implements WebviewViewProvider {
 				this.playback?.disconnect();
 				await this.nanodrive.setMuted(this.playbackMuted);
 				await this.nanodrive.startPlayback(source, message.looped === true, loadPdx, { adpcmMode, pdxConfigured: configured.length > 0 });
-			} else { await this.playback!.connect(message.sampleRate as number, null, {
+			} else if (message.browser === true) {
+				this.playback?.disconnect();
+				if (!Number.isInteger(message.sampleRate) || (message.sampleRate as number) < 8000 || (message.sampleRate as number) > 192000
+					|| Buffer.byteLength(JSON.stringify({ source })) >= 2 * 1024 * 1024) { this.stopPlayback(true, 'Invalid playback parameters.'); return; }
+				this.browserPlayback = true; this.browserPdxLoader = loadPdx;
+				this.playbackState = { playing: false, paused: false, loading: true, position: 0, finished: false, error: '' };
+				this.sendPlayback();
+				void this.view?.webview.postMessage({ type: 'browserPlaybackInit', id: this.playbackId, sampleRate: message.sampleRate,
+					wasm: this.view.webview.asWebviewUri(Uri.joinPath(this.context.extensionUri, 'server', 'target', 'wasm32-wasip1', 'release', 'mmlx-emulator.wasm')).toString(),
+					options: { source, looped: message.looped === true, cursor, adpcmMode, muted: this.playbackMuted, pdxConfigured: configured.length > 0 } });
+			} else { this.browserPlayback = false; await this.playback!.connect(message.sampleRate as number, null, {
 				source, looped: message.looped === true, cursor, adpcmMode, muted: this.playbackMuted, pdxConfigured: configured.length > 0, loadPdx
 			}); }
 		} else if (message.id === this.playbackId) {

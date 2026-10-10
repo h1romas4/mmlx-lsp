@@ -6,8 +6,14 @@ export function createEmulationAudio(onRequest, onFailure, onEnded = () => {}, o
 	let volume = 1;
 	let paused = false;
 	let generation = 0;
+	let worker;
+	let workerUrl;
+	let workerTimer;
 	function disconnect() {
 		generation++;
+		worker?.terminate(); worker = undefined;
+		clearTimeout(workerTimer);
+		if (workerUrl) { URL.revokeObjectURL(workerUrl); workerUrl = undefined; }
 		const previous = context;
 		context = undefined;
 		analysis?.scope.disconnect(); analysis?.spectrum.disconnect(); analysis = undefined;
@@ -43,6 +49,33 @@ export function createEmulationAudio(onRequest, onFailure, onEnded = () => {}, o
 			return audio.sampleRate;
 		},
 		start() { node?.port.postMessage({ type: 'start' }); },
+		async connectWorker(options, onEvent) {
+			if (!node) { throw new Error('Audio output is not connected.'); }
+			const current = generation;
+			const response = await fetch(new URL('./emulationBrowserWorker.js', import.meta.url));
+			if (!response.ok) { throw new Error(`Could not load emulator worker (${response.status}).`); }
+			const source = await response.blob();
+			const wasmResponse = await fetch(options.wasm);
+			if (!wasmResponse.ok) { throw new Error(`Could not load emulator (${wasmResponse.status}).`); }
+			const wasmBytes = await wasmResponse.arrayBuffer();
+			if (current !== generation || !node) { return; }
+			workerUrl = URL.createObjectURL(source);
+			const engine = new Worker(workerUrl);
+			worker = engine;
+			workerTimer = setTimeout(() => { if (worker === engine) { onFailure('Emulator startup timed out.'); } }, 15000);
+			const channel = new MessageChannel();
+			node.port.postMessage({ type: 'engine', port: channel.port1 }, [channel.port1]);
+			engine.onmessage = event => {
+				if (worker === engine) {
+					if (event.data.type === 'ready' || event.data.type === 'error') { clearTimeout(workerTimer); }
+					onEvent(event.data);
+				}
+			};
+			engine.onerror = event => { if (worker === engine) { onFailure(event.message || 'Emulator worker failed.'); } };
+			engine.postMessage({ ...options, type: 'init', wasmBytes, port: channel.port2 }, [channel.port2, wasmBytes]);
+		},
+		workerAsset(bytes, error) { worker?.postMessage({ type: 'asset', bytes, error }); },
+		setMuted(muted) { worker?.postMessage({ type: 'mute', muted }); },
 		clear() { node?.port.postMessage({ type: 'clear' }); },
 		finish() { node?.port.postMessage({ type: 'finish' }); },
 		async pause() { paused = true; await context?.suspend(); },

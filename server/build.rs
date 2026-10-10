@@ -1,14 +1,19 @@
 fn main() {
     println!("cargo:rerun-if-changed=locales");
 
-    if std::env::var("TARGET").as_deref() != Ok("wasm32-wasip1-threads") {
+    let target = std::env::var("TARGET").unwrap_or_default();
+    if target != "wasm32-wasip1-threads" && target != "wasm32-wasip1" {
         return;
     }
     let sdk = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
         .parent()
         .expect("Cannot locate the project directory")
         .join("toolchains/wasi-sdk/build/install");
-    let libraries = sdk.join("share/wasi-sysroot/lib/wasm32-wasip1-threads");
+    let libraries = sdk.join(if target == "wasm32-wasip1-threads" {
+        "share/wasi-sysroot/lib/wasm32-wasip1-threads"
+    } else {
+        "share/wasi-sysroot/lib/wasm32-wasi"
+    });
     let compiler = format!("bin/clang++{}", std::env::consts::EXE_SUFFIX);
     for file in [
         sdk.join(&compiler),

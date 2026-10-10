@@ -32,6 +32,9 @@ async function main() {
 	copyFileSync(require.resolve('lucide-static/icons/plug.svg'), 'assets/webview/plug.svg');
 	copyFileSync(require.resolve('lucide-static/icons/unplug.svg'), 'assets/webview/unplug.svg');
 	copyFileSync(require.resolve('lucide-static/LICENSE'), 'assets/webview/lucide-LICENSE');
+	const browser = await esbuild.context({ entryPoints: ['src/emulationBrowserWorker.mts'], bundle: true, format: 'iife',
+		platform: 'browser', minify: production, outfile: 'assets/webview/emulationBrowserWorker.js' });
+	if (watch) { await browser.watch(); } else { await browser.rebuild(); await browser.dispose(); }
 	const ctx = await esbuild.context({
 		entryPoints: [
 			'src/extension.ts',
