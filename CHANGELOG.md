@@ -4,7 +4,7 @@ All notable changes to the "mmlx-lsp" extension will be documented in this file.
 
 ## [Unreleased]
 
-- Highlight currently playing FM/PCM notes and rests in the MML editor on Emulation and NanoDrive8, following playback clocks, repeats and loops without moving the cursor. Pause holds highlights; Stop, completion and document edits clear them.
+- Highlight currently playing FM/PCM notes and rests and their whole lines in the MML editor on Emulation and NanoDrive8, following playback clocks, repeats and loops without moving the cursor. Pause holds highlights; Stop, completion and document edits clear them.
 
 - Add OKIM6258 ADPCM to Emulation Playback, including PDX loading, clock/divider changes, pan and ADPCM processing settings.
 - Remove the Playback construction badge and add a framed FM/ADPCM channel overview with fixed-width 88-key keyboards that clip on narrow panels.

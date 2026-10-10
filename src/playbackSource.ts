@@ -6,8 +6,12 @@ export interface SourceBatch { events: SourceEvent[]; position: number; finished
 
 export class PlaybackSourceTracker implements Disposable {
 	private readonly decoration = window.createTextEditorDecorationType({
-		backgroundColor: new ThemeColor('editor.wordHighlightStrongBackground'),
-		border: '1px solid', borderColor: new ThemeColor('editor.wordHighlightStrongBorder')
+		backgroundColor: new ThemeColor('editor.findMatchBackground'),
+		border: '1px solid', borderColor: new ThemeColor('editor.findMatchBorder')
+	});
+	private readonly lineDecoration = window.createTextEditorDecorationType({
+		isWholeLine: true,
+		backgroundColor: new ThemeColor('editor.selectionBackground')
 	});
 	private readonly subscriptions: Disposable[];
 	private document?: TextDocument;
@@ -33,6 +37,14 @@ export class PlaybackSourceTracker implements Disposable {
 	}
 
 	get ranges(): Range[] { return [...this.active.values()]; }
+	get lineRanges(): Range[] {
+		const lines = new Set<number>();
+		for (const range of this.active.values()) {
+			const endLine = range.end.character === 0 && range.end.line > range.start.line ? range.end.line - 1 : range.end.line;
+			for (let line = range.start.line; line <= endLine; line++) { lines.add(line); }
+		}
+		return [...lines].sort((first, second) => first - second).map(line => new Range(line, 0, line, 0));
+	}
 
 	async start(document: TextDocument, looped: boolean): Promise<void> {
 		this.stop();
@@ -113,7 +125,10 @@ export class PlaybackSourceTracker implements Disposable {
 			if (editor.document.isClosed) { this.decorated.delete(editor); continue; }
 			const ranges = editor.document === this.document ? this.ranges : [];
 			if (ranges.length || this.decorated.has(editor)) {
-				try { editor.setDecorations(this.decoration, ranges); } catch { this.decorated.delete(editor); continue; }
+				try {
+					editor.setDecorations(this.lineDecoration, editor.document === this.document ? this.lineRanges : []);
+					editor.setDecorations(this.decoration, ranges);
+				} catch { this.decorated.delete(editor); continue; }
 			}
 			if (ranges.length) { this.decorated.add(editor); } else { this.decorated.delete(editor); }
 		}
@@ -132,5 +147,5 @@ export class PlaybackSourceTracker implements Disposable {
 		this.stopping = this.stopping.then(() => this.worker.dispose()).catch(() => undefined);
 	}
 
-	dispose(): void { this.stop(); for (const subscription of this.subscriptions) { subscription.dispose(); } this.decoration.dispose(); }
+	dispose(): void { this.stop(); for (const subscription of this.subscriptions) { subscription.dispose(); } this.decoration.dispose(); this.lineDecoration.dispose(); }
 }
