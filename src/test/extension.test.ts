@@ -2516,6 +2516,9 @@ suite('mmlx extension', () => {
 							const channels = document.getElementById('playback-channels');
 							const rows = channels.querySelectorAll('.playback-channel');
 							check(rows.length === 9 && rows[8].getAttribute('aria-label') === 'ADPCM', 'Eight FM channels and one mixed ADPCM channel');
+							check([...rows].slice(0, 8).map(row => row.querySelector('.playback-channel-name').textContent).join('') === 'ABCDEFGH'
+								&& [...rows].slice(0, 8).map(row => row.getAttribute('aria-label')).join('') === 'ABCDEFGH',
+							'Playback FM channels use MML track labels A-H');
 							check(channels.querySelectorAll('button:disabled').length === 18, 'Unavailable playback disables channel controls');
 							const frame = getComputedStyle(channels);
 							const transport = getComputedStyle(document.querySelector('.playback-transport'));

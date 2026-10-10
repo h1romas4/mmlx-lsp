@@ -134,7 +134,7 @@ function createChannelRows(container, onSelection) {
 	const rows = [];
 	const activeKeys = Array(8).fill(null);
 	for (let channel = 0; channel < 9; channel++) {
-		const name = channel < 8 ? `FM ${channel + 1}` : 'ADPCM';
+		const name = channel < 8 ? String.fromCharCode(65 + channel) : 'ADPCM';
 		const row = document.createElement('div');
 		row.className = `playback-channel${channel === 8 ? ' playback-channel-pcm' : ''}`;
 		rows.push(row);
