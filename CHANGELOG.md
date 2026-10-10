@@ -4,6 +4,10 @@ All notable changes to the "mmlx-lsp" extension will be documented in this file.
 
 ## [Unreleased]
 
+## [0.15.2] - 2026-10-11
+
+- Raise the dedicated NanoDrive8 process priority on Windows to reduce scheduling delays during playback. Log the applied priority or any failure without changing VS Code's priority.
+
 ## [0.15.1] - 2026-10-10
 
 - Fix a crash when connecting to NanoDrive8 introduced in v0.15.0, while keeping playback independent of VS Code load.

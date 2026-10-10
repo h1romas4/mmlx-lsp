@@ -1,4 +1,5 @@
 import { fork, type ChildProcess } from 'node:child_process';
+import { constants, getPriority, setPriority } from 'node:os';
 import type { FmKeyEvent } from './emulationProtocol';
 import type { NanoDriveConnection, NanoDriveState, NanoDriveOutputState, NanoDrivePlaybackState } from './nanodrive';
 
@@ -73,6 +74,14 @@ export class NanoDriveThreadClient implements Pick<NanoDriveConnection, Method |
 		worker.on('error', error => this.fail(worker, error instanceof Error ? error : new Error(String(error))));
 		worker.on('exit', (code, signal) => this.fail(worker, new Error(`NanoDrive8 service exited (${signal ?? code}).`)));
 		worker.on('disconnect', () => this.fail(worker, new Error('NanoDrive8 service disconnected.')));
+		if (process.platform === 'win32' && worker.pid !== undefined) {
+			try {
+				setPriority(worker.pid, constants.priority.PRIORITY_HIGH);
+				this.onDiagnostic(`NanoDrive8 service priority set (pid=${worker.pid}, priority=${getPriority(worker.pid)}).`);
+			} catch (error) {
+				this.onDiagnostic(`Could not raise NanoDrive8 service priority; continuing at current priority: ${error instanceof Error ? error.message : String(error)}`);
+			}
+		}
 		return worker;
 	}
 
