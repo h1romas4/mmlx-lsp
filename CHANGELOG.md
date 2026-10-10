@@ -4,6 +4,8 @@ All notable changes to the "mmlx-lsp" extension will be documented in this file.
 
 ## [Unreleased]
 
+- Run Windows x64 NanoDrive8 playback in a dedicated process with a native engine to isolate PCM supply from Extension Host stalls. Other platforms retain the existing WASM workers.
+
 ## [0.15.0] - 2026-10-10
 
 - Reduce audio dropouts and timing disruptions in Emulation and NanoDrive8 Playback when VS Code is under heavy load.

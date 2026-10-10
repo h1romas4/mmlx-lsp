@@ -34,3 +34,5 @@ native/tree-sitter/**
 .github/**
 release/**
 package-lock.json
+
+tools/**
