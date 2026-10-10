@@ -53,6 +53,8 @@ export class Port implements NanoDrivePort {
 }
 
 export const codec: NanoDriveCodec = async params => {
+    if (params.operation === 'playbackFilter') { return { bytes: params.bytes }; }
+    if (params.operation === 'playbackMute') { return { bytes: [0, ...Buffer.from(JSON.stringify({ ...params, command: 'playbackMute', payload: [] })), 0] }; }
     if (params.operation === 'encode') { return { bytes: [0, ...Buffer.from(JSON.stringify(params)), 0] }; }
     if (params.operation === 'audition') {
         return { bytes: [0, ...Buffer.from(JSON.stringify({ ...params, command: 'audition', input: params.command })), 0], count: 1 };
@@ -190,6 +192,114 @@ suite('NanoDrive8 connection', () => {
             return codec(params);
         };
     };
+    test('channel mute preserves startup selection and serializes live changes after submitted playback', async () => {
+        for (const audio of [false, true]) {
+            const port = new Port(); const base = audio ? playbackCodec(3200) : fmCodec();
+            const operations: Parameters<NanoDriveCodec>[0][] = [];
+            let applying = false;
+            const connection = new NanoDriveConnection(async params => {
+                operations.push(params);
+                if (params.operation === 'playbackFilter' || params.operation === 'playbackMute') {
+                    assert.strictEqual(applying, false, 'Filter caches and mute patches must not race');
+                    applying = true;
+                    await new Promise(resolve => setTimeout(resolve, 1));
+                    const result = await base(params); applying = false; return result;
+                }
+                return base(params);
+            }, () => {}, async () => port, 100);
+            try {
+                await connection.connect('test');
+                await connection.setMuted(257);
+                const playing = connection.startPlayback('A c1', false, async () => new Uint8Array(0));
+                for (let count = 0; count < 200 && !port.commands.some(request => request.command === (audio ? 'audioStart' : 'fmBurst')); count++) {
+                    await new Promise(resolve => setTimeout(resolve, 2));
+                }
+                const init = operations.find(params => params.operation === 'playbackInit');
+                assert.ok(init?.operation === 'playbackInit' && init.muted === 257);
+                assert.ok(connection.playbackState.playing);
+                const before = port.commands.length;
+                await Promise.all([connection.setMuted(128), connection.setMuted(0)]);
+                const changes = operations.filter(params => params.operation === 'playbackMute');
+                assert.deepStrictEqual(changes.map(params => params.muted), [128, 0]);
+                if (audio) { assert.ok(changes.every(params => params.position >= 1600 && params.position % 160 === 0)); }
+                assert.strictEqual(port.commands.filter(request => request.command === 'playbackMute').length, 2);
+                assert.ok(port.commands.slice(before).every(request => request.command !== 'reset'), 'Mute does not restart playback');
+                await connection.setMuted(512); await connection.setMuted(-1); await connection.setMuted(0);
+                assert.strictEqual(operations.filter(params => params.operation === 'playbackMute').length, 2);
+                await playing;
+                assert.strictEqual(connection.playbackState.error, '');
+                assert.ok(operations.slice(operations.findIndex(params => params.operation === 'playbackMute') + 1).some(params => params.operation === 'playbackFilter'), 'Later prefetched chunks are filtered after the mute change');
+                assert.ok(connection.playbackState.finished && connection.state.connected);
+            } finally { await connection.disconnect(); }
+        }
+    });
+
+    test('playback mute filters large register chunks within bounded worker requests', async () => {
+        const port = new Port(); const base = fmCodec(); let expanded = false; let filters = 0;
+        const write = port.write.bind(port);
+        port.write = async bytes => {
+            let start = 0;
+            for (let index = 0; index < bytes.length; index++) {
+                if (bytes[index] !== 0) { continue; }
+                if (index > start) { await write(Buffer.concat([Buffer.from([0]), bytes.subarray(start, index), Buffer.from([0])])); }
+                start = index + 1;
+            }
+        };
+        const connection = new NanoDriveConnection(async params => {
+            if (params.operation === 'playbackFilter') {
+                filters++; assert.ok(params.bytes.length <= 8192);
+                assert.ok(Buffer.byteLength(JSON.stringify(params)) < 65536);
+                assert.strictEqual(params.bytes[0], 0); assert.strictEqual(params.bytes.at(-1), 0);
+            }
+            const result = await base(params);
+            if (params.operation === 'playbackNext' && !expanded && result && 'bytes' in result) {
+                expanded = true;
+                const frame = Uint8Array.from(result.bytes); const bytes = new Uint8Array(frame.length * 500);
+                for (let index = 0; index < 500; index++) { bytes.set(frame, index * frame.length); }
+                assert.ok(Buffer.byteLength(JSON.stringify({ operation: 'playbackFilter', bytes: Array.from(bytes) })) > 65536);
+                return { ...result, bytes, count: 500 };
+            }
+            return result;
+        }, () => {}, async () => port, 100);
+        try {
+            await connection.connect('test');
+            await connection.startPlayback('A c1', false, async () => new Uint8Array(0));
+            assert.strictEqual(connection.playbackState.error, '');
+            assert.ok(filters > 3 && connection.playbackState.finished);
+            assert.strictEqual(port.commands.filter(request => request.command === 'fmBurst').length, 502);
+        } finally { await connection.disconnect(); }
+    });
+
+    test('Stop cancels an in-flight mute before RESET and keeps the selection for restart', async () => {
+        const port = new Port(); const base = fmCodec();
+        let release: (() => void) | undefined;
+        let entered: (() => void) | undefined;
+        const started = new Promise<void>(resolve => { entered = resolve; });
+        const initMasks: number[] = [];
+        const connection = new NanoDriveConnection(async params => {
+            if (params.operation === 'playbackInit') { initMasks.push(params.muted ?? 0); }
+            if (params.operation === 'playbackMute') {
+                entered!(); await new Promise<void>(resolve => { release = resolve; });
+            }
+            return base(params);
+        }, () => {}, async () => port, 100);
+        try {
+            await connection.connect('test');
+            const playing = connection.startPlayback('A c1', false, async () => new Uint8Array(0));
+            for (let count = 0; count < 200 && port.commands.filter(request => request.command === 'fmBurst').length < 2; count++) {
+                await new Promise(resolve => setTimeout(resolve, 2));
+            }
+            const muting = connection.setMuted(511); await started;
+            const stopping = connection.stopPlayback(); release!();
+            await Promise.all([playing, muting, stopping]);
+            assert.ok(port.commands.every(request => request.command !== 'playbackMute'), 'Canceled mute cannot write after RESET');
+            assert.strictEqual(port.commands.at(-1)?.command, 'reset');
+            await connection.startPlayback('A c1', false, async () => new Uint8Array(0));
+            assert.deepStrictEqual(initMasks, [0, 511]);
+            assert.strictEqual(connection.playbackState.error, '');
+        } finally { release?.(); await connection.disconnect(); }
+    });
+
     test('FM keyboard metadata is published after sending each hardware transport', async () => {
         for (const audio of [false, true]) {
             const port = new Port(); const base = audio ? playbackCodec() : fmCodec();

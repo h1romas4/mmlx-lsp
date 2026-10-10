@@ -1,5 +1,13 @@
-export function createPlaybackControls(root, onModeChange = () => {}, onAction = () => {}, onVolume = () => {}) {
-	const channels = createChannelRows(root.querySelector('#playback-channels'));
+export function createPlaybackControls(root, onModeChange = () => {}, onAction = () => {}, onVolume = () => {}, onMute = () => {}) {
+	let muted = 0;
+	let soloed = 0;
+	function outputMuted() { return soloed ? 511 & ~soloed : muted; }
+	function updateChannels() { channels?.setMuted(muted, soloed, outputMuted()); }
+	const channels = createChannelRows(root.querySelector('#playback-channels'), (channel, action) => {
+		if (action === 'solo') { soloed ^= 1 << channel; }
+		else { muted ^= 1 << channel; }
+		updateChannels(); onMute(outputMuted());
+	});
 	const status = root.querySelector('[role="status"]');
 	const mode = root.querySelector('#playback-mode');
 	const source = root.querySelector('#playback-source');
@@ -60,6 +68,7 @@ export function createPlaybackControls(root, onModeChange = () => {}, onAction =
 		const hardware = mode.value === 'nanodrive8';
 		if (hardware && state?.playing) { advanceKeys(state.position); }
 		const available = state?.available && (!hardware || nanoDriveAvailable);
+		channels?.setAvailable(Boolean(available) && !loading && (!state?.busy || state?.playing || state?.paused));
 		const busy = state?.playing || state?.paused || state?.loading || state?.busy;
 		setText(source, state?.source || 'No MML selected');
 		if (!loading || loadingVisible) {
@@ -105,21 +114,30 @@ export function createPlaybackControls(root, onModeChange = () => {}, onAction =
 		setNanoDriveAvailable(value) { nanoDriveAvailable = value === true; render(snapshot); },
 		setMode(value) { mode.value = value === 'nanodrive8' ? 'nanodrive8' : 'emulation'; render(snapshot); },
 		setOptions(repeat, level) { looped = repeat === true; volume.value = String(Math.max(0, Math.min(100, Number(level) || 0))); render(snapshot); },
+		setMuted(value) { muted = Number.isInteger(value) && value >= 0 && value <= 511 ? value : 0; updateChannels(); },
+		setSoloed(value) { soloed = Number.isInteger(value) && value >= 0 && value <= 511 ? value : 0; updateChannels(); },
+		get muted() { return muted; },
+		get soloed() { return soloed; },
+		get outputMuted() { return outputMuted(); },
 		get looped() { return looped; },
 		get volume() { return Number(volume.value) / 100; },
 		render
 	};
 }
 
-function createChannelRows(container) {
+function createChannelRows(container, onSelection) {
 	const document = container?.ownerDocument;
 	if (!document) { return; }
 	const keyboards = [];
+	const muteButtons = [];
+	const soloButtons = [];
+	const rows = [];
 	const activeKeys = Array(8).fill(null);
 	for (let channel = 0; channel < 9; channel++) {
 		const name = channel < 8 ? `FM ${channel + 1}` : 'ADPCM';
 		const row = document.createElement('div');
 		row.className = `playback-channel${channel === 8 ? ' playback-channel-pcm' : ''}`;
+		rows.push(row);
 		row.setAttribute('role', 'group'); row.setAttribute('aria-label', name);
 		const controls = document.createElement('div');
 		controls.className = 'playback-channel-controls';
@@ -132,6 +150,9 @@ function createChannelRows(container) {
 			button.type = 'button'; button.disabled = true;
 			button.title = `${action === 'mute' ? 'Mute' : 'Solo'} ${name}`;
 			button.setAttribute('aria-label', button.title); button.setAttribute('aria-pressed', 'false');
+			if (action === 'mute') { muteButtons.push(button); }
+			else { soloButtons.push(button); }
+			button.addEventListener('click', () => onSelection(channel, action));
 			controls.append(button);
 		}
 		const keyboard = document.createElement('div');
@@ -166,6 +187,15 @@ function createChannelRows(container) {
 	const observer = new ResizeObserver(reveal);
 	observer.observe(container);
 	return {
+		setAvailable(available) { for (const button of [...muteButtons, ...soloButtons]) { button.disabled = !available; } },
+		setMuted(mask, solo, effective) {
+			for (const [channel, button] of muteButtons.entries()) {
+				const pressed = (mask & (1 << channel)) !== 0;
+				button.setAttribute('aria-pressed', String(pressed));
+				soloButtons[channel].setAttribute('aria-pressed', String((solo & (1 << channel)) !== 0));
+				rows[channel].classList.toggle('is-muted', (effective & (1 << channel)) !== 0);
+			}
+		},
 		setNote(channel, note) {
 			const keyboard = keyboards[channel];
 			if (!keyboard || (note !== null && (!Number.isInteger(note) || note < 21 || note > 108))) { return; }

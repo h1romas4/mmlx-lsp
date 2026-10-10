@@ -41,6 +41,8 @@ const playbackControls = createPlaybackControls(document.getElementById('playbac
 	sendPlaybackVolume();
 }, action => { void playbackAction(action); }, volume => {
 	playbackAudio.setVolume(volume); saveState(); sendPlaybackVolume();
+}, muted => {
+	saveState(); vscode.postMessage({ type: 'playbackMute', id: playbackId, mode: playbackMode, muted });
 });
 const settingsControls = createSettingsControls(document.getElementById('settings-controls'), message => vscode.postMessage(message));
 const keyboardControls = createKeyboardControls(document.getElementById('keyboard'), mode => {
@@ -125,7 +127,7 @@ keyboard.addEventListener('toggle', () => saveState());
 
 function saveState() {
 	vscode.setState({ ...snapshot, activeTab, algorithmsOpen: algorithms.open, playbackMode,
-		playbackLooped: playbackControls.looped, playbackVolume: playbackControls.volume * 100, keyboardOpen: keyboard.open, keyboardMode, monitorGain: audioMonitors.gain, voiceTestMml: keyboardControls.testMml });
+		playbackLooped: playbackControls.looped, playbackVolume: playbackControls.volume * 100, playbackMuted: playbackControls.muted, playbackSoloed: playbackControls.soloed, keyboardOpen: keyboard.open, keyboardMode, monitorGain: audioMonitors.gain, voiceTestMml: keyboardControls.testMml });
 }
 
 function sendPlaybackVolume() {
@@ -151,7 +153,7 @@ async function playbackAction(action) {
 			if (playbackMode === 'nanodrive8' && action === 'playFromCursor') { return; }
 			const sampleRate = playbackMode === 'nanodrive8' ? undefined : await playbackAudio.connect();
 			if (operation !== playbackOperation) { return; }
-			vscode.postMessage({ type: 'playbackAction', action, mode: playbackMode, id, document, sampleRate, looped: playbackControls.looped, volume: playbackControls.volume });
+			vscode.postMessage({ type: 'playbackAction', action, mode: playbackMode, id, document, sampleRate, looped: playbackControls.looped, volume: playbackControls.volume, muted: playbackControls.outputMuted });
 		} else {
 			if (action === 'pause') { await playbackAudio.pause(); }
 			else if (action === 'resume') { await playbackAudio.resume(); }
@@ -264,6 +266,8 @@ keyboardControls.setTestMml(saved?.voiceTestMml);
 document.getElementById('voice-test-mml').addEventListener('input', saveState);
 playbackControls.setMode(playbackMode);
 playbackControls.setOptions(saved?.playbackLooped, saved?.playbackVolume ?? 100);
+playbackControls.setMuted(saved?.playbackMuted);
+playbackControls.setSoloed(saved?.playbackSoloed);
 playbackAudio.setVolume(playbackControls.volume);
 playbackControls.render(null);
 keyboardControls.setMode(keyboardMode);

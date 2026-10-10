@@ -37,6 +37,8 @@ enum Operation {
     PlaybackInfo,
     PlaybackInit {
         looped: bool,
+        #[serde(default)]
+        muted: u16,
         #[serde(rename = "adpcmMode")]
         adpcm_mode: Option<String>,
     },
@@ -45,6 +47,15 @@ enum Operation {
         request_id: u16,
     },
     PlaybackStop,
+    PlaybackFilter {
+        bytes: Vec<u8>,
+    },
+    PlaybackMute {
+        muted: u16,
+        #[serde(rename = "requestId")]
+        request_id: u16,
+        position: u32,
+    },
     VoiceTestInit {
         session: u32,
         mml: String,
@@ -120,6 +131,7 @@ pub struct Bridge {
     source: Vec<u8>,
     pdx: Vec<u8>,
     playback: Option<playback::Playback>,
+    mute: playback::MuteFilter,
     voice_test: Option<playback::FmPlayback>,
 }
 
@@ -320,7 +332,11 @@ impl Bridge {
                     json!({ "audio":audio,"pdxName":if audio { package.pdx_name() } else { None } }),
                 ))
             }
-            Operation::PlaybackInit { looped, adpcm_mode } => {
+            Operation::PlaybackInit {
+                looped,
+                muted,
+                adpcm_mode,
+            } => {
                 let adpcm_mode = match adpcm_mode.as_deref().unwrap_or("resample") {
                     "through" => AdpcmMode::Through,
                     "resample" => AdpcmMode::Resample,
@@ -339,6 +355,8 @@ impl Bridge {
                     looped,
                     adpcm_mode,
                 )?);
+                self.mute = playback::MuteFilter::default();
+                self.mute.set_muted(muted, 0, None)?;
                 Ok(Output::Json(
                     json!({"audio":self.playback.as_ref().unwrap().audio()}),
                 ))
@@ -349,6 +367,26 @@ impl Bridge {
                     .as_mut()
                     .ok_or("NanoDrive8 playback is not initialized")?;
                 Ok(Output::Audio(playback.next(request_id)?))
+            }
+            Operation::PlaybackFilter { bytes } => {
+                self.playback.as_ref().ok_or("Playback not initialized")?;
+                Ok(Output::Bytes(self.mute.filter(&bytes)?, None))
+            }
+            Operation::PlaybackMute {
+                muted,
+                request_id,
+                position,
+            } => {
+                let audio = self
+                    .playback
+                    .as_ref()
+                    .ok_or("Playback not initialized")?
+                    .audio();
+                Ok(Output::Bytes(
+                    self.mute
+                        .set_muted(muted, request_id, audio.then_some(position))?,
+                    None,
+                ))
             }
             Operation::PlaybackStop => {
                 self.playback = None;

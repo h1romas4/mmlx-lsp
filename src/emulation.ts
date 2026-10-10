@@ -30,6 +30,7 @@ export class EmulationSession {
 
 	async connect(sampleRate: number, voice: unknown = null, playback?: {
 		source: string; looped: boolean; cursor?: number; adpcmMode?: 'through' | 'resample' | 'lpf';
+		muted?: number;
 		pdxConfigured?: boolean; loadPdx?: (name: string) => Promise<Uint8Array>;
 	}): Promise<void> {
 		this.stop();
@@ -130,6 +131,10 @@ export class EmulationSession {
 			this.module = undefined;
 			this.disconnect(error instanceof Error ? error.message : String(error));
 		}
+	}
+
+	setMuted(muted: number): void {
+		if (this.connected && Number.isInteger(muted) && muted >= 0 && muted <= 511) { void this.command({ type: 'playbackMute', muted }); }
 	}
 
 	setVoice(voice: unknown): void {

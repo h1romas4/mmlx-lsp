@@ -97,6 +97,7 @@ export class VoiceViewProvider implements WebviewViewProvider {
 	private playbackMode = 'emulation';
 	private playbackId = 0;
 	private playbackState = { playing: false, paused: false, loading: false, position: 0, finished: false, error: '' };
+	private playbackMuted = 0;
 	private outputId = 0;
 	private keyboardOutputMode = 'emulation';
 	private voiceTesting = false;
@@ -238,6 +239,12 @@ export class VoiceViewProvider implements WebviewViewProvider {
 				else if (message?.type === 'resetOutput') { void this.resetOutput(message); }
 				else if (message?.type === 'voiceTestAction') { void this.voiceTestAction(message); }
 				else if (message?.type === 'playbackAction') { void this.playbackAction(message); }
+				else if (message?.type === 'playbackMute' && workspace.isTrusted && Number.isInteger(message.muted)
+					&& message.muted >= 0 && message.muted <= 511 && message.id === this.playbackId && message.mode === this.playbackMode) {
+					this.playbackMuted = message.muted;
+					if (this.playbackMode === 'nanodrive8') { void this.nanodrive.setMuted(message.muted); }
+					else { this.playback?.setMuted(message.muted); }
+				}
 				else if (message?.type === 'playbackVolume' && message.mode === 'nanodrive8' && workspace.isTrusted
 					&& typeof message.volume === 'number' && Number.isFinite(message.volume) && message.volume >= 0 && message.volume <= 1) {
 					void this.nanodrive.setVolume(message.volume);
@@ -412,7 +419,7 @@ export class VoiceViewProvider implements WebviewViewProvider {
 		this.sendPlayback();
 	}
 
-	private async playbackAction(message: { action?: unknown; mode?: unknown; id?: unknown; document?: unknown; sampleRate?: unknown; looped?: unknown; volume?: unknown; error?: unknown }): Promise<void> {
+	private async playbackAction(message: { action?: unknown; mode?: unknown; id?: unknown; document?: unknown; sampleRate?: unknown; looped?: unknown; volume?: unknown; muted?: unknown; error?: unknown }): Promise<void> {
 		if (!Number.isSafeInteger(message.id)) { return; }
 		if (message.action === 'play' || message.action === 'playFromCursor') {
 			const document = this.playbackDocument;
@@ -429,6 +436,7 @@ export class VoiceViewProvider implements WebviewViewProvider {
 				? new TextEncoder().encode(source.slice(0, document.offsetAt(editor.selection.active))).length : undefined;
 			this.playbackId = message.id as number;
 			this.playbackMode = hardware ? 'nanodrive8' : 'emulation';
+			this.playbackMuted = Number.isInteger(message.muted) && (message.muted as number) >= 0 && (message.muted as number) <= 511 ? message.muted as number : 0;
 			this.playbackState = { playing: false, paused: false, loading: true, position: 0, finished: false, error: '' };
 			const folder = workspace.getWorkspaceFolder(document.uri);
 			const configuration = workspace.getConfiguration('mmlx', folder?.uri);
@@ -440,9 +448,10 @@ export class VoiceViewProvider implements WebviewViewProvider {
 					void this.nanodrive.setVolume(message.volume);
 				}
 				this.playback?.disconnect();
+				await this.nanodrive.setMuted(this.playbackMuted);
 				await this.nanodrive.startPlayback(source, message.looped === true, loadPdx, { adpcmMode, pdxConfigured: configured.length > 0 });
 			} else { await this.playback!.connect(message.sampleRate as number, null, {
-				source, looped: message.looped === true, cursor, adpcmMode, pdxConfigured: configured.length > 0, loadPdx
+				source, looped: message.looped === true, cursor, adpcmMode, muted: this.playbackMuted, pdxConfigured: configured.length > 0, loadPdx
 			}); }
 		} else if (message.id === this.playbackId) {
 			if (message.action === 'stop' || message.action === 'ended') {

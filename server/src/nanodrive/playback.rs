@@ -1,8 +1,9 @@
 use mmlx_lsp_server::audition::VoiceTestRegisters;
 use mmlx_lsp_server::playback_events::{FmKeyEvent, fm_key_events};
+use mmlx_lsp_server::playback_mute::PlaybackMute;
 use ndsif::{
     AudioEvent, AudioSampleConverter, AudioTiming, BytePosition, Command, CommandEncoder, Divider,
-    MAX_YM2151_EVENT_WRITES, OkiClock, Pan, RegisterWrite, ZeroPair,
+    Frame, MAX_YM2151_EVENT_WRITES, OkiClock, Pan, RegisterWrite, Request, RequestEvent, ZeroPair,
 };
 use soundlog::chip::{Okim6258Spec, Ym2151Spec, state::Ym2151State};
 use soundlog::mdx::{
@@ -143,6 +144,119 @@ impl Playback {
             Self::Audio(playback) => playback.next(request_id),
             Self::Fm(playback) => playback.next(request_id),
         }
+    }
+}
+
+#[derive(Default)]
+pub struct MuteFilter {
+    mute: PlaybackMute,
+}
+
+impl MuteFilter {
+    pub fn set_muted(
+        &mut self,
+        mask: u16,
+        request_id: u16,
+        position: Option<u32>,
+    ) -> Result<Vec<u8>, String> {
+        let writes = self
+            .mute
+            .set_mask(mask)?
+            .into_iter()
+            .map(|(address, value)| RegisterWrite::new(address, value))
+            .collect::<Vec<_>>();
+        let mut bytes = Vec::new();
+        let mut encoder =
+            CommandEncoder::new(request_id, |frame: &[u8]| bytes.extend_from_slice(frame));
+        if !writes.is_empty() {
+            if let Some(position) = position {
+                encoder
+                    .ym2151_event(BytePosition::new(position), &writes)
+                    .map_err(|error| error.to_string())?;
+            } else {
+                encoder
+                    .ym2151_burst(&writes)
+                    .map_err(|error| error.to_string())?;
+            }
+        }
+        if let Some(position) = position {
+            encoder
+                .push(Command::AudioEvent {
+                    position: BytePosition::new(position),
+                    event: AudioEvent::Pan(
+                        Pan::try_from(self.mute.pcm_output()).map_err(|error| error.to_string())?,
+                    ),
+                })
+                .map_err(|error| error.to_string())?;
+        }
+        Ok(bytes)
+    }
+
+    pub fn filter(&mut self, bytes: &[u8]) -> Result<Vec<u8>, String> {
+        if bytes.len() > 65536 || bytes.first() != Some(&0) || bytes.last() != Some(&0) {
+            return Err("Invalid playback frames".into());
+        }
+        let mut output = Vec::with_capacity(bytes.len());
+        for body in bytes
+            .split(|byte| *byte == 0)
+            .filter(|body| !body.is_empty())
+        {
+            let frame = Frame::decode(body).map_err(|error| error.to_string())?;
+            let request = Request::decode(&frame).map_err(|error| error.to_string())?;
+            let filtered = match request {
+                Request::WriteYm2151Burst(writes) => {
+                    let writes = writes
+                        .iter()
+                        .map(|write| {
+                            RegisterWrite::new(
+                                write.address,
+                                self.mute.write_fm(write.address, write.value),
+                            )
+                        })
+                        .collect::<Vec<_>>();
+                    Command::WriteYm2151Burst(&writes)
+                        .encode(frame.request_id())
+                        .map_err(|error| error.to_string())?
+                }
+                Request::AudioEvent {
+                    position,
+                    event: RequestEvent::Ym2151(writes),
+                } => {
+                    let writes = writes
+                        .iter()
+                        .map(|write| {
+                            RegisterWrite::new(
+                                write.address,
+                                self.mute.write_fm(write.address, write.value),
+                            )
+                        })
+                        .collect::<Vec<_>>();
+                    Command::AudioEvent {
+                        position,
+                        event: AudioEvent::Ym2151(&writes),
+                    }
+                    .encode(frame.request_id())
+                    .map_err(|error| error.to_string())?
+                }
+                Request::AudioEvent {
+                    position,
+                    event: RequestEvent::Pan(pan),
+                } => {
+                    let pan = Pan::try_from(self.mute.write_pcm_pan(pan as u8))
+                        .map_err(|error| error.to_string())?;
+                    Command::AudioEvent {
+                        position,
+                        event: AudioEvent::Pan(pan),
+                    }
+                    .encode(frame.request_id())
+                    .map_err(|error| error.to_string())?
+                }
+                Request::AudioData { .. } | Request::AudioEvent { .. } => frame.encode(),
+                _ => return Err("Unexpected playback frame".into()),
+            };
+            output.extend_from_slice(filtered.as_bytes());
+        }
+        Ok(output)
     }
 }
 
@@ -516,6 +630,63 @@ impl AudioPlayback {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn mute_filter_preserves_audio_and_timing_and_restores_latest_pan() {
+        for audio in [false, true] {
+            let mut filter = MuteFilter::default();
+            filter.set_muted(0x101, 0, None).unwrap();
+            let writes = [
+                RegisterWrite::new(0x20, 0xc7),
+                RegisterWrite::new(0x27, 0x47),
+                RegisterWrite::new(0x60, 32),
+            ];
+            let fm = if audio {
+                Command::AudioEvent {
+                    position: BytePosition::new(160),
+                    event: AudioEvent::Ym2151(&writes),
+                }
+            } else {
+                Command::WriteYm2151Burst(&writes)
+            };
+            let filtered = filter.filter(fm.encode(9).unwrap().as_bytes()).unwrap();
+            let frame = Frame::decode(&filtered[1..filtered.len() - 1]).unwrap();
+            assert_eq!(frame.request_id(), 9);
+            assert_eq!(
+                &frame.payload()[if audio { 5 } else { 0 }..],
+                &[0x20, 7, 0x27, 0x47, 0x60, 32]
+            );
+            let data = Command::AudioData {
+                position: BytePosition::new(160),
+                adpcm: &[0x7f, 0x21],
+            }
+            .encode(10)
+            .unwrap();
+            assert_eq!(filter.filter(data.as_bytes()).unwrap(), data.as_bytes());
+            let pan = Command::AudioEvent {
+                position: BytePosition::new(160),
+                event: AudioEvent::Pan(Pan::Left),
+            }
+            .encode(11)
+            .unwrap();
+            let filtered = filter.filter(pan.as_bytes()).unwrap();
+            let frame = Frame::decode(&filtered[1..filtered.len() - 1]).unwrap();
+            assert_eq!(frame.payload(), &[160, 0, 0, 0, 2, 3]);
+            let restored = filter.set_muted(0, 12, audio.then_some(320)).unwrap();
+            let frames = restored
+                .split(|byte| *byte == 0)
+                .filter(|body| !body.is_empty())
+                .map(|body| Frame::decode(body).unwrap())
+                .collect::<Vec<_>>();
+            assert_eq!(
+                &frames[0].payload()[if audio { 5 } else { 0 }..],
+                &[0x20, 0xc7]
+            );
+            if audio {
+                assert_eq!(frames[1].payload(), &[64, 1, 0, 0, 2, Pan::Left as u8]);
+            }
+        }
+    }
 
     #[test]
     fn both_transports_emit_timed_fm_keys() {

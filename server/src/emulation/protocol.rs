@@ -50,6 +50,11 @@ enum Command {
         cursor: Option<usize>,
         #[serde(rename = "adpcmMode")]
         adpcm_mode: Option<String>,
+        #[serde(default)]
+        muted: u16,
+    },
+    PlaybackMute {
+        muted: u16,
     },
     VoiceTest {
         mml: String,
@@ -156,6 +161,7 @@ pub fn run(input: impl BufRead, mut output: impl Write) -> Result<(), String> {
                 looped,
                 cursor,
                 adpcm_mode,
+                muted,
             } => {
                 let mode = match adpcm_mode.as_deref().unwrap_or("resample") {
                     "through" => AdpcmMode::Through,
@@ -176,7 +182,14 @@ pub fn run(input: impl BufRead, mut output: impl Write) -> Result<(), String> {
                     asset,
                     mode,
                 )?);
+                playback.as_mut().unwrap().set_muted(muted)?;
                 playback_state(&mut output, playback.as_ref().unwrap())?;
+            }
+            Command::PlaybackMute { muted } => {
+                playback
+                    .as_mut()
+                    .ok_or("Playback not initialized")?
+                    .set_muted(muted)?;
             }
             Command::VoiceTest { mml, voice } => {
                 let failed = engine.start_voice_test(&mml, voice).is_err();

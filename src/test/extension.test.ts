@@ -898,6 +898,24 @@ suite('mmlx extension', () => {
 			channelEnergy = [0, 0]; await render();
 			assert.strictEqual(channelEnergy[0], 0); assert.ok(channelEnergy[1] > 1, 'Right-panned PCM is audible');
 			assert.strictEqual(keys.length, 0, 'PCM-only playback does not invent FM keyboard events');
+			session.setMuted(256); await render(); await render();
+			channelEnergy = [0, 0]; await render();
+			assert.deepStrictEqual(channelEnergy, [0, 0], 'Live ADPCM mute silences both outputs');
+			const mutedPosition = progress.position;
+			session.setMuted(0); await render(); await render();
+			channelEnergy = [0, 0]; await render();
+			assert.strictEqual(channelEnergy[0], 0); assert.ok(channelEnergy[1] > 1, 'ADPCM unmute restores the original right pan');
+			assert.ok(progress.position > mutedPosition, 'Mute does not pause decoding');
+			await session.connect(48000, null, { source: pcmSource, looped: false, muted: 256,
+				loadPdx: async () => pdx });
+			channelEnergy = [0, 0]; await render();
+			assert.deepStrictEqual(channelEnergy, [0, 0], 'Saved ADPCM mute applies before the first sample');
+			await session.connect(48000, null, { source: playbackSource.replace('l8 cdef', 'c1'), looped: false, muted: 1 });
+			energy = 0; await render();
+			assert.strictEqual(energy, 0, 'Saved FM mute applies before key-on');
+			session.setMuted(512); energy = 0; await render(); assert.strictEqual(energy, 0, 'Invalid masks are ignored');
+			session.setMuted(0); await render(); await render(); energy = 0; await render();
+			assert.ok(energy > 1, 'Live FM unmute restores audible output');
 			await session.connect(48000, null, { source: pcmSource, looped: false,
 				loadPdx: async () => { throw new Error('PDX missing'); } });
 			assert.strictEqual(state?.connected, false); assert.match(state?.error ?? '', /PDX missing/);
@@ -1874,21 +1892,32 @@ suite('mmlx extension', () => {
 		const extension=vscode.extensions.all.find(extension=>extension.packageJSON.name==='mmlx-lsp'); assert.ok(extension);
 		const worker=new NanoDriveWorker(extension.extensionUri,await Wasm.load());
 		try {
-			const source=new TextEncoder().encode('#pcmfile "unused"\nA t120 o4 r4 c4\nH o5 r4 d4\nP r2');
+			const source=new TextEncoder().encode('#pcmfile "unused"\n' + playbackSource.replace('A t120 @1 o4 l8 cdef', 'A t120 @1 p3 o4 r4 c4\nH @1 p3 o5 r4 d4\nP r2'));
 			await worker.request({ operation:'upload',asset:'source',offset:0,bytes:Array.from(source) });
 			assert.deepStrictEqual(await worker.request({ operation:'playbackInfo' }),{ audio:false,pdxName:null });
-			assert.deepStrictEqual(await worker.request({ operation:'playbackInit',looped:false }),{ audio:false });
-			let position=0; let synchronized=false; let ended=false;
+			assert.deepStrictEqual(await worker.request({ operation:'playbackInit',looped:false,muted:257 }),{ audio:false });
+			let position=0; let synchronized=false; let ended=false; let maskApplied=false;
 			const keys: FmKeyEvent[] = [];
 			for(let index=0;index<100;index++) {
 				const result=await worker.request({ operation:'playbackNext',requestId:index*128 });
 				assert.ok(result && 'bytes' in result && result.bytes instanceof Uint8Array && result.fm===true);
 				assert.ok(result.position!>=position && result.count!>=0); position=result.position!;
+				if (result.bytes.length) {
+					const filtered = await worker.request({ operation: 'playbackFilter', bytes: Array.from(result.bytes) });
+					assert.ok(filtered && 'bytes' in filtered && filtered.bytes instanceof Uint8Array);
+					if (!maskApplied && !Buffer.from(filtered.bytes).equals(Buffer.from(result.bytes))) {
+						maskApplied = true;
+						const restored = await worker.request({ operation: 'playbackMute', muted: 0, requestId: 42, position });
+						assert.ok(restored && 'bytes' in restored && restored.bytes.length > 0);
+						assert.deepStrictEqual(await worker.request({ operation: 'playbackFilter', bytes: Array.from(result.bytes) }), { bytes: result.bytes });
+					} else if (maskApplied) { assert.deepStrictEqual(filtered.bytes, result.bytes, 'Unmuted FM frames remain byte-identical'); }
+				}
 				synchronized ||= result.synchronize===true;
 				keys.push(...(result.keys ?? []));
 				if(result.ended) { ended=true; break; }
 			}
 			assert.ok(ended && synchronized && position>20000);
+			assert.ok(maskApplied, 'Saved FM mute masks the first actual pan writes');
 			assert.ok(keys.some(event => event.channel === 0 && event.note === 60 && event.position > 0.49 && event.position < 0.51), JSON.stringify(keys));
 			assert.ok(keys.some(event => event.channel === 7 && event.note === 74 && event.position > 0.49 && event.position < 0.51), JSON.stringify(keys));
 			assert.strictEqual(keys.find(event => event.note === 60)?.position, keys.find(event => event.note === 74)?.position);
@@ -1903,7 +1932,7 @@ suite('mmlx extension', () => {
 		assert.ok(extension);
 		const worker = new NanoDriveWorker(extension.extensionUri, await Wasm.load());
 		try {
-			const source = new TextEncoder().encode('\n'.repeat(70000) + '#pcmfile "drums"\nA o4 c4\nH o5 d4\nP o1 c4');
+			const source = new TextEncoder().encode('\n'.repeat(70000) + '#pcmfile "drums"\n' + playbackSource.replace('A t120 @1 o4 l8 cdef', 'A @1 p3 o4 c4\nH @1 p3 o5 d4\nP p3 o1 c4'));
 			for (let offset = 0; offset < source.length; offset += 8192) {
 				await worker.request({ operation: 'upload', asset: 'source', offset, bytes: Array.from(source.subarray(offset, offset + 8192)) });
 			}
@@ -1911,8 +1940,9 @@ suite('mmlx extension', () => {
 			await assert.rejects(worker.request({ operation: 'playbackInit', looped: false }), /PDX/);
 			const pdx = Buffer.alloc(768 + 2048); pdx.writeUInt32BE(768, 9 * 8); pdx.writeUInt32BE(2048, 9 * 8 + 4); pdx.fill(0x77, 768);
 			await worker.request({ operation: 'upload', asset: 'pdx', offset: 0, bytes: Array.from(pdx) });
-			await worker.request({ operation: 'playbackInit', looped: false });
-			let position = 0; let ended = false; let chunks = 0;
+			await worker.request({ operation: 'playbackInit', looped: false, muted: 257 });
+			await assert.rejects(worker.request({ operation: 'playbackMute', muted: 512, requestId: 42, position: 0 }), /mask/i);
+			let position = 0; let ended = false; let chunks = 0; let maskApplied = false;
 			const keys: FmKeyEvent[] = [];
 			for (; chunks < 300; chunks++) {
 				const result = await worker.request({ operation: 'playbackNext', requestId: chunks * 128 & 65535 });
@@ -1920,10 +1950,19 @@ suite('mmlx extension', () => {
 				assert.ok(Number.isInteger(result.count) && result.count! > 0 && result.bytes.length < 65525);
 				assert.ok(result.position! > position && result.position! - position <= 160);
 				position = result.position!;
+				const filtered = await worker.request({ operation: 'playbackFilter', bytes: Array.from(result.bytes) });
+				assert.ok(filtered && 'bytes' in filtered && filtered.bytes instanceof Uint8Array);
+				if (!maskApplied && !Buffer.from(filtered.bytes).equals(Buffer.from(result.bytes))) {
+					maskApplied = true;
+					const restored = await worker.request({ operation: 'playbackMute', muted: 0, requestId: 42, position });
+					assert.ok(restored && 'bytes' in restored && restored.bytes.length > 0);
+					assert.deepStrictEqual(await worker.request({ operation: 'playbackFilter', bytes: Array.from(result.bytes) }), { bytes: result.bytes });
+				} else if (maskApplied) { assert.deepStrictEqual(filtered.bytes, result.bytes, 'Unmuted PCM data and timed events remain byte-identical'); }
 				keys.push(...(result.keys ?? []));
 				if (result.ended) { ended = true; break; }
 			}
 			assert.ok(ended && chunks > 4 && chunks < 100);
+			assert.ok(maskApplied, 'Saved mixed FM/ADPCM mute masks the first actual pan writes');
 			assert.ok(keys.some(event => event.channel === 0 && event.note === 60 && event.position === 0));
 			assert.ok(keys.some(event => event.channel === 7 && event.note === 74 && event.position === 0));
 			assert.ok(keys.some(event => event.note === null));
@@ -2269,7 +2308,7 @@ suite('mmlx extension', () => {
 							const channels = document.getElementById('playback-channels');
 							const rows = channels.querySelectorAll('.playback-channel');
 							check(rows.length === 9 && rows[8].getAttribute('aria-label') === 'ADPCM', 'Eight FM channels and one mixed ADPCM channel');
-							check(channels.querySelectorAll('button:disabled').length === 18, 'Mute and solo remain disabled until playback integration');
+							check(channels.querySelectorAll('button:disabled').length === 18, 'Unavailable playback disables channel controls');
 							const frame = getComputedStyle(channels);
 							const transport = getComputedStyle(document.querySelector('.playback-transport'));
 							check(frame.borderRadius === transport.borderRadius && frame.borderTopColor === transport.borderTopColor && frame.backgroundColor === transport.backgroundColor, 'Channel frame matches transport');
@@ -2303,11 +2342,26 @@ suite('mmlx extension', () => {
 							const playbackFixture = document.getElementById('playback-controls').cloneNode(true);
 							playbackFixture.hidden = false; playbackFixture.style.width = '300px';
 							playbackFixture.querySelector('#playback-channels').replaceChildren(); document.body.append(playbackFixture);
-							const player = createPlaybackControls(playbackFixture);
+							const muteChanges = [];
+							const player = createPlaybackControls(playbackFixture, undefined, undefined, undefined, mask => muteChanges.push(mask));
+							const muteButtons = playbackFixture.querySelectorAll('.playback-channel-mute');
+							const soloButtons = playbackFixture.querySelectorAll('.playback-channel-solo');
 							const pianos = playbackFixture.querySelectorAll('.playback-channel-piano');
 							const active = channel => pianos[channel].querySelector('.is-active')?.dataset.note;
 							const playing = { available:true, playing:true, position:0 };
 							player.setMode('emulation'); player.render(playing);
+							check([...muteButtons, ...soloButtons].every(button => !button.disabled), 'MUTE and SOLO are enabled for all nine channels');
+							muteButtons[0].click(); muteButtons[7].click(); muteButtons[8].click();
+							check(player.muted === 385 && muteChanges.join(',') === '1,129,385', 'FM1, FM8 and mixed ADPCM toggle independently');
+							check(muteButtons[8].getAttribute('aria-pressed') === 'true' && muteButtons[8].closest('.playback-channel').classList.contains('is-muted'), 'Mute selection is accessible and visible');
+							soloButtons[0].click(); check(player.soloed === 1 && player.outputMuted === 510 && muteChanges.at(-1) === 510, 'FM1 solo silences all other channels');
+							check(soloButtons[0].getAttribute('aria-pressed') === 'true' && !soloButtons[0].closest('.playback-channel').classList.contains('is-muted') && muteButtons[0].getAttribute('aria-pressed') === 'true', 'SOLO overrides mute output without changing the saved MUTE selection');
+							check(getComputedStyle(soloButtons[0]).backgroundColor === getComputedStyle(muteButtons[0]).backgroundColor, 'SOLO selection uses the existing MUTE highlight');
+							soloButtons[7].click(); soloButtons[8].click();
+							check(player.soloed === 385 && player.outputMuted === 126 && muteChanges.at(-1) === 126 && player.muted === 385, 'Multiple FM and ADPCM channels can be soloed together');
+							muteButtons[7].click(); check(player.muted === 257 && player.outputMuted === 126, 'Editing MUTE during SOLO updates only the saved mute selection'); muteButtons[7].click();
+							soloButtons[0].click(); soloButtons[7].click(); check(player.soloed === 256 && player.outputMuted === 255, 'ADPCM-only SOLO silences every FM channel');
+							soloButtons[8].click(); check(player.soloed === 0 && player.outputMuted === 385 && muteChanges.at(-1) === 385, 'Releasing the last SOLO restores the original MUTE mask');
 							player.enqueueKeys([{position:0.1,channel:0,note:60},{position:0.1,channel:7,note:72},{position:0.15,channel:0,note:61},{position:0.2,channel:0,note:null}]);
 							check(!active(0), 'Prefetched keys do not light before playback reaches them');
 							player.setPosition(0.1); check(active(0) === '60' && active(7) === '72', 'FM channels light independently');
@@ -2316,15 +2370,28 @@ suite('mmlx extension', () => {
 							check(pressed.left >= visible.left + 1 && pressed.right <= visible.right - 1, 'Active key is revealed in narrow panels without shrinking');
 							player.render({...playing,playing:false,paused:true}); player.setPosition(0.2);
 							check(active(0) === '60', 'Pause freezes key position');
+							soloButtons[7].click(); check(player.outputMuted === 383 && !soloButtons[7].disabled && active(0) === '60', 'Paused playback allows SOLO without altering keyboard activity');
 							player.render(playing); player.setPosition(0.15);
 							check(active(0) === '61' && pianos[0].querySelectorAll('.is-active').length === 1, 'Tone change moves to the black key without leaving a stale key');
 							player.setPosition(0.2); check(!active(0) && active(7) === '72', 'Key off only clears its own channel');
 							player.render({...playing,playing:false}); check(!active(7), 'Stop clears every FM key');
+							check(player.muted === 385, 'Stopping preserves the selected mute mask');
+							check(player.soloed === 128 && player.outputMuted === 383, 'Stopping preserves SOLO selections for restart');
 							player.enqueueKeys([{position:0,channel:0,note:60}]); check(!active(0), 'Events received after stop are ignored');
 							player.setMode('nanodrive8'); player.setNanoDriveAvailable(true); player.render(playing);
+							player.render({...playing,busy:true}); check([...muteButtons].every(button => !button.disabled), 'Hardware playback allows live mute despite its keyboard lock');
+							check(player.soloed === 128 && !soloButtons[7].disabled, 'Output changes retain SOLO and hardware playback allows live SOLO');
+							soloButtons[7].click(); check(player.outputMuted === 385, 'Hardware SOLO release restores the saved mute mask');
+							muteButtons[7].click(); check(player.muted === 257, 'Output changes retain mute choices');
 							player.enqueueKeys([{position:0.1,channel:0,note:67}]); player.render({...playing,position:0.1});
 							check(active(0) === '67', 'NanoDrive8 key clock follows hardware position');
 							player.render({...playing,playing:false,loading:true}); check(!active(0), 'A new playback clears stale keys');
+							check([...muteButtons, ...soloButtons].every(button => button.disabled), 'Preparing playback blocks MUTE and SOLO changes');
+							const beforeDisabledSolo = muteChanges.length; soloButtons[0].click(); check(muteChanges.length === beforeDisabledSolo, 'Disabled SOLO cannot emit output changes');
+							player.setMuted(511); check(player.muted === 511 && [...muteButtons].every(button => button.getAttribute('aria-pressed') === 'true'), 'Saved mute state restores all nine channels');
+							player.setMuted(512); check(player.muted === 0, 'Invalid saved masks are discarded');
+							player.setSoloed(511); check(player.soloed === 511 && player.outputMuted === 0 && [...soloButtons].every(button => button.getAttribute('aria-pressed') === 'true'), 'Saved SOLO restores all nine selections');
+							player.setSoloed(512); check(player.soloed === 0 && player.outputMuted === 0, 'Invalid saved SOLO masks are discarded');
 							player.render(null); playbackFixture.remove();
 							for (const asset of ['volume-x.svg', 'headphones.svg']) {
 								await new Promise((resolve, reject) => {
@@ -2361,6 +2428,15 @@ suite('mmlx extension', () => {
 							volume.value = '50'; volume.dispatchEvent(new Event('input'));
 							check(messages.at(-1).type === 'playbackVolume' && messages.at(-1).mode === 'nanodrive8' && messages.at(-1).volume === .5, 'Hardware volume routes to the output');
 							check(api.getState().playbackVolume === 50, 'Hardware volume is saved');
+							rows[0].querySelector('.playback-channel-mute').click(); rows[8].querySelector('.playback-channel-mute').click();
+							check(messages.at(-1).type === 'playbackMute' && messages.at(-1).mode === 'nanodrive8' && messages.at(-1).id === 0 && messages.at(-1).muted === 257, 'Mute routes to the selected hardware playback');
+							check(api.getState().playbackMuted === 257, 'Channel mute selections are saved');
+							rows[7].querySelector('.playback-channel-solo').click();
+							check(messages.at(-1).type === 'playbackMute' && messages.at(-1).mode === 'nanodrive8' && messages.at(-1).muted === 383, 'SOLO routes the effective mask through the existing hardware mute path');
+							check(api.getState().playbackSoloed === 128 && api.getState().playbackMuted === 257, 'SOLO is saved separately from MUTE');
+							rows[8].querySelector('.playback-channel-solo').click(); check(messages.at(-1).muted === 127, 'Hardware SOLO includes mixed ADPCM');
+							rows[7].querySelector('.playback-channel-solo').click(); rows[8].querySelector('.playback-channel-solo').click();
+							check(messages.at(-1).muted === 257 && api.getState().playbackSoloed === 0, 'Releasing hardware SOLO restores saved MUTE');
 							button.click();
 							const request = messages.find(message => message.type === 'setOutputConnection');
 							check(request?.mode === 'nanodrive8' && request.connected && button.disabled && mode.disabled, 'Keyboard connect request and busy state');
@@ -2498,22 +2574,32 @@ suite('mmlx extension', () => {
 							const stopBounds = stop.getBoundingClientRect();
 							check(stopBounds.width === playBounds.width && stopBounds.height === playBounds.height && stopBounds.width === 44, 'Stop must match the Play button size');
 							check(stop.disabled, 'Stop must be disabled while stopped');
+							rows[7].querySelector('.playback-channel-solo').click();
 							play.click();
 							const playbackRequest = messages.find(message => message.type === 'playbackAction' && message.action === 'play');
 							check(playbackRequest?.mode === 'nanodrive8' && !playbackRequest.sampleRate, 'Binary hardware playback without browser PCM');
 							check(playbackRequest.volume === .5, 'Hardware playback starts with the saved volume');
+							check(playbackRequest.muted === 383 && api.getState().playbackMuted === 257 && api.getState().playbackSoloed === 128, 'Playback starts with the effective SOLO mask while preserving MUTE');
 							send({ type: 'nanoDrivePlayback', busy: true }); check(button.disabled, 'Keyboard connection locked by Playback');
 							send({ type: 'playback', id: playbackRequest.id, mode: 'nanodrive8', available: true, document: 'file:///test.mml', playing: true, paused: false, loading: false, busy: true });
 							check(play.disabled && play.title === 'Play' && cursor.disabled && !volume.disabled, 'Hardware playback cannot pause or seek but can change output volume');
 							check(!stop.disabled, 'Hardware Stop is enabled');
+							rows[8].querySelector('.playback-channel-solo').click();
+							check(messages.at(-1).type === 'playbackMute' && messages.at(-1).id === playbackRequest.id && messages.at(-1).muted === 127, 'Live hardware SOLO uses the current playback id');
+							rows[7].querySelector('.playback-channel-solo').click(); check(messages.at(-1).muted === 255, 'Live ADPCM-only SOLO mutes all FM channels');
 							check(getComputedStyle(stop).backgroundColor !== inactiveStopBackground && getComputedStyle(stop).backgroundColor === getComputedStyle(play).backgroundColor, 'Enabled Stop must use the active button color');
 							stop.click();
 							check(messages.at(-1).type === 'playbackAction' && messages.at(-1).action === 'stop', 'Hardware Stop request');
 							send({ type: 'nanoDrivePlayback', busy: false }); check(!button.disabled, 'Keyboard unlock after hardware cleanup');
 							send({ type: 'playback', id: playbackRequest.id, mode: 'nanodrive8', available: true, document: 'file:///test.mml', playing: false, paused: false, loading: false, busy: false });
 							check(stop.disabled && getComputedStyle(stop).backgroundColor === inactiveStopBackground, 'Stopped button must return to the inactive color');
+							check(api.getState().playbackSoloed === 256 && rows[8].querySelector('.playback-channel-solo').getAttribute('aria-pressed') === 'true', 'Stop retains ADPCM SOLO for the next playback');
 							playbackMode.value = 'emulation'; playbackMode.dispatchEvent(new Event('change')); send(serial);
 							check(playbackMode.value === 'emulation', 'Settings updates preserve manually selected Playback mode');
+							rows[8].querySelector('.playback-channel-solo').click();
+							check(messages.at(-1).type === 'playbackMute' && messages.at(-1).mode === 'emulation' && messages.at(-1).muted === 257, 'Emulation SOLO release restores the original MUTE mask');
+							rows[0].querySelector('.playback-channel-solo').click();
+							check(messages.at(-1).mode === 'emulation' && messages.at(-1).muted === 510, 'Emulation SOLO uses the same effective output mask');
 							send({ ...serial, connected: false }); check(button.disabled && !mode.disabled, 'Port loss disables output');
 							check(audioContexts === 0, 'NanoDrive8 must not initialize AudioContext');
 							api.postMessage({ type: 'nanodriveResult' });

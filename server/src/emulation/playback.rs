@@ -5,6 +5,7 @@ use super::{
 };
 use crate::audition::VoiceTestRegisters;
 use crate::playback_events::{FmKeyEvent, fm_key_events};
+use crate::playback_mute::PlaybackMute;
 use mmlx::mdx::frontend::{self, MdxLocation};
 use soundlog::chip::{Okim6258Spec, Ym2151Spec, state::Ym2151State};
 use soundlog::mdx::command::MdxCommand;
@@ -201,6 +202,7 @@ pub struct Playback {
     chip: Rc<RefCell<Ym2151>>,
     pcm: Rc<RefCell<Pcm>>,
     keys: Rc<RefCell<Vec<FmKeyEvent>>>,
+    mute: Rc<RefCell<PlaybackMute>>,
     stream: VgmCallbackStream<'static>,
     native_rate: u32,
     pending: usize,
@@ -335,10 +337,16 @@ impl Playback {
         stream.track_state::<Ym2151State>(Instance::Primary, options.ym2151_clock as f32);
         let keys = Rc::new(RefCell::new(Vec::new()));
         let key_events = Rc::clone(&keys);
+        let mute = Rc::new(RefCell::new(PlaybackMute::default()));
+        let fm_mute = Rc::clone(&mute);
+        let pcm_mute = Rc::clone(&mute);
         let native_rate = chip.borrow().sample_rate();
         let pcm = Rc::new(RefCell::new(Pcm::new()));
         let pcm_writes = Rc::clone(&pcm);
-        stream.on_write(move |_instance, spec: Okim6258Spec, _sample, _events| {
+        stream.on_write(move |_instance, mut spec: Okim6258Spec, _sample, _events| {
+            if spec.register == 2 {
+                spec.value = pcm_mute.borrow_mut().write_pcm_pan(spec.value);
+            }
             pcm_writes.borrow_mut().write(spec);
         });
         let writes = Rc::clone(&chip);
@@ -350,7 +358,8 @@ impl Playback {
                         writes.borrow_mut().write(address, value)
                     });
             } else {
-                writes.borrow_mut().write(spec.register, spec.value);
+                let value = fm_mute.borrow_mut().write_fm(spec.register, spec.value);
+                writes.borrow_mut().write(spec.register, value);
                 key_events
                     .borrow_mut()
                     .extend(fm_key_events(sample, events));
@@ -361,6 +370,7 @@ impl Playback {
             chip,
             pcm,
             keys,
+            mute,
             stream,
             native_rate,
             pending: 0,
@@ -420,6 +430,15 @@ impl Playback {
         std::mem::take(&mut *self.keys.borrow_mut())
     }
 
+    pub fn set_muted(&mut self, mask: u16) -> Result<(), String> {
+        let mut mute = self.mute.borrow_mut();
+        for (register, value) in mute.set_mask(mask)? {
+            self.chip.borrow_mut().write(register, value);
+        }
+        self.pcm.borrow_mut().pan = mute.pcm_output();
+        Ok(())
+    }
+
     pub fn position(&self) -> f64 {
         self.frames as f64 / self.native_rate as f64
     }
@@ -470,6 +489,103 @@ mod tests {
     use super::*;
 
     pub const SOURCE: &str = "@1 = {\n31,0,0,15,0,32,0,1,0,0,0,\n31,0,0,15,0,32,0,1,0,0,0,\n31,0,0,15,0,32,0,1,0,0,0,\n31,0,0,15,0,32,0,1,0,0,0,\n7,0,15\n}\nA t120 @1 o4 l8 cdef\n";
+
+    #[test]
+    fn live_fm_mute_silences_only_its_channel_and_restores_audio() {
+        let energy = |pcm: Vec<u8>| {
+            pcm.chunks_exact(4)
+                .map(|bytes| f32::from_le_bytes(bytes.try_into().unwrap()).abs())
+                .sum::<f32>()
+        };
+        for (part, mask) in [("A", 1), ("H", 128)] {
+            let source = SOURCE.replace("A t120 @1 o4 l8 cdef", &format!("{part} t120 @1 o4 c1"));
+            let mut playback = Playback::new(&source, 48000, false).unwrap();
+            for _ in 0..4 {
+                playback.render().unwrap();
+            }
+            playback.set_muted(if mask == 1 { 128 } else { 1 }).unwrap();
+            assert!(energy(playback.render().unwrap()) > 1.0);
+            playback.set_muted(mask).unwrap();
+            for _ in 0..8 {
+                playback.render().unwrap();
+            }
+            assert_eq!(energy(playback.render().unwrap()), 0.0);
+            let position = playback.position();
+            playback.set_muted(0).unwrap();
+            for _ in 0..8 {
+                playback.render().unwrap();
+            }
+            assert!(energy(playback.render().unwrap()) > 1.0);
+            assert!(playback.position() > position);
+            assert!(
+                playback
+                    .take_keys()
+                    .iter()
+                    .any(|event| event.note == Some(60))
+            );
+        }
+    }
+
+    #[test]
+    fn pcm_mute_keeps_decoding_and_restores_pan_in_mixed_playback() {
+        let mut builder = soundlog::mdx::pdx::PdxBuilder::new();
+        builder.set_sample(0, 9, vec![0x7f; 32768]).unwrap();
+        let pdx = builder.finalize().to_bytes();
+        let source = format!(
+            "{}P p1 F2 o1 c1",
+            SOURCE.replace("A t120 @1 o4 l8 cdef", "A t120 @1 o4 c1")
+        );
+        let create = || {
+            Playback::with_assets(
+                &source,
+                48000,
+                false,
+                None,
+                Some(pdx.clone()),
+                AdpcmMode::Through,
+            )
+            .unwrap()
+        };
+        let mut playback = create();
+        let mut reference = create();
+        let energy = |bytes: &[u8]| {
+            let mut energy = [0.0_f32; 2];
+            for frame in bytes.chunks_exact(8) {
+                energy[0] += f32::from_le_bytes(frame[..4].try_into().unwrap()).abs();
+                energy[1] += f32::from_le_bytes(frame[4..].try_into().unwrap()).abs();
+            }
+            energy
+        };
+        playback.set_muted(0x101).unwrap();
+        for _ in 0..9 {
+            assert_eq!(energy(&playback.render().unwrap()), [0.0; 2]);
+            assert!(energy(&reference.render().unwrap())[1] > 1.0);
+        }
+        playback.set_muted(1).unwrap();
+        for _ in 0..8 {
+            playback.render().unwrap();
+            reference.render().unwrap();
+        }
+        let pcm = energy(&playback.render().unwrap());
+        reference.render().unwrap();
+        assert_eq!(pcm[0], 0.0);
+        assert!(pcm[1] > 1.0);
+        playback.set_muted(0x100).unwrap();
+        for _ in 0..8 {
+            playback.render().unwrap();
+            reference.render().unwrap();
+        }
+        let fm = energy(&playback.render().unwrap());
+        reference.render().unwrap();
+        assert!(fm[0] > 1.0 && fm[1] > 1.0);
+        playback.set_muted(0).unwrap();
+        for _ in 0..8 {
+            playback.render().unwrap();
+            reference.render().unwrap();
+        }
+        assert_eq!(playback.render().unwrap(), reference.render().unwrap());
+        assert_eq!(playback.position(), reference.position());
+    }
 
     #[test]
     fn playback_emits_timed_fm_keys() {

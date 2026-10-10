@@ -28,8 +28,10 @@ export type NanoDriveCodec = (params: { operation: 'encode'; command: NanoDriveC
     | { operation: 'audition'; session: number; requestId: number; command: NanoDriveInput }
     | { operation: 'upload'; asset: 'source' | 'pdx'; offset: number; bytes: number[] }
     | { operation: 'playbackInfo' | 'playbackStop' }
-    | { operation: 'playbackInit'; looped: boolean; adpcmMode?: NanoDriveAdpcmMode }
+    | { operation: 'playbackInit'; looped: boolean; adpcmMode?: NanoDriveAdpcmMode; muted?: number }
     | { operation: 'playbackNext'; requestId: number }
+    | { operation: 'playbackFilter'; bytes: number[] }
+    | { operation: 'playbackMute'; muted: number; requestId: number; position: number }
     | { operation: 'voiceTestInit'; session: number; mml: string; voice: unknown }
     | { operation: 'voiceTestNext' | 'voiceTestStop'; session: number; requestId: number }) => Promise<{ bytes: number[] | Uint8Array; count?: number; position?: number; ended?: boolean; fm?: boolean; synchronize?: boolean; keys?: FmKeyEvent[] } | { pdxName?: string | null; audio?: boolean } | NanoDriveReply | null>;
 type NanoDriveChunk = Extract<Awaited<ReturnType<NanoDriveCodec>>, { bytes: number[] | Uint8Array }>;
@@ -96,6 +98,9 @@ export class NanoDriveConnection {
     private voice = '';
     private playbackGeneration = 0;
     private playbackStopping?: Promise<void>;
+    private playbackMuted = 0;
+    private playbackSubmitted = 0;
+    private playbackTransfers = Promise.resolve();
     private hardwarePlayback: NanoDrivePlaybackState = { busy: false, playing: false, loading: false, position: 0, finished: false, error: '' };
 
     constructor(private readonly codec: NanoDriveCodec, private readonly onState: (state: NanoDriveState) => void,
@@ -110,6 +115,51 @@ export class NanoDriveConnection {
     get state(): NanoDriveState { return { ...this.snapshot }; }
     get outputState(): NanoDriveOutputState { return { ...this.output }; }
     get playbackState(): NanoDrivePlaybackState { return { ...this.hardwarePlayback }; }
+
+    private transferPlayback(action: () => Promise<void>): Promise<void> {
+        const transfer = this.playbackTransfers.then(action);
+        this.playbackTransfers = transfer.catch(() => undefined);
+        return transfer;
+    }
+
+    private async writePlayback(chunk: NanoDriveChunk, connection: number, token: number, check: () => void): Promise<void> {
+        await this.transferPlayback(async () => {
+            check();
+            if (chunk.bytes.length) {
+                const bytes = chunk.bytes instanceof Uint8Array ? chunk.bytes : Uint8Array.from(chunk.bytes);
+                for (let offset = 0; offset < bytes.length;) {
+                    let end = Math.min(offset + 8192, bytes.length);
+                    if (end < bytes.length) { end = bytes.lastIndexOf(0, end - 1) + 1; }
+                    if (end <= offset + 1) { throw new Error('Invalid playback frame boundary.'); }
+                    const filtered = await this.codec({ operation: 'playbackFilter', bytes: Array.from(bytes.subarray(offset, end)) }); check();
+                    if (!filtered || !('bytes' in filtered)) { throw new Error('Invalid playback mute filter.'); }
+                    await this.write(filtered.bytes, connection, false, token); check();
+                    offset = end;
+                    if (offset < bytes.length && bytes[offset] !== 0) { offset--; }
+                }
+            }
+            this.playbackSubmitted = chunk.position!;
+        });
+    }
+
+    async setMuted(muted: number): Promise<void> {
+        if (!Number.isInteger(muted) || muted < 0 || muted > 511 || muted === this.playbackMuted) { return; }
+        this.playbackMuted = muted;
+        if (!this.hardwarePlayback.playing) { return; }
+        const token = this.playbackGeneration; const connection = this.generation;
+        try {
+            await this.transferPlayback(async () => {
+                if (token !== this.playbackGeneration || connection !== this.generation) { return; }
+                const requestId = this.requestId & 0xffff; this.requestId += 16;
+                const result = await this.codec({ operation: 'playbackMute', muted, requestId, position: this.playbackSubmitted });
+                if (token !== this.playbackGeneration || connection !== this.generation) { return; }
+                if (!result || !('bytes' in result)) { throw new Error('Invalid playback mute response.'); }
+                if (result.bytes.length) { await this.write(result.bytes, connection, false, token); }
+            });
+        } catch (error) {
+            if (token === this.playbackGeneration) { await this.stopPlayback(error instanceof Error ? error.message : String(error)); }
+        }
+    }
 
     setVolume(volume: number): Promise<void> {
         if (!Number.isFinite(volume) || volume < 0 || volume > 1) { return Promise.resolve(); }
@@ -192,6 +242,7 @@ export class NanoDriveConnection {
         if (this.hardwarePlayback.busy || !this.snapshot.connected) { return; }
         const token = ++this.playbackGeneration;
         const connection = this.generation;
+        this.playbackSubmitted = 0;
         this.hardwarePlayback = { busy: true, playing: false, loading: true, position: 0, finished: false, error: '' };
         this.onPlayback(this.playbackState);
         const check = () => { if (token !== this.playbackGeneration || connection !== this.generation) { throw new Error('NanoDrive8 playback canceled.'); } };
@@ -220,7 +271,7 @@ export class NanoDriveConnection {
             if (info && 'pdxName' in info && (info.pdxName || (info.audio && options.pdxConfigured))) {
                 const pdx = await loadPdx(info.pdxName ?? ''); check(); await upload('pdx', pdx);
             }
-            const prepared = await this.codec({ operation: 'playbackInit', looped, adpcmMode: options.adpcmMode ?? 'resample' }); check();
+            const prepared = await this.codec({ operation: 'playbackInit', looped, adpcmMode: options.adpcmMode ?? 'resample', ...(this.playbackMuted ? { muted: this.playbackMuted } : {}) }); check();
             if (!prepared || !('audio' in prepared) || typeof prepared.audio !== 'boolean') { throw new Error('Invalid NanoDrive8 playback mode.'); }
             resetting = true;
             await this.request('reset'); resetting = false; check();
@@ -257,7 +308,7 @@ export class NanoDriveConnection {
                 prefetch();
                 submitted = chunk.position!;
                 const writeStarted = performance.now();
-                await this.write(chunk.bytes, connection, false, token); check();
+                await this.writePlayback(chunk, connection, token, check); check();
                 if (chunk.keys) { this.onPlaybackKeys(decodeFmKeyEvents(chunk.keys)); }
                 maxWriteMs = Math.max(maxWriteMs, performance.now() - writeStarted);
                 sent = chunk.position!; ended = chunk.ended!;
@@ -339,7 +390,8 @@ export class NanoDriveConnection {
                 await new Promise<void>(resolve => setTimeout(resolve, Math.max(1, Math.min(10, deadline - now))));
             }
             check();
-            if (chunk.bytes.length) { await this.write(chunk.bytes, connection, false, voiceTestSession === undefined ? token : undefined); check(); }
+            if (voiceTestSession === undefined) { await this.writePlayback(chunk, connection, token, check); }
+            else if (chunk.bytes.length) { await this.write(chunk.bytes, connection, false); check(); }
             if (chunk.synchronize) {
                 await this.request('ping', [...randomBytes(8)], check); check();
                 origin = performance.now() - chunk.position! / 44.1;
@@ -360,6 +412,7 @@ export class NanoDriveConnection {
         this.pending?.reject(new Error('NanoDrive8 playback canceled.'));
         const stopping = (async () => {
             try {
+                await this.playbackTransfers;
                 if (this.snapshot.connected && !this.snapshot.closing) { await this.request('reset'); }
                 await this.codec({ operation: 'playbackStop' });
             } catch (failure) {
