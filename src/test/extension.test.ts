@@ -11,6 +11,7 @@ import { BuildTerminal, buildErrorLinkProvider } from '../tasks';
 import { listMidiInputPorts, VoiceViewProvider } from '../voiceView';
 import { MidiInputConnection } from '../midiInput';
 import { EmulationSession, type EmulationState, type PlaybackProgress } from '../emulation';
+import type { FmKeyEvent } from '../emulationProtocol';
 import { NanoDriveWorker } from '../nanodriveWorker';
 import { Port as NanoDriveTestPort, codec as nanoDriveTestCodec } from './nanodrive.test';
 
@@ -229,10 +230,10 @@ suite('mmlx extension', () => {
 		const extension = vscode.extensions.all.find(extension => extension.packageJSON.name === 'mmlx-lsp'); assert.ok(extension);
 		const source = new TextDecoder().decode(await vscode.workspace.fs.readFile(vscode.Uri.joinPath(extension.extensionUri, 'assets', 'webview', 'emulationWorklet.js')));
 		const { runInNewContext } = await import('node:vm');
-		const requests: { type: string; blocks?: number }[] = [];
+		const requests: { type: string; blocks?: number; position?: number }[] = [];
 		let Processor!: new () => { frames: number; pending: number; port: { onmessage: (event: { data: unknown }) => void }; process: (inputs: unknown[], outputs: Float32Array[][]) => boolean };
 		runInNewContext(source, {
-			ArrayBuffer, Float32Array,
+			ArrayBuffer, Float32Array, sampleRate: 48000,
 			AudioWorkletProcessor: class { port = { postMessage: (message: { type: string; blocks?: number }) => requests.push(message) }; },
 			registerProcessor: (_name: string, constructor: typeof Processor) => { Processor = constructor; }
 		});
@@ -250,6 +251,15 @@ suite('mmlx extension', () => {
 		assert.ok(output.every(channel => channel.every(value => value === 0)));
 		send({ type: 'pcm', pcm: new Float32Array(1024).fill(0.25).buffer });
 		assert.strictEqual(processor.frames, 512); assert.strictEqual(processor.pending, 3);
+		send({ type: 'pcm', pcm: new Float32Array(1024).fill(0.25).buffer });
+		for (let index = 0; index < 9; index++) { processor.process([], [output]); }
+		const positions = () => requests.filter(message => message.type === 'position').map(message => message.position!);
+		assert.strictEqual(positions()[0], 128 / 48000);
+		assert.strictEqual(positions().at(-1), 1024 / 48000);
+		const before = positions().length;
+		processor.process([], [output]); assert.strictEqual(positions().length, before, 'Starvation cannot advance the key clock');
+		send({ type: 'clear' }); processor.process([], [output]);
+		assert.strictEqual(positions().length, before, 'Clear resets the consumed clock without advancing it');
 	});
 	test('Webview AudioWorklet plays PCM from the real WASI YM2151 backend while hidden', async function () {
 		this.timeout(15000);
@@ -822,6 +832,7 @@ suite('mmlx extension', () => {
 		let energy = 0;
 		let channelEnergy = [0, 0];
 		const positions: number[] = [];
+		const keys: FmKeyEvent[] = [];
 		const session = new EmulationSession(extension.extensionUri, await Wasm.load(), value => { state = value; },
 			pcm => {
 				blocks++; const samples = new Float32Array(pcm);
@@ -829,7 +840,8 @@ suite('mmlx extension', () => {
 				for (let index = 0; index < samples.length; index++) { channelEnergy[index % 2] += Math.abs(samples[index]); }
 				changed.fire();
 			},
-			value => { progress = value; positions.push(value.position); changed.fire(); });
+			value => { progress = value; positions.push(value.position); changed.fire(); }, undefined,
+			value => keys.push(...value));
 		async function render(): Promise<void> {
 			const target = blocks + 4;
 			const received = new Promise<void>((resolve, reject) => {
@@ -852,14 +864,21 @@ suite('mmlx extension', () => {
 			assert.ok(energy > 1);
 			assert.ok(progress.position > 0.9 && progress.position < 1.1);
 			assert.ok(positions.every((position, index) => index === 0 || position >= positions[index - 1]));
+			assert.deepStrictEqual(keys.filter(event => event.note !== null).map(event => event.note), [60, 62, 64, 65]);
+			assert.ok(keys.some(event => event.note === null));
+			assert.ok(keys.every(event => event.channel === 0));
 			const cursorSource = '; 日本語\n' + playbackSource;
 			const cursor = new TextEncoder().encode(cursorSource.slice(0, cursorSource.indexOf('cdef') + 2)).length;
 			const beforeCursor = blocks;
+			keys.length = 0;
 			await session.connect(48000, null, { source: cursorSource, looped: false, cursor });
 			assert.ok(state?.connected, state?.error ?? 'Cursor playback did not initialize');
 			assert.ok(progress.position > 0.49 && progress.position < 0.51);
 			assert.strictEqual(blocks, beforeCursor);
+			const cursorPosition = progress.position;
 			await render();
+			assert.ok(keys.length > 0 && keys.every(event => event.position >= cursorPosition), 'Cursor playback starts with a current snapshot rather than historical keys');
+			assert.ok(keys.some(event => event.channel === 0 && event.note === 64));
 			await session.connect(44100, null, { source: 'A [c4', looped: false });
 			assert.strictEqual(state?.connected, false);
 			assert.match(state?.error ?? '', /MML/);
@@ -871,12 +890,14 @@ suite('mmlx extension', () => {
 			table.setUint32(9 * 8, 768); table.setUint32(9 * 8 + 4, 17000); pdx.fill(0x7f, 768);
 			const pcmSource = '#pcmfile "drums"\nP p1 F2 o1 c4';
 			const loaded: string[] = [];
+			keys.length = 0;
 			await session.connect(48000, null, { source: pcmSource, looped: false, adpcmMode: 'through',
 				loadPdx: async name => { loaded.push(name); return pdx; } });
 			assert.ok(state?.connected, state?.error);
 			assert.deepStrictEqual(loaded, ['drums']);
 			channelEnergy = [0, 0]; await render();
 			assert.strictEqual(channelEnergy[0], 0); assert.ok(channelEnergy[1] > 1, 'Right-panned PCM is audible');
+			assert.strictEqual(keys.length, 0, 'PCM-only playback does not invent FM keyboard events');
 			await session.connect(48000, null, { source: pcmSource, looped: false,
 				loadPdx: async () => { throw new Error('PDX missing'); } });
 			assert.strictEqual(state?.connected, false); assert.match(state?.error ?? '', /PDX missing/);
@@ -907,6 +928,7 @@ suite('mmlx extension', () => {
 		const changed = new vscode.EventEmitter<void>();
 		let state: Record<string, unknown> = {};
 		let blocks = 0;
+		const keyMessages: { id: number; keys: FmKeyEvent[] }[] = [];
 		const provider = new VoiceViewProvider(context as unknown as vscode.ExtensionContext, () => undefined,
 			async () => [], async () => [], async () => { throw new Error('MIDI is not used'); }, await Wasm.load());
 		const view = { visible: true, onDidChangeVisibility: events.event, onDidDispose: events.event,
@@ -915,6 +937,9 @@ suite('mmlx extension', () => {
 				postMessage: async (message: Record<string, unknown>) => {
 					if (message.type === 'playback') { state = message; }
 					if (message.type === 'playbackPcm') { assert.ok(message.pcm instanceof ArrayBuffer); blocks++; }
+					if (message.type === 'playbackKeys') {
+						assert.strictEqual(message.mode, 'emulation'); keyMessages.push(message as unknown as { id: number; keys: FmKeyEvent[] });
+					}
 					changed.fire(); return true;
 				} } } as unknown as vscode.WebviewView;
 		function until(predicate: () => boolean): Promise<void> {
@@ -933,6 +958,7 @@ suite('mmlx extension', () => {
 			assert.ok(view.badge?.tooltip.includes('Playback'));
 			messages.fire({ type: 'playbackRender', id: 1, blocks: 4 });
 			await until(() => blocks === 4);
+			await until(() => keyMessages.some(message => message.id === 1 && message.keys.some(event => event.channel === 0 && event.note === 60)));
 			messages.fire({ type: 'playbackAction', action: 'pause', id: 1 });
 			assert.strictEqual(state.paused, true); assert.strictEqual(state.playing, false);
 			messages.fire({ type: 'playbackAction', action: 'resume', id: 1 });
@@ -958,6 +984,7 @@ suite('mmlx extension', () => {
 			assert.strictEqual(blocks, 8);
 			messages.fire({ type: 'playbackRender', id: 3, blocks: 4 });
 			await until(() => blocks === 12);
+			await until(() => keyMessages.some(message => message.id === 3 && message.keys.some(event => event.channel === 0 && event.note === 64)));
 			messages.fire({ type: 'playbackAction', action: 'stop', id: 3 });
 			editor.selection = new vscode.Selection(0, 0, 0, 0);
 			messages.fire({ type: 'playbackAction', action: 'playFromCursor', id: 4, document: document.uri.toString(), sampleRate: 48000 });
@@ -1847,19 +1874,25 @@ suite('mmlx extension', () => {
 		const extension=vscode.extensions.all.find(extension=>extension.packageJSON.name==='mmlx-lsp'); assert.ok(extension);
 		const worker=new NanoDriveWorker(extension.extensionUri,await Wasm.load());
 		try {
-			const source=new TextEncoder().encode('#pcmfile "unused"\nA r4 c4\nP r2');
+			const source=new TextEncoder().encode('#pcmfile "unused"\nA t120 o4 r4 c4\nH o5 r4 d4\nP r2');
 			await worker.request({ operation:'upload',asset:'source',offset:0,bytes:Array.from(source) });
 			assert.deepStrictEqual(await worker.request({ operation:'playbackInfo' }),{ audio:false,pdxName:null });
 			assert.deepStrictEqual(await worker.request({ operation:'playbackInit',looped:false }),{ audio:false });
 			let position=0; let synchronized=false; let ended=false;
+			const keys: FmKeyEvent[] = [];
 			for(let index=0;index<100;index++) {
 				const result=await worker.request({ operation:'playbackNext',requestId:index*128 });
 				assert.ok(result && 'bytes' in result && result.bytes instanceof Uint8Array && result.fm===true);
 				assert.ok(result.position!>=position && result.count!>=0); position=result.position!;
 				synchronized ||= result.synchronize===true;
+				keys.push(...(result.keys ?? []));
 				if(result.ended) { ended=true; break; }
 			}
 			assert.ok(ended && synchronized && position>20000);
+			assert.ok(keys.some(event => event.channel === 0 && event.note === 60 && event.position > 0.49 && event.position < 0.51), JSON.stringify(keys));
+			assert.ok(keys.some(event => event.channel === 7 && event.note === 74 && event.position > 0.49 && event.position < 0.51), JSON.stringify(keys));
+			assert.strictEqual(keys.find(event => event.note === 60)?.position, keys.find(event => event.note === 74)?.position);
+			assert.ok(keys.some(event => event.note === null));
 			await worker.request({ operation:'playbackStop' });
 		} finally { await worker.dispose(); }
 	});
@@ -1870,7 +1903,7 @@ suite('mmlx extension', () => {
 		assert.ok(extension);
 		const worker = new NanoDriveWorker(extension.extensionUri, await Wasm.load());
 		try {
-			const source = new TextEncoder().encode('\n'.repeat(70000) + '#pcmfile "drums"\nA r4\nP o1 c4');
+			const source = new TextEncoder().encode('\n'.repeat(70000) + '#pcmfile "drums"\nA o4 c4\nH o5 d4\nP o1 c4');
 			for (let offset = 0; offset < source.length; offset += 8192) {
 				await worker.request({ operation: 'upload', asset: 'source', offset, bytes: Array.from(source.subarray(offset, offset + 8192)) });
 			}
@@ -1880,15 +1913,20 @@ suite('mmlx extension', () => {
 			await worker.request({ operation: 'upload', asset: 'pdx', offset: 0, bytes: Array.from(pdx) });
 			await worker.request({ operation: 'playbackInit', looped: false });
 			let position = 0; let ended = false; let chunks = 0;
+			const keys: FmKeyEvent[] = [];
 			for (; chunks < 300; chunks++) {
 				const result = await worker.request({ operation: 'playbackNext', requestId: chunks * 128 & 65535 });
 				assert.ok(result && 'bytes' in result && result.bytes instanceof Uint8Array);
 				assert.ok(Number.isInteger(result.count) && result.count! > 0 && result.bytes.length < 65525);
 				assert.ok(result.position! > position && result.position! - position <= 160);
 				position = result.position!;
+				keys.push(...(result.keys ?? []));
 				if (result.ended) { ended = true; break; }
 			}
 			assert.ok(ended && chunks > 4 && chunks < 100);
+			assert.ok(keys.some(event => event.channel === 0 && event.note === 60 && event.position === 0));
+			assert.ok(keys.some(event => event.channel === 7 && event.note === 74 && event.position === 0));
+			assert.ok(keys.some(event => event.note === null));
 			await assert.rejects(worker.request({ operation: 'playbackNext', requestId: 0 }), /ended/);
 			await worker.request({ operation: 'playbackStop' });
 			await assert.rejects(worker.request({ operation: 'playbackNext', requestId: 0 }), /not initialized/);
@@ -2225,7 +2263,77 @@ suite('mmlx extension', () => {
 					window.addEventListener('message', event => {
 						if (event.data?.type !== 'nanodriveProbe') return;
 						const run = async () => { try {
+							const playbackTab = document.getElementById('playback-tab');
+							check(playbackTab.textContent.trim() === 'Playback' && !playbackTab.querySelector('[role="img"]'), 'Playback has no construction mark');
+							playbackTab.click();
+							const channels = document.getElementById('playback-channels');
+							const rows = channels.querySelectorAll('.playback-channel');
+							check(rows.length === 9 && rows[8].getAttribute('aria-label') === 'ADPCM', 'Eight FM channels and one mixed ADPCM channel');
+							check(channels.querySelectorAll('button:disabled').length === 18, 'Mute and solo remain disabled until playback integration');
+							const frame = getComputedStyle(channels);
+							const transport = getComputedStyle(document.querySelector('.playback-transport'));
+							check(frame.borderRadius === transport.borderRadius && frame.borderTopColor === transport.borderTopColor && frame.backgroundColor === transport.backgroundColor, 'Channel frame matches transport');
+							let previousVisibleKeys = 0;
+							for (const width of [300, 460, 960]) {
+								channels.style.width = width + 'px';
+								await new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve)));
+								for (const row of rows) {
+									const piano = row.querySelector('.playback-channel-piano');
+									check(piano.children.length === 88 && piano.firstElementChild.dataset.note === '21' && piano.lastElementChild.dataset.note === '108', '88-key A0 to C8 range');
+									check(piano.querySelectorAll('.playback-key-white').length === 52 && piano.querySelectorAll('.playback-key-black').length === 36, 'Standard piano key distribution');
+									check(piano.querySelector('.playback-key-white').getBoundingClientRect().width === 14, 'Key width remains fixed at every panel width');
+									check(getComputedStyle(piano).overflowX === 'hidden', 'Narrow keyboards clip without horizontal scrolling');
+									if (width === 960) { check(piano.lastElementChild.getBoundingClientRect().right <= piano.getBoundingClientRect().right - 1, 'All 88 keys fit in wide panels'); }
+									check(row.getBoundingClientRect().height === 46 && piano.getBoundingClientRect().height === 36, 'Stable compact row dimensions');
+									const label = row.querySelector('.playback-channel-name');
+									check(label.scrollWidth <= label.clientWidth, 'Channel label fits');
+									check(row.querySelector('.playback-channel-controls').getBoundingClientRect().right <= piano.getBoundingClientRect().left, 'Controls and keyboard do not overlap');
+								}
+								const piano = rows[0].querySelector('.playback-channel-piano');
+								const right = piano.getBoundingClientRect().right - 1;
+								const visibleKeys = [...piano.children].filter(key => key.getBoundingClientRect().right <= right).length;
+								check(visibleKeys > previousVisibleKeys && (width !== 960 || visibleKeys === 88), 'Visible key count grows with width without shrinking keys');
+								previousVisibleKeys = visibleKeys;
+							}
+							channels.style.width = '';
+							const pcmKeyboard = rows[8].querySelector('.playback-channel-piano');
+							check(pcmKeyboard.getAttribute('aria-disabled') === 'true' && Number(getComputedStyle(pcmKeyboard).opacity) < Number(getComputedStyle(rows[0].querySelector('.playback-channel-piano')).opacity), 'Only the ADPCM keyboard is inactive');
+							check(getComputedStyle(rows[8].querySelector('.playback-channel-controls')).opacity === '1', 'ADPCM channel controls are not dimmed with the keyboard');
+							const { createPlaybackControls } = await import(${JSON.stringify(panel.webview.asWebviewUri(vscode.Uri.joinPath(media, 'playbackControls.js')).toString())});
+							const playbackFixture = document.getElementById('playback-controls').cloneNode(true);
+							playbackFixture.hidden = false; playbackFixture.style.width = '300px';
+							playbackFixture.querySelector('#playback-channels').replaceChildren(); document.body.append(playbackFixture);
+							const player = createPlaybackControls(playbackFixture);
+							const pianos = playbackFixture.querySelectorAll('.playback-channel-piano');
+							const active = channel => pianos[channel].querySelector('.is-active')?.dataset.note;
+							const playing = { available:true, playing:true, position:0 };
+							player.setMode('emulation'); player.render(playing);
+							player.enqueueKeys([{position:0.1,channel:0,note:60},{position:0.1,channel:7,note:72},{position:0.15,channel:0,note:61},{position:0.2,channel:0,note:null}]);
+							check(!active(0), 'Prefetched keys do not light before playback reaches them');
+							player.setPosition(0.1); check(active(0) === '60' && active(7) === '72', 'FM channels light independently');
+							const pressed = pianos[0].querySelector('.is-active').getBoundingClientRect();
+							const visible = pianos[0].getBoundingClientRect();
+							check(pressed.left >= visible.left + 1 && pressed.right <= visible.right - 1, 'Active key is revealed in narrow panels without shrinking');
+							player.render({...playing,playing:false,paused:true}); player.setPosition(0.2);
+							check(active(0) === '60', 'Pause freezes key position');
+							player.render(playing); player.setPosition(0.15);
+							check(active(0) === '61' && pianos[0].querySelectorAll('.is-active').length === 1, 'Tone change moves to the black key without leaving a stale key');
+							player.setPosition(0.2); check(!active(0) && active(7) === '72', 'Key off only clears its own channel');
+							player.render({...playing,playing:false}); check(!active(7), 'Stop clears every FM key');
+							player.enqueueKeys([{position:0,channel:0,note:60}]); check(!active(0), 'Events received after stop are ignored');
+							player.setMode('nanodrive8'); player.setNanoDriveAvailable(true); player.render(playing);
+							player.enqueueKeys([{position:0.1,channel:0,note:67}]); player.render({...playing,position:0.1});
+							check(active(0) === '67', 'NanoDrive8 key clock follows hardware position');
+							player.render({...playing,playing:false,loading:true}); check(!active(0), 'A new playback clears stale keys');
+							player.render(null); playbackFixture.remove();
+							for (const asset of ['volume-x.svg', 'headphones.svg']) {
+								await new Promise((resolve, reject) => {
+									const image = new Image(); image.onload = resolve; image.onerror = () => reject(new Error('Missing icon: ' + asset));
+									image.src = new URL(asset, ${JSON.stringify(panel.webview.asWebviewUri(vscode.Uri.joinPath(media, 'voice.css')).toString())}).href;
+								});
+							}
 							document.getElementById('voice-tab').click();
+							await new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve)));
 							const mode = document.querySelector('.keyboard-output select');
 							const button = document.querySelector('.keyboard-output .output-connection');
 							const reset = document.getElementById('keyboard-reset');

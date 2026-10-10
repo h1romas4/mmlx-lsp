@@ -1,7 +1,7 @@
 import type { Wasm, WasmProcess } from '@vscode/wasm-wasi/v1';
 import { Uri, workspace, type Disposable } from 'vscode';
 import type { NanoDriveCodec } from './nanodrive';
-import { EmulationFrameDecoder } from './emulationProtocol';
+import { EmulationFrameDecoder, decodeFmKeyEvents } from './emulationProtocol';
 
 type Result = Awaited<ReturnType<NanoDriveCodec>>;
 
@@ -58,10 +58,19 @@ export class NanoDriveWorker {
 					if (kind === 1) { this.reply(JSON.parse(new TextDecoder().decode(bytes))); return; }
 					const view = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
 					const count = view.getUint16(4, true);
-					this.reply({ id: view.getUint32(0, true), result: { bytes: bytes.subarray(kind >= 3 ? 11 : 6), ...(count === 65535 ? {} : { count }),
+					let offset = kind >= 3 ? 11 : 6;
+					let keys;
+					if (kind >= 5) {
+						const length = view.getUint32(11, true);
+						if (length === 0 || length > 65536 || 15 + length > bytes.length) { throw new Error('Invalid NanoDrive8 key metadata.'); }
+						keys = decodeFmKeyEvents(JSON.parse(new TextDecoder().decode(bytes.subarray(15, 15 + length))));
+						offset = 15 + length;
+					}
+					this.reply({ id: view.getUint32(0, true), result: { bytes: bytes.subarray(offset), ...(count === 65535 ? {} : { count }),
+						...(keys ? { keys } : {}),
 						...(kind >= 3 ? { position: view.getUint32(6, true), ended: (view.getUint8(10) & 1) !== 0 } : {}),
-						...(kind === 4 ? { fm: true, synchronize: (view.getUint8(10) & 2) !== 0 } : {}) } });
-				}, (kind, length) => (kind === 1 && length > 0 && length <= 65536) || (kind === 2 && length >= 6 && length <= 65536) || ((kind === 3 || kind === 4) && length >= 11 && length <= 65536));
+						...(kind === 4 || kind === 6 ? { fm: true, synchronize: (view.getUint8(10) & 2) !== 0 } : {}) } });
+				}, (kind, length) => (kind === 1 && length > 0 && length <= 65536) || (kind === 2 && length >= 6 && length <= 65536) || ((kind === 3 || kind === 4) && length >= 11 && length <= 65536) || ((kind === 5 || kind === 6) && length >= 15 && length <= 131088));
 				this.subscriptions.push(process.stdout!.onData(data => {
 					if (generation !== this.generation) { return; }
 					try { decoder.push(data); } catch (error) { this.fail(error, generation); }

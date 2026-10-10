@@ -12,6 +12,7 @@ let resettingOutput = false;
 let playbackId = 0;
 let playbackOperation = 0;
 let playbackState = null;
+let playbackOrigin = 0;
 let nanoDriveConnected = false;
 const playbackAudio = createEmulationAudio(
 	blocks => vscode.postMessage({ type: 'playbackRender', id: playbackId, blocks }),
@@ -21,7 +22,8 @@ const playbackAudio = createEmulationAudio(
 		playbackState = { ...playbackState, playing: false, paused: false, loading: false, error };
 		playbackControls.render(playbackState);
 	},
-	() => vscode.postMessage({ type: 'playbackAction', action: 'ended', id: playbackId }));
+	() => vscode.postMessage({ type: 'playbackAction', action: 'ended', id: playbackId }),
+	position => playbackControls.setPosition(playbackOrigin + position));
 const emulationAudio = createEmulationAudio(
 	blocks => vscode.postMessage({ type: 'emulationRender', id: outputId, blocks }),
 	error => {
@@ -208,11 +210,14 @@ window.addEventListener('message', event => {
 		const changed = message.document !== playbackState?.document;
 		if (!changed && message.id !== playbackId) { return; }
 		if (changed || !message.available) { playbackOperation++; playbackAudio.disconnect(); }
+		if (message.mode !== 'nanodrive8' && !message.playing && !message.paused) { playbackOrigin = message.position || 0; }
 		playbackState = message;
 		playbackControls.render(message);
 		if (message.mode === 'nanodrive8') { playbackAudio.disconnect(); }
 		else if (message.playing) { playbackAudio.start(); if (message.finished) { playbackAudio.finish(); } }
 		else if (!message.paused && !message.loading) { playbackAudio.disconnect(); }
+	} else if (message?.type === 'playbackKeys' && message.id === playbackId && message.mode === playbackMode) {
+		playbackControls.enqueueKeys(message.keys);
 	} else if (message?.type === 'nanoDrivePlayback') {
 		outputConnections.keyboard.setNanoDriveBusy(message.busy);
 	} else if (message?.type === 'playbackPcm' && message.id === playbackId && playbackMode === 'emulation') {

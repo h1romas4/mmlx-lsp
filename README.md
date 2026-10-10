@@ -149,6 +149,7 @@ command palette. Diagnostic messages are not translated.
 
 - **Playback:** Plays the active MML, including unsaved edits. Switching files stops playback without affecting FM Voice or MIDI-IN.
 - **Controls:** Emulation provides play/pause, stop, volume, and elapsed time. NanoDrive8 provides play/stop and output volume. Both outputs support optional MML loop points.
+- **Channel keyboards:** Eight FM keyboards follow key-on, pitch changes and key-off from soundlog events on both Emulation and NanoDrive8. Each keyboard spans A0-C8 (88 keys) at a fixed key width; narrow panels reveal the active key without shrinking it. Emulation uses the consumed audio position, while NanoDrive8 uses its playback clock. Pause holds the keys and Stop clears them. The ADPCM keyboard remains inactive; per-channel mute/solo controls remain disabled.
 - **NanoDrive8 volume:** Controls the device's main FM/PCM output, including keyboard audition. Requires firmware supporting `SET_OUTPUT_VOLUME`; older firmware may reject volume changes without stopping playback.
 - **Play from cursor:** Emulation starts at the current command or the next command on the same line. Repeats start at the first occurrence; seeking may take a moment.
 - **Outputs:** Emulation mixes YM2151 FM and OKIM6258 ADPCM with clock, divider and pan control. Both outputs use the configured PDX file or discover it beside the MML, and apply the ADPCM processing setting. NanoDrive8 uses FM bursts for FM-only songs and ADPCM streaming for songs with PCM notes.

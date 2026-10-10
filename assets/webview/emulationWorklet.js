@@ -5,6 +5,8 @@ class EmulationProcessor extends AudioWorkletProcessor {
 		this.read = 0;
 		this.write = 0;
 		this.frames = 0;
+		this.consumed = 0;
+		this.reported = 0;
 		this.pending = 0;
 		this.started = false;
 		this.playing = false;
@@ -12,7 +14,7 @@ class EmulationProcessor extends AudioWorkletProcessor {
 		this.ended = false;
 		this.port.onmessage = event => {
 			if (event.data?.type === 'start') { this.started = true; this.request(); }
-			else if (event.data?.type === 'clear') { this.read = 0; this.write = 0; this.frames = 0; this.playing = false; this.request(); }
+			else if (event.data?.type === 'clear') { this.read = 0; this.write = 0; this.frames = 0; this.consumed = 0; this.reported = 0; this.playing = false; this.request(); }
 			else if (event.data?.type === 'finish') { this.finishing = true; }
 			else if (event.data?.type === 'pcm' && event.data.pcm instanceof ArrayBuffer && event.data.pcm.byteLength === 4096 && this.pending > 0) {
 				const block = new Float32Array(event.data.pcm);
@@ -44,7 +46,12 @@ class EmulationProcessor extends AudioWorkletProcessor {
 				this.read = (this.read + 1) % 4096;
 			}
 			this.frames -= count;
+			this.consumed += count;
 			if (count < output[0].length) { this.playing = false; }
+		}
+		if (this.consumed > this.reported && (this.reported === 0 || this.consumed - this.reported >= sampleRate / 50 || !this.playing || (this.finishing && this.frames === 0))) {
+			this.reported = this.consumed;
+			this.port.postMessage({ type: 'position', position: this.consumed / sampleRate });
 		}
 		if (this.finishing && this.frames === 0 && !this.ended) {
 			this.ended = true; this.started = false; this.port.postMessage({ type: 'ended' });

@@ -1,4 +1,5 @@
 export function createPlaybackControls(root, onModeChange = () => {}, onAction = () => {}, onVolume = () => {}) {
+	const channels = createChannelRows(root.querySelector('#playback-channels'));
 	const status = root.querySelector('[role="status"]');
 	const mode = root.querySelector('#playback-mode');
 	const source = root.querySelector('#playback-source');
@@ -15,10 +16,26 @@ export function createPlaybackControls(root, onModeChange = () => {}, onAction =
 	let loadingTimer;
 	let loadingVisible = false;
 	let startingAction = 'play';
+	let keyEvents = [];
+	let keyIndex = 0;
+	let keyPosition = 0;
+	function resetKeys() {
+		keyEvents = []; keyIndex = 0; keyPosition = 0; channels?.clear();
+	}
+	function advanceKeys(position) {
+		if (!Number.isFinite(position) || position < 0) { return; }
+		keyPosition = position;
+		while (keyIndex < keyEvents.length && keyEvents[keyIndex].position <= position) {
+			const event = keyEvents[keyIndex++]; channels?.setNote(event.channel, event.note);
+		}
+		if (keyIndex > 512 || keyIndex === keyEvents.length) { keyEvents = keyEvents.slice(keyIndex); keyIndex = 0; }
+	}
 	function setText(element, value) {
 		if (element.textContent !== value) { element.textContent = value; }
 	}
 	function render(state) {
+		if ((state?.loading && !snapshot?.loading) || state?.document !== snapshot?.document
+			|| (!state?.playing && !state?.paused && !state?.loading)) { resetKeys(); }
 		snapshot = state;
 		const loading = state?.loading === true;
 		if (loading) {
@@ -41,6 +58,7 @@ export function createPlaybackControls(root, onModeChange = () => {}, onAction =
 		play.classList.toggle('is-loading', loadingVisible && startingAction === 'play');
 		cursor.classList.toggle('is-loading', loadingVisible && startingAction === 'playFromCursor');
 		const hardware = mode.value === 'nanodrive8';
+		if (hardware && state?.playing) { advanceKeys(state.position); }
 		const available = state?.available && (!hardware || nanoDriveAvailable);
 		const busy = state?.playing || state?.paused || state?.loading || state?.busy;
 		setText(source, state?.source || 'No MML selected');
@@ -78,11 +96,92 @@ export function createPlaybackControls(root, onModeChange = () => {}, onAction =
 	loop.addEventListener('click', () => { looped = !looped; render(snapshot); onModeChange(mode.value); });
 	volume.addEventListener('input', () => onVolume(Number(volume.value) / 100));
 	return {
+		enqueueKeys(events) {
+			if ((!snapshot?.playing && !snapshot?.paused && !snapshot?.loading) || !Array.isArray(events)) { return; }
+			if (keyEvents.length - keyIndex + events.length > 8192) { resetKeys(); return; }
+			keyEvents.push(...events); advanceKeys(keyPosition);
+		},
+		setPosition(position) { if (snapshot?.playing) { advanceKeys(position); } },
 		setNanoDriveAvailable(value) { nanoDriveAvailable = value === true; render(snapshot); },
 		setMode(value) { mode.value = value === 'nanodrive8' ? 'nanodrive8' : 'emulation'; render(snapshot); },
 		setOptions(repeat, level) { looped = repeat === true; volume.value = String(Math.max(0, Math.min(100, Number(level) || 0))); render(snapshot); },
 		get looped() { return looped; },
 		get volume() { return Number(volume.value) / 100; },
 		render
+	};
+}
+
+function createChannelRows(container) {
+	const document = container?.ownerDocument;
+	if (!document) { return; }
+	const keyboards = [];
+	const activeKeys = Array(8).fill(null);
+	for (let channel = 0; channel < 9; channel++) {
+		const name = channel < 8 ? `FM ${channel + 1}` : 'ADPCM';
+		const row = document.createElement('div');
+		row.className = `playback-channel${channel === 8 ? ' playback-channel-pcm' : ''}`;
+		row.setAttribute('role', 'group'); row.setAttribute('aria-label', name);
+		const controls = document.createElement('div');
+		controls.className = 'playback-channel-controls';
+		const label = document.createElement('span');
+		label.className = 'playback-channel-name'; label.textContent = name;
+		controls.append(label);
+		for (const action of ['mute', 'solo']) {
+			const button = document.createElement('button');
+			button.className = `playback-channel-toggle playback-channel-${action}`;
+			button.type = 'button'; button.disabled = true;
+			button.title = `${action === 'mute' ? 'Mute' : 'Solo'} ${name}`;
+			button.setAttribute('aria-label', button.title); button.setAttribute('aria-pressed', 'false');
+			controls.append(button);
+		}
+		const keyboard = document.createElement('div');
+		keyboard.className = 'playback-channel-piano';
+		keyboard.setAttribute('role', 'img');
+		keyboard.setAttribute('aria-label', 'Keyboard A0 to C8 (88 keys)');
+		if (channel === 8) { keyboard.setAttribute('aria-disabled', 'true'); }
+		else { keyboards.push(keyboard); }
+		let whiteIndex = 0;
+		for (let note = 21; note <= 108; note++) {
+			const isBlack = [1, 3, 6, 8, 10].includes(note % 12);
+			const key = document.createElement('span');
+			key.className = isBlack ? 'playback-key-black' : 'playback-key-white';
+			key.dataset.note = String(note); key.setAttribute('aria-hidden', 'true');
+			if (isBlack) { key.style.setProperty('--channel-key-position', String(whiteIndex)); }
+			else { whiteIndex++; if (note % 12 === 0) { key.textContent = `C${note / 12 - 1}`; } }
+			keyboard.append(key);
+		}
+		row.append(controls, keyboard); container.append(row);
+	}
+	function reveal() {
+		for (const key of activeKeys) {
+			if (!key || !key.parentElement.clientWidth) { continue; }
+			const piano = key.parentElement;
+			const bounds = piano.getBoundingClientRect();
+			const pressed = key.getBoundingClientRect();
+			if (pressed.left < bounds.left + 1 || pressed.right > bounds.right - 1) {
+				piano.scrollLeft += (pressed.left + pressed.right - bounds.left - bounds.right) / 2;
+			}
+		}
+	}
+	const observer = new ResizeObserver(reveal);
+	observer.observe(container);
+	return {
+		setNote(channel, note) {
+			const keyboard = keyboards[channel];
+			if (!keyboard || (note !== null && (!Number.isInteger(note) || note < 21 || note > 108))) { return; }
+			const key = note === null ? null : keyboard.querySelector(`[data-note="${note}"]`);
+			if (activeKeys[channel] === key) { return; }
+			activeKeys[channel]?.classList.remove('is-active');
+			activeKeys[channel] = key; key?.classList.add('is-active');
+			const name = note === null ? '' : `${['C', 'C#', 'D', 'D#', 'E', 'F', 'F#', 'G', 'G#', 'A', 'A#', 'B'][note % 12]}${Math.floor(note / 12) - 1}`;
+			keyboard.setAttribute('aria-label', `Keyboard A0 to C8 (88 keys)${name ? `, ${name} active` : ''}`);
+			reveal();
+		},
+		clear() {
+			for (const [channel, keyboard] of keyboards.entries()) {
+				activeKeys[channel]?.classList.remove('is-active'); activeKeys[channel] = null;
+				keyboard.scrollLeft = 0; keyboard.setAttribute('aria-label', 'Keyboard A0 to C8 (88 keys)');
+			}
+		}
 	};
 }

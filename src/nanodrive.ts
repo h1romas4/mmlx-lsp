@@ -1,4 +1,5 @@
 import { randomBytes } from 'node:crypto';
+import { decodeFmKeyEvents, type FmKeyEvent } from './emulationProtocol';
 
 export interface NanoDrivePort {
     readonly isOpen: boolean;
@@ -30,7 +31,7 @@ export type NanoDriveCodec = (params: { operation: 'encode'; command: NanoDriveC
     | { operation: 'playbackInit'; looped: boolean; adpcmMode?: NanoDriveAdpcmMode }
     | { operation: 'playbackNext'; requestId: number }
     | { operation: 'voiceTestInit'; session: number; mml: string; voice: unknown }
-    | { operation: 'voiceTestNext' | 'voiceTestStop'; session: number; requestId: number }) => Promise<{ bytes: number[] | Uint8Array; count?: number; position?: number; ended?: boolean; fm?: boolean; synchronize?: boolean } | { pdxName?: string | null; audio?: boolean } | NanoDriveReply | null>;
+    | { operation: 'voiceTestNext' | 'voiceTestStop'; session: number; requestId: number }) => Promise<{ bytes: number[] | Uint8Array; count?: number; position?: number; ended?: boolean; fm?: boolean; synchronize?: boolean; keys?: FmKeyEvent[] } | { pdxName?: string | null; audio?: boolean } | NanoDriveReply | null>;
 type NanoDriveChunk = Extract<Awaited<ReturnType<NanoDriveCodec>>, { bytes: number[] | Uint8Array }>;
 export interface NanoDriveState {
     port: string; connected: boolean; connecting: boolean; closing: boolean;
@@ -103,7 +104,8 @@ export class NanoDriveConnection {
         private readonly onOutput: (state: NanoDriveOutputState) => void = () => {},
         private readonly onPlayback: (state: NanoDrivePlaybackState) => void = () => {},
         private readonly onDiagnostic: (message: string) => void = () => {},
-        private readonly onVoiceTest: (playing: boolean, error?: boolean) => void = () => {}) {}
+        private readonly onVoiceTest: (playing: boolean, error?: boolean) => void = () => {},
+        private readonly onPlaybackKeys: (keys: FmKeyEvent[]) => void = () => {}) {}
 
     get state(): NanoDriveState { return { ...this.snapshot }; }
     get outputState(): NanoDriveOutputState { return { ...this.output }; }
@@ -256,6 +258,7 @@ export class NanoDriveConnection {
                 submitted = chunk.position!;
                 const writeStarted = performance.now();
                 await this.write(chunk.bytes, connection, false, token); check();
+                if (chunk.keys) { this.onPlaybackKeys(decodeFmKeyEvents(chunk.keys)); }
                 maxWriteMs = Math.max(maxWriteMs, performance.now() - writeStarted);
                 sent = chunk.position!; ended = chunk.ended!;
             };
@@ -291,7 +294,7 @@ export class NanoDriveConnection {
                 if ((!confirmed && now - startedAt > 250) || (poll && now - polledAt > 200)) { throw new Error('NanoDrive8 playback status timed out.'); }
                 const played = Math.min(sent, observed.played! + (now - observedAt) * 7.8125);
                 const position = Math.max(0, played / 7812.5 - 0.00512);
-                if (Math.floor(position * 10) !== Math.floor(this.hardwarePlayback.position * 10)) { this.hardwarePlayback.position = position; this.onPlayback(this.playbackState); }
+                if (Math.floor(position * 50) !== Math.floor(this.hardwarePlayback.position * 50)) { this.hardwarePlayback.position = position; this.onPlayback(this.playbackState); }
                 if (ended) {
                     if (endDeadline === Infinity) { endDeadline = now + (sent - observed.played!) / 7.8125 + 1000; }
                     if (observed.ended && observed.played === sent && observed.accepted === sent) { break; }
@@ -332,7 +335,7 @@ export class NanoDriveConnection {
                 check();
                 const now = performance.now();
                 const elapsed = Math.max(0, (now - origin) / 1000);
-                if (voiceTestSession === undefined && Math.floor(elapsed * 10) !== Math.floor(this.hardwarePlayback.position * 10)) { this.hardwarePlayback.position = elapsed; this.onPlayback(this.playbackState); }
+                if (voiceTestSession === undefined && Math.floor(elapsed * 50) !== Math.floor(this.hardwarePlayback.position * 50)) { this.hardwarePlayback.position = elapsed; this.onPlayback(this.playbackState); }
                 await new Promise<void>(resolve => setTimeout(resolve, Math.max(1, Math.min(10, deadline - now))));
             }
             check();
@@ -342,7 +345,10 @@ export class NanoDriveConnection {
                 origin = performance.now() - chunk.position! / 44.1;
             }
             position = chunk.position!;
-            if (voiceTestSession === undefined) { this.hardwarePlayback.position = position / 44100; }
+            if (voiceTestSession === undefined) {
+                this.hardwarePlayback.position = position / 44100;
+                if (chunk.keys) { this.onPlaybackKeys(decodeFmKeyEvents(chunk.keys)); this.onPlayback(this.playbackState); }
+            }
             if (chunk.ended) { return; }
         }
     }

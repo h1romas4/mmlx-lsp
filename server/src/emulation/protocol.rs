@@ -197,8 +197,12 @@ pub fn run(input: impl BufRead, mut output: impl Write) -> Result<(), String> {
                     engine.render()?
                 };
                 frame(&mut output, 2, &pcm).map_err(|error| error.to_string())?;
-                if let Some(playback) = playback.as_ref() {
+                if let Some(playback) = playback.as_mut() {
                     playback_state(&mut output, playback)?;
+                    for keys in playback.take_keys().chunks(512) {
+                        let data = serde_json::to_vec(keys).map_err(|error| error.to_string())?;
+                        frame(&mut output, 6, &data).map_err(|error| error.to_string())?;
+                    }
                 }
                 if testing {
                     voice_test_state(

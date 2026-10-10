@@ -1,6 +1,6 @@
 import type { Wasm, WasmProcess } from '@vscode/wasm-wasi/v1';
 import { Uri, workspace, type Disposable } from 'vscode';
-import { EmulationFrameDecoder } from './emulationProtocol';
+import { EmulationFrameDecoder, decodeFmKeyEvents, type FmKeyEvent } from './emulationProtocol';
 
 export interface EmulationState { connected: boolean; connecting: boolean; error: string }
 export interface PlaybackProgress { position: number; finished: boolean }
@@ -25,7 +25,8 @@ export class EmulationSession {
 		private readonly onState: (state: EmulationState) => void,
 		private readonly onPcm: (pcm: ArrayBuffer) => void,
 		private readonly onPlayback: (progress: PlaybackProgress) => void = () => {},
-		private readonly onVoiceTest: (playing: boolean, error: boolean) => void = () => {}) {}
+		private readonly onVoiceTest: (playing: boolean, error: boolean) => void = () => {},
+		private readonly onPlaybackKeys: (keys: FmKeyEvent[]) => void = () => {}) {}
 
 	async connect(sampleRate: number, voice: unknown = null, playback?: {
 		source: string; looped: boolean; cursor?: number; adpcmMode?: 'through' | 'resample' | 'lpf';
@@ -81,6 +82,9 @@ export class EmulationSession {
 						}
 						if (generation === this.generation) { await this.command({ type: 'playback', ...playback }); }
 					})().catch(fail);
+				} else if (kind === 6) {
+					if (!ready || !playback) { throw new Error('Unexpected FM keyboard events.'); }
+					this.onPlaybackKeys(decodeFmKeyEvents(JSON.parse(new TextDecoder().decode(bytes))));
 				} else if (kind === 4) {
 					if (!ready || !this.resetReady) { throw new Error('Unexpected emulator reset.'); }
 					this.setVoiceTesting(false);

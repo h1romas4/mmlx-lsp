@@ -5,6 +5,8 @@ All notable changes to the "mmlx-lsp" extension will be documented in this file.
 ## [Unreleased]
 
 - Add OKIM6258 ADPCM to Emulation Playback, including PDX loading, clock/divider changes, pan and ADPCM processing settings.
+- Remove the Playback construction badge and add a framed FM/ADPCM channel overview with fixed-width 88-key keyboards that clip on narrow panels, plus placeholders for mute and solo.
+- Connect FM channel keyboards to soundlog frequency events on Emulation and NanoDrive8, follow the active key on narrow panels, and dim only the inactive ADPCM keyboard.
 
 ## [0.13.0] - 2026-10-09
 

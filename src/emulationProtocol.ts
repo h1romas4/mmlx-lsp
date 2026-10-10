@@ -1,3 +1,14 @@
+export interface FmKeyEvent { position: number; channel: number; note: number | null }
+
+export function decodeFmKeyEvents(value: unknown): FmKeyEvent[] {
+	if (!Array.isArray(value) || value.length > 4096 || value.some(event => !event || typeof event !== 'object'
+		|| !Number.isFinite(event.position) || event.position < 0 || !Number.isInteger(event.channel) || event.channel < 0 || event.channel > 7
+		|| (event.note !== null && (!Number.isInteger(event.note) || event.note < 21 || event.note > 108)))) {
+		throw new Error('Invalid FM keyboard events.');
+	}
+	return value as FmKeyEvent[];
+}
+
 export class EmulationFrameDecoder {
 	private header = new Uint8Array(5);
 	private headerOffset = 0;
@@ -6,7 +17,7 @@ export class EmulationFrameDecoder {
 	constructor(private readonly onFrame: (kind: number, bytes: Uint8Array) => void,
 		private readonly valid = (kind: number, length: number) => (kind === 1 && length === 4)
 			|| (kind === 2 && length === 4096) || (kind === 3 && length === 9) || (kind === 4 && length === 0)
-			|| (kind === 5 && length > 0 && length <= 65536)) {}
+			|| ((kind === 5 || kind === 6) && length > 0 && length <= 65536)) {}
 
 	push(data: Uint8Array): void {
 		let offset = 0;

@@ -1,16 +1,21 @@
 use mmlx_lsp_server::audition::VoiceTestRegisters;
+use mmlx_lsp_server::playback_events::{FmKeyEvent, fm_key_events};
 use ndsif::{
     AudioEvent, AudioSampleConverter, AudioTiming, BytePosition, Command, CommandEncoder, Divider,
     MAX_YM2151_EVENT_WRITES, OkiClock, Pan, RegisterWrite, ZeroPair,
 };
-use soundlog::chip::{Okim6258Spec, Ym2151Spec};
+use soundlog::chip::{Okim6258Spec, Ym2151Spec, state::Ym2151State};
 use soundlog::mdx::{
     command::MdxCommand,
     convert::{AdpcmMode, MdxToVgmOptions},
     document::MdxDocument,
     package::MdxPackage,
 };
-use soundlog::vgm::{VgmCallbackStream, command::VgmCommand, stream::StreamResult};
+use soundlog::vgm::{
+    VgmCallbackStream,
+    command::{Instance, VgmCommand},
+    stream::StreamResult,
+};
 use std::{cell::RefCell, collections::VecDeque, rc::Rc};
 
 const TIMING: AudioTiming = AudioTiming::new(OkiClock::Mhz8, Divider::Div512);
@@ -83,6 +88,7 @@ enum Event {
 }
 pub struct Chunk {
     pub bytes: Vec<u8>,
+    pub keys: Vec<FmKeyEvent>,
     pub count: usize,
     pub position: u32,
     pub ended: bool,
@@ -143,6 +149,7 @@ impl Playback {
 pub struct FmPlayback {
     stream: VgmCallbackStream<'static>,
     writes: Rc<RefCell<Vec<RegisterWrite>>>,
+    keys: Rc<RefCell<Vec<FmKeyEvent>>>,
     position: u32,
     key_on: Option<RegisterWrite>,
     synchronized: bool,
@@ -170,9 +177,12 @@ impl FmPlayback {
             ..Default::default()
         };
         let mut stream = VgmCallbackStream::from_generator((package, options).into());
+        stream.track_state::<Ym2151State>(Instance::Primary, options.ym2151_clock as f32);
+        let keys = Rc::new(RefCell::new(Vec::new()));
+        let key_events = Rc::clone(&keys);
         let writes = Rc::new(RefCell::new(Vec::new()));
         let registers = Rc::clone(&writes);
-        stream.on_write(move |_, spec: Ym2151Spec, _, _| {
+        stream.on_write(move |_, spec: Ym2151Spec, sample, events| {
             if let Some(settings) = &settings {
                 settings
                     .borrow_mut()
@@ -182,6 +192,9 @@ impl FmPlayback {
                             .push(RegisterWrite::new(address, value))
                     });
             } else {
+                key_events
+                    .borrow_mut()
+                    .extend(fm_key_events(sample, events));
                 registers
                     .borrow_mut()
                     .push(RegisterWrite::new(spec.register, spec.value));
@@ -190,6 +203,7 @@ impl FmPlayback {
         Self {
             stream,
             writes,
+            keys,
             position: 0,
             key_on: None,
             synchronized: false,
@@ -258,6 +272,11 @@ impl FmPlayback {
         writes.clear();
         Ok(Chunk {
             bytes,
+            keys: if synchronize {
+                Vec::new()
+            } else {
+                std::mem::take(&mut *self.keys.borrow_mut())
+            },
             count,
             position,
             ended: self.ended,
@@ -269,6 +288,7 @@ impl FmPlayback {
 
 pub struct AudioPlayback {
     stream: VgmCallbackStream<'static>,
+    keys: Rc<RefCell<Vec<FmKeyEvent>>>,
     input: Rc<RefCell<Input>>,
     events: Rc<RefCell<VecDeque<(u32, Event)>>>,
     encoder: Codec,
@@ -288,10 +308,16 @@ impl AudioPlayback {
             ..Default::default()
         };
         let mut stream = VgmCallbackStream::from_generator((package, options).into());
+        stream.track_state::<Ym2151State>(Instance::Primary, options.ym2151_clock as f32);
+        let keys = Rc::new(RefCell::new(Vec::new()));
+        let key_events = Rc::clone(&keys);
         let input = Rc::new(RefCell::new(Input::default()));
         let events = Rc::new(RefCell::new(VecDeque::new()));
         let writes = Rc::clone(&events);
-        stream.on_write(move |_, spec: Ym2151Spec, sample, _| {
+        stream.on_write(move |_, spec: Ym2151Spec, sample, events| {
+            key_events
+                .borrow_mut()
+                .extend(fm_key_events(sample, events));
             writes.borrow_mut().push_back((
                 PREROLL
                     + TIMING
@@ -336,6 +362,7 @@ impl AudioPlayback {
         });
         Self {
             stream,
+            keys,
             input,
             events,
             encoder: Codec::default(),
@@ -476,6 +503,7 @@ impl AudioPlayback {
         }
         Ok(Chunk {
             bytes,
+            keys: std::mem::take(&mut *self.keys.borrow_mut()),
             count,
             position: self.position,
             ended: self.ended,
@@ -488,6 +516,44 @@ impl AudioPlayback {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn both_transports_emit_timed_fm_keys() {
+        for audio in [false, true] {
+            let parsed = mmlx::mdx::parse("A t120 o4 l8 cdef").unwrap();
+            let package = MdxPackage {
+                mdx: mmlx::mdx::compile(&parsed).unwrap(),
+                pdx: None,
+            };
+            let mut playback = if audio {
+                Playback::Audio(AudioPlayback::new(package, false, AdpcmMode::Resample))
+            } else {
+                Playback::Fm(FmPlayback::new(package, false))
+            };
+            let mut keys = Vec::new();
+            loop {
+                let chunk = playback.next(0).unwrap();
+                if chunk.synchronize {
+                    assert!(chunk.keys.is_empty());
+                }
+                keys.extend(chunk.keys);
+                if chunk.ended {
+                    break;
+                }
+            }
+            assert_eq!(
+                keys.iter()
+                    .filter_map(|event| event.note)
+                    .collect::<Vec<_>>(),
+                vec![60, 62, 64, 65]
+            );
+            assert!(keys.iter().any(|event| event.note.is_none()));
+            assert!(
+                keys.windows(2)
+                    .all(|pair| pair[0].position <= pair[1].position)
+            );
+        }
+    }
     #[test]
     fn continuous_codec_matches_library_decoder_and_converges_to_zero() {
         let mut codec = Codec::default();

@@ -138,7 +138,8 @@ export class VoiceViewProvider implements WebviewViewProvider {
 				context.subscriptions.push(this.nanodriveLog);
 			}
 			this.nanodriveLog.appendLine(`${new Date().toISOString()} ${message}`);
-		}, (playing, error) => { if (this.keyboardOutputMode === 'nanodrive8') { this.setVoiceTesting(playing, error); } });
+		}, (playing, error) => { if (this.keyboardOutputMode === 'nanodrive8') { this.setVoiceTesting(playing, error); } },
+		keys => { if (this.playbackMode === 'nanodrive8') { void this.view?.webview.postMessage({ type: 'playbackKeys', id: this.playbackId, mode: 'nanodrive8', keys }); } });
 		this.emulation = wasm ? new EmulationSession(context.extensionUri, wasm,
 			state => {
 				this.emulationConnected = state.connected;
@@ -168,7 +169,8 @@ export class VoiceViewProvider implements WebviewViewProvider {
 					|| progress.finished !== this.playbackState.finished;
 				Object.assign(this.playbackState, progress);
 				if (changed) { this.sendPlayback(); }
-			}) : undefined;
+			}, undefined,
+			keys => { if (this.playbackMode === 'emulation') { void this.view?.webview.postMessage({ type: 'playbackKeys', id: this.playbackId, mode: 'emulation', keys }); } }) : undefined;
 		this.midiInput = new MidiInputConnection(() => this.sendMidiSettings(), createInput,
 			notes => { void this.view?.webview.postMessage({ type: 'midiNotes', notes }); },
 			event => {

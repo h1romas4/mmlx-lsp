@@ -30,10 +30,23 @@ fn run(input: impl BufRead, mut output: impl Write) -> Result<(), String> {
         let request: Request = serde_json::from_slice(&line).map_err(|error| error.to_string())?;
         let (kind, bytes) = match bridge.handle(request.params) {
             Ok(nanodrive::Output::Audio(chunk)) => {
+                let keys = if chunk.keys.is_empty() {
+                    None
+                } else {
+                    Some(serde_json::to_vec(&chunk.keys).map_err(|error| error.to_string())?)
+                };
+                if keys.as_ref().is_some_and(|keys| keys.len() > 65536) {
+                    return Err("NanoDrive8 key metadata overflow".into());
+                }
+                let metadata_length = keys.as_ref().map_or(0, |keys| 4 + keys.len());
                 output
-                    .write_all(&[if chunk.audio { 3 } else { 4 }])
+                    .write_all(&[
+                        if chunk.audio { 3 } else { 4 } + if keys.is_some() { 2 } else { 0 }
+                    ])
                     .and_then(|()| {
-                        output.write_all(&((chunk.bytes.len() + 11) as u32).to_le_bytes())
+                        output.write_all(
+                            &((chunk.bytes.len() + 11 + metadata_length) as u32).to_le_bytes(),
+                        )
                     })
                     .and_then(|()| output.write_all(&request.id.to_le_bytes()))
                     .and_then(|()| output.write_all(&(chunk.count as u16).to_le_bytes()))
@@ -42,6 +55,13 @@ fn run(input: impl BufRead, mut output: impl Write) -> Result<(), String> {
                         output.write_all(&[
                             u8::from(chunk.ended) | (u8::from(chunk.synchronize) << 1)
                         ])
+                    })
+                    .and_then(|()| {
+                        if let Some(keys) = &keys {
+                            output.write_all(&(keys.len() as u32).to_le_bytes())?;
+                            output.write_all(keys)?;
+                        }
+                        Ok(())
                     })
                     .and_then(|()| output.write_all(&chunk.bytes))
                     .and_then(|()| output.flush())

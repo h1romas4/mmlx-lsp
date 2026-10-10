@@ -4,15 +4,20 @@ use super::{
     ym2151::Ym2151,
 };
 use crate::audition::VoiceTestRegisters;
+use crate::playback_events::{FmKeyEvent, fm_key_events};
 use mmlx::mdx::frontend::{self, MdxLocation};
-use soundlog::chip::{Okim6258Spec, Ym2151Spec};
+use soundlog::chip::{Okim6258Spec, Ym2151Spec, state::Ym2151State};
 use soundlog::mdx::command::MdxCommand;
 use soundlog::mdx::{
     convert::{AdpcmMode, MdxToVgmOptions},
     document::MdxDocument,
     package::MdxPackage,
 };
-use soundlog::vgm::{VgmCallbackStream, command::VgmCommand, stream::StreamResult};
+use soundlog::vgm::{
+    VgmCallbackStream,
+    command::{Instance, VgmCommand},
+    stream::StreamResult,
+};
 use std::{cell::RefCell, rc::Rc};
 
 fn cursor_sample(source: &str, offset: usize, options: MdxToVgmOptions) -> Result<u64, String> {
@@ -195,6 +200,7 @@ pub struct Playback {
     audio: Audio,
     chip: Rc<RefCell<Ym2151>>,
     pcm: Rc<RefCell<Pcm>>,
+    keys: Rc<RefCell<Vec<FmKeyEvent>>>,
     stream: VgmCallbackStream<'static>,
     native_rate: u32,
     pending: usize,
@@ -326,6 +332,9 @@ impl Playback {
         registers: Option<Rc<RefCell<VoiceTestRegisters>>>,
     ) -> Result<Self, String> {
         let mut stream = VgmCallbackStream::from_generator((package, options).into());
+        stream.track_state::<Ym2151State>(Instance::Primary, options.ym2151_clock as f32);
+        let keys = Rc::new(RefCell::new(Vec::new()));
+        let key_events = Rc::clone(&keys);
         let native_rate = chip.borrow().sample_rate();
         let pcm = Rc::new(RefCell::new(Pcm::new()));
         let pcm_writes = Rc::clone(&pcm);
@@ -333,7 +342,7 @@ impl Playback {
             pcm_writes.borrow_mut().write(spec);
         });
         let writes = Rc::clone(&chip);
-        stream.on_write(move |_instance, spec: Ym2151Spec, _sample, _events| {
+        stream.on_write(move |_instance, spec: Ym2151Spec, sample, events| {
             if let Some(registers) = &registers {
                 registers
                     .borrow_mut()
@@ -342,12 +351,16 @@ impl Playback {
                     });
             } else {
                 writes.borrow_mut().write(spec.register, spec.value);
+                key_events
+                    .borrow_mut()
+                    .extend(fm_key_events(sample, events));
             }
         });
         let mut playback = Self {
             audio: Audio::new(native_rate, sample_rate)?,
             chip,
             pcm,
+            keys,
             stream,
             native_rate,
             pending: 0,
@@ -363,6 +376,7 @@ impl Playback {
 
     fn advance_to(&mut self, sample: u64) -> Result<(), String> {
         let target = sample * u64::from(self.native_rate) / 44100;
+        let mut notes = [None; 8];
         while self.frames < target && !self.finished {
             next_wait(
                 &mut self.stream,
@@ -379,11 +393,31 @@ impl Playback {
             self.pcm.borrow_mut().mix(&mut chunk, self.native_rate);
             self.pending -= count;
             self.frames += count as u64;
+            for event in self.take_keys() {
+                notes[usize::from(event.channel)] = event.note;
+            }
         }
         if self.frames != target {
             return Err("The cursor position exceeds the playback duration".into());
         }
+        let position = self.position();
+        self.keys
+            .borrow_mut()
+            .extend(
+                notes
+                    .into_iter()
+                    .enumerate()
+                    .map(|(channel, note)| FmKeyEvent {
+                        position,
+                        channel: channel as u8,
+                        note,
+                    }),
+            );
         Ok(())
+    }
+
+    pub fn take_keys(&mut self) -> Vec<FmKeyEvent> {
+        std::mem::take(&mut *self.keys.borrow_mut())
     }
 
     pub fn position(&self) -> f64 {
@@ -405,6 +439,7 @@ impl Playback {
             remainder,
             frames,
             finished,
+            ..
         } = self;
         audio.render_with(|count| {
             let mut stereo = vec![Vec::with_capacity(count), Vec::with_capacity(count)];
@@ -435,6 +470,29 @@ mod tests {
     use super::*;
 
     pub const SOURCE: &str = "@1 = {\n31,0,0,15,0,32,0,1,0,0,0,\n31,0,0,15,0,32,0,1,0,0,0,\n31,0,0,15,0,32,0,1,0,0,0,\n31,0,0,15,0,32,0,1,0,0,0,\n7,0,15\n}\nA t120 @1 o4 l8 cdef\n";
+
+    #[test]
+    fn playback_emits_timed_fm_keys() {
+        let mut playback = Playback::new(SOURCE, 48000, false).unwrap();
+        let mut keys = Vec::new();
+        while !playback.finished() {
+            playback.render().unwrap();
+            keys.extend(playback.take_keys());
+        }
+        assert_eq!(
+            keys.iter()
+                .filter_map(|event| event.note)
+                .collect::<Vec<_>>(),
+            vec![60, 62, 64, 65]
+        );
+        assert!(keys.iter().any(|event| event.note.is_none()));
+        assert!(keys.iter().all(|event| event.channel == 0));
+        assert!(
+            keys.windows(2)
+                .all(|pair| pair[0].position <= pair[1].position)
+        );
+        assert!(playback.take_keys().is_empty());
+    }
 
     #[test]
     fn pcm_mix_obeys_clock_divider_pan_and_stop() {

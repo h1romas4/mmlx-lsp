@@ -1,5 +1,6 @@
 import * as assert from 'assert';
 import { isSupportedNanoDriveFirmware, NanoDriveConnection, type NanoDriveCodec, type NanoDriveInput, type NanoDrivePort } from '../nanodrive';
+import type { FmKeyEvent } from '../emulationProtocol';
 
 export class Port implements NanoDrivePort {
     isOpen = true;
@@ -189,6 +190,30 @@ suite('NanoDrive8 connection', () => {
             return codec(params);
         };
     };
+    test('FM keyboard metadata is published after sending each hardware transport', async () => {
+        for (const audio of [false, true]) {
+            const port = new Port(); const base = audio ? playbackCodec() : fmCodec();
+            const keys: FmKeyEvent[] = []; let keyed = false;
+            const connection = new NanoDriveConnection(async params => {
+                const result = await base(params);
+                if (params.operation !== 'playbackNext' || !result || !('bytes' in result) || result.synchronize || (keyed && !result.ended)) { return result; }
+                keyed = true;
+                return { ...result, keys: [{ position: audio ? Math.max(0, result.position! / 7812.5 - 0.00512) : result.position! / 44100, channel: audio ? 7 : 0, note: result.ended ? null : 60 }] };
+            }, () => {}, async () => port, 100, undefined, undefined, undefined, undefined, events => {
+                assert.strictEqual(port.commands.at(-1)?.command, audio ? 'audioData' : 'fmBurst');
+                keys.push(...events);
+            });
+            try {
+                await connection.connect('test');
+                await connection.startPlayback('A c4', false, async () => new Uint8Array(0));
+                assert.strictEqual(connection.playbackState.error, '');
+                assert.ok(connection.playbackState.finished);
+                assert.deepStrictEqual(keys.map(event => event.note), [60, null]);
+                assert.ok(keys.every(event => event.channel === (audio ? 7 : 0)));
+                assert.ok(keys[1].position > keys[0].position);
+            } finally { await connection.disconnect(); }
+        }
+    });
     test('voice test preserves Keyboard Output after end, Stop, immediate cancellation, invalid MML and pending PING', async () => {
         for (const scenario of ['end', 'stop', 'immediate', 'invalid', 'runtime', 'ping']) {
             const port = new Port(); const base = fmCodec(); const states: boolean[] = [];

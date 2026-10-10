@@ -1,4 +1,4 @@
-export function createEmulationAudio(onRequest, onFailure, onEnded = () => {}) {
+export function createEmulationAudio(onRequest, onFailure, onEnded = () => {}, onPosition = () => {}) {
 	let context;
 	let node;
 	let gain;
@@ -34,6 +34,7 @@ export function createEmulationAudio(onRequest, onFailure, onEnded = () => {}) {
 			worklet.port.onmessage = event => {
 				if (node === worklet && event.data?.type === 'request') { onRequest(event.data.blocks); }
 				else if (node === worklet && event.data?.type === 'ended') { onEnded(); }
+				else if (node === worklet && event.data?.type === 'position') { onPosition(event.data.position); }
 			};
 			worklet.onprocessorerror = () => { if (node === worklet) { onFailure('Audio processor failed.'); } };
 			audio.onstatechange = () => { if (context === audio && audio.state !== 'running' && !(paused && audio.state === 'suspended')) { onFailure('Audio output was suspended.'); } };

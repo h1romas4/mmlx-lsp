@@ -25,7 +25,7 @@ const esbuildProblemMatcherPlugin = {
 };
 
 async function main() {
-	for (const name of ['play', 'list-start', 'loader-circle', 'pause', 'square', 'repeat-2', 'volume-2']) {
+	for (const name of ['play', 'list-start', 'loader-circle', 'pause', 'square', 'repeat-2', 'volume-2', 'volume-x', 'headphones']) {
 		copyFileSync(require.resolve(`lucide-static/icons/${name}.svg`), `assets/webview/${name}.svg`);
 	}
 	copyFileSync(require.resolve('lucide-static/icons/refresh-cw.svg'), 'assets/webview/refresh.svg');
