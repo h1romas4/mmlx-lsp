@@ -784,12 +784,13 @@ suite('mmlx extension', () => {
 		const extension = vscode.extensions.all.find(extension => extension.packageJSON.name === 'mmlx-lsp');
 		assert.ok(extension);
 		const document = await vscode.workspace.openTextDocument({ language: 'mmlx', content: '@0 = {\n' + '31,0,0,15,0,32,0,1,0,0,0,\n'.repeat(4) + '7,0,15\n}\n' });
-		await vscode.window.showTextDocument(document);
+		const editor = await vscode.window.showTextDocument(document);
 		const context = { extensionUri: extension.extensionUri, subscriptions: [] as vscode.Disposable[] };
 		const messages = new vscode.EventEmitter<unknown>();
 		const visibility = new vscode.EventEmitter<void>();
 		const disposed = new vscode.EventEmitter<void>();
-		type Update = { type: string; id?: number; connected?: boolean; connecting?: boolean; pcm?: ArrayBuffer; voice?: unknown; playing?: boolean };
+		type Update = { type: string; id?: number; connected?: boolean; connecting?: boolean; pcm?: ArrayBuffer;
+			voice?: unknown; playing?: boolean; mml?: string; tooLong?: boolean };
 		const updates: Update[] = [];
 		const changed = new vscode.EventEmitter<Update>();
 		const voice = { number: 0, algorithm: 7, feedback: 0, operatorMask: 15, position: { line: 0, character: 0 },
@@ -816,6 +817,13 @@ suite('mmlx extension', () => {
 		try {
 			await provider.resolveWebviewView(view as unknown as vscode.WebviewView);
 			await waitFor(message => message.type === 'voice' && !!message.voice);
+			editor.selection = new vscode.Selection(1, 0, 2, 3);
+			const selectedMml = document.getText(editor.selection);
+			assert.strictEqual((await waitFor(message => message.type === 'editorSelection' && !!message.mml)).mml, selectedMml,
+				'Editor selection is synchronized exactly, including line breaks');
+			editor.selection = new vscode.Selection(0, 0, 0, 0);
+			assert.strictEqual((await waitFor(message => message.type === 'editorSelection' && !message.mml)).mml, '',
+				'Clearing the editor selection disables selection playback');
 			assert.strictEqual(view.title, 'mmlx');
 			assert.strictEqual(view.badge, undefined);
 			messages.fire({ type: 'setOutputConnection', target: 'keyboard', mode: 'emulation', connected: true, sampleRate: 48000, id: 1 });
@@ -860,6 +868,12 @@ suite('mmlx extension', () => {
 			const testStop = updates.length;
 			messages.fire({ type: 'voiceTestAction', action: 'stop', id: 1 });
 			await waitFor(message => message.type === 'voiceTest' && message.playing === false, testStop);
+			const multilineTestStart = updates.length;
+			messages.fire({ type: 'voiceTestAction', action: 'playSelection', mml: 'y24,128\no4 c1', id: 1 });
+			await waitFor(message => message.type === 'voiceTest' && message.playing === true, multilineTestStart);
+			const multilineTestStop = updates.length;
+			messages.fire({ type: 'voiceTestAction', action: 'stop', id: 1 });
+			await waitFor(message => message.type === 'voiceTest' && message.playing === false, multilineTestStop);
 			assert.strictEqual(view.title, 'mmlx [Connected]');
 			const invalidStart = updates.length;
 			messages.fire({ type: 'voiceTestAction', action: 'play', mml: 'invalid???', id: 1 });
@@ -3168,6 +3182,11 @@ finally:
 							check(testInput.value === 'MH0,200,64,0,5,0,1 ; PMS LFO', 'Chip State MML default');
 							check(document.querySelector('label[for="voice-test-mml"]').textContent === 'Chip State MML', 'Chip State MML label');
 							const testPlay = document.getElementById('voice-test-play');
+							const selectionPlay = document.getElementById('voice-test-selection');
+							check(selectionPlay.disabled && document.querySelector('.voice-test').lastElementChild === testPlay,
+								'Editor selection play precedes Chip State MML playback and starts disabled');
+							check(getComputedStyle(selectionPlay, '::before').maskImage.includes('selection-play.svg'),
+								'Selection playback uses a distinct selection-and-play icon');
 							check(testPlay.disabled && !document.getElementById('voice-test-stop'), 'One voice test toggle requires a selected voice');
 							const beforeVoice = messages.length;
 							testInput.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true, cancelable: true }));
@@ -3176,6 +3195,29 @@ finally:
 								operators: Array.from({ length: 4 }, () => ({ ar:31, d1r:0, d2r:0, rr:15, d1l:0, tl:32, ks:0, mul:1, dt1:0, dt2:0, ame:1 })) } });
 							testInput.value = 't120 y24,128 o4 c4'; testInput.dispatchEvent(new Event('input'));
 							check(!testPlay.disabled && api.getState().voiceTestMml === testInput.value, 'MML test input is persisted');
+							const selectedMml = 't120 y24,128\\no4 c4';
+							send({ type: 'editorSelection', mml: selectedMml });
+							check(!selectionPlay.disabled, 'Non-empty editor selection enables the selection button');
+							await new Promise(resolve => setTimeout(resolve, 300));
+							const selectionColor = getComputedStyle(selectionPlay).backgroundColor;
+							const playbackColor = getComputedStyle(document.getElementById('playback-play')).backgroundColor;
+							check(selectionPlay.matches('.voice-test .transport-play'), 'Selection button has the active transport selector');
+							check(selectionColor === playbackColor, 'Selection button uses the Playback accent');
+							const testInputBeforeSelection = testInput.value;
+							selectionPlay.click();
+							check(messages.at(-1).type === 'voiceTestAction' && messages.at(-1).action === 'playSelection'
+								&& messages.at(-1).mml === selectedMml && testInput.value === testInputBeforeSelection,
+							'Selection playback sends the selected MML without changing Chip State MML');
+							send({ type: 'voiceTest', id: request.id, playing: false, error: true });
+							check(selectionPlay.classList.contains('is-error') && !testPlay.classList.contains('is-error')
+								&& selectionPlay.title === 'MML error' && selectionPlay.getAttribute('aria-invalid') === 'true'
+								&& testInput.getAttribute('aria-invalid') === 'false', 'Selection error is shown only on the selection button');
+							send({ type: 'voiceTest', id: request.id, playing: false });
+							send({ type: 'editorSelection', mml: '', tooLong: true });
+							check(selectionPlay.disabled && selectionPlay.title.includes('too long'), 'Oversized editor selections cannot be submitted');
+							send({ type: 'editorSelection', mml: selectedMml });
+							check(getComputedStyle(testPlay).backgroundColor === getComputedStyle(document.getElementById('playback-play')).backgroundColor,
+								'Chip State MML uses the Playback accent color');
 							check(testPlay.getBoundingClientRect().width === 28 && testPlay.getBoundingClientRect().height === 28, 'Compact voice test toggle');
 							check(testInput.getBoundingClientRect().bottom <= document.querySelector('.p-keyboard__body').getBoundingClientRect().top, 'Voice test sits immediately above the keyboard');
 							const beforeEnter = messages.length;
@@ -3224,7 +3266,9 @@ finally:
 							send({ type: 'outputReset', id: request.id, connected: true });
 							check(!document.getElementById('keyboard').classList.contains('is-voice-test-pending-reset'), 'Successful reset clears the Chip State MML reset indicator');
 							send({ type: 'voiceTest', id: request.id, playing: false, error: true });
-							check(testPlay.classList.contains('is-error') && testPlay.title === 'MML error' && testInput.getAttribute('aria-invalid') === 'true', 'MML error is indicated on the toggle');
+							check(testPlay.classList.contains('is-error') && !selectionPlay.classList.contains('is-error')
+								&& testPlay.title === 'MML error' && testInput.getAttribute('aria-invalid') === 'true'
+								&& selectionPlay.getAttribute('aria-invalid') === 'false', 'Chip State MML error is shown only on its own button');
 							const errorColor = document.createElement('span'); errorColor.style.color = 'var(--vscode-errorForeground, #f48771)'; document.body.append(errorColor);
 							check(getComputedStyle(testPlay).color === getComputedStyle(errorColor).color, 'MML error uses the theme error color'); errorColor.remove();
 							testInput.dispatchEvent(new Event('input')); check(!testPlay.classList.contains('is-error'), 'Editing clears MML error color');

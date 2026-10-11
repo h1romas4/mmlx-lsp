@@ -60,7 +60,7 @@ const keyboardControls = createKeyboardControls(document.getElementById('keyboar
 	}, note => { if (note.event !== 'pitchBend') { audioMonitors.setNote(note); } vscode.postMessage({ type: 'emulationNote', id: outputId, ...note }); },
 	(action, mml) => {
 		keyboardControls.releaseAll();
-		if (action === 'play') { keyboardControls.setVoiceTest(true); }
+		if (action === 'play' || action === 'playSelection') { keyboardControls.setVoiceTest(true); }
 		saveState();
 		vscode.postMessage({ type: 'voiceTestAction', id: outputId, action, mml });
 	});
@@ -241,6 +241,8 @@ window.addEventListener('message', event => {
 		voiceControls.render(message);
 		keyboardControls.setVoiceAvailable(!!message.voice && !message.error);
 		saveState();
+	} else if (message?.type === 'editorSelection') {
+		keyboardControls.setEditorSelection(message.mml, message.tooLong);
 	} else if (message?.type === 'voiceTest' && message.id === outputId) {
 		keyboardControls.setVoiceTest(message.playing, message.error);
 	} else if (message?.type === 'outputReset' && message.id === outputId) {

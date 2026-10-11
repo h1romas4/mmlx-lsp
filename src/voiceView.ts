@@ -234,7 +234,10 @@ export class VoiceViewProvider implements WebviewViewProvider {
 			}),
 			workspace.onDidChangeTextDocument(event => {
 				if (event.document === this.playbackDocument) { this.stopPlayback(); }
-				if (event.document.uri.toString() === this.editor?.document.uri.toString()) { this.schedule(); }
+				if (event.document.uri.toString() === this.editor?.document.uri.toString()) {
+					this.sendEditorSelection(window.activeTextEditor);
+					this.schedule();
+				}
 			}),
 			workspace.onDidCloseTextDocument(document => {
 				if (document === this.playbackDocument) { this.playbackDocument = undefined; this.stopPlayback(); }
@@ -265,6 +268,7 @@ export class VoiceViewProvider implements WebviewViewProvider {
 					this.emulation?.disconnect();
 					this.stopPlayback();
 					this.send(); this.schedule(); this.sendBuildSettings();
+					this.sendEditorSelection(window.activeTextEditor);
 					void this.view?.webview.postMessage({ type: 'midiNotes', notes: this.midiInput.notes });
 					void this.view?.webview.postMessage({ type: 'pitchBend', value: this.pitchBendValue });
 					void this.refreshSerialPorts(); void this.refreshMidiInputPorts();
@@ -459,8 +463,10 @@ export class VoiceViewProvider implements WebviewViewProvider {
 		if (message.action === 'stop') {
 			this.emulation?.stopVoiceTest(); await this.nanodrive.stopVoiceTest(); return;
 		}
-		if (message.action !== 'play' || !workspace.isTrusted || !this.snapshot.voice || this.snapshot.error
-			|| typeof message.mml !== 'string' || !message.mml.trim() || message.mml.length > 8192 || /[\r\n]/.test(message.mml)) {
+		const selection = message.action === 'playSelection';
+		if ((!selection && message.action !== 'play') || !workspace.isTrusted || !this.snapshot.voice || this.snapshot.error
+			|| typeof message.mml !== 'string' || !message.mml.trim() || message.mml.length > 8192
+			|| !selection && /[\r\n]/.test(message.mml)) {
 			this.setVoiceTesting(false, true); return;
 		}
 		this.voiceTestVoice = JSON.stringify(this.snapshot.voice);
@@ -842,6 +848,7 @@ export class VoiceViewProvider implements WebviewViewProvider {
 	}
 
 	private follow(editor: TextEditor | undefined): void {
+		this.sendEditorSelection(window.activeTextEditor);
 		const document = editor?.document.languageId === 'mmlx' ? editor.document : undefined;
 		if (document !== this.playbackDocument && !this.playbackState.playing && !this.playbackState.paused && !this.playbackState.loading) {
 			this.playbackDocument = document;
@@ -859,6 +866,13 @@ export class VoiceViewProvider implements WebviewViewProvider {
 			return;
 		}
 		this.schedule();
+	}
+
+	private sendEditorSelection(editor: TextEditor | undefined): void {
+		const selection = editor?.document.languageId === 'mmlx' && !editor.selection.isEmpty
+			? editor.document.getText(editor.selection) : '';
+		void this.view?.webview.postMessage({ type: 'editorSelection',
+			mml: selection.length <= 8192 ? selection : '', tooLong: selection.length > 8192 });
 	}
 
 	private schedule(): void {

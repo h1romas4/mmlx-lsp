@@ -5,34 +5,65 @@ export function createKeyboardControls(root, onModeChange = () => {}, onNote = (
 	const midiStatus = root.querySelector('#keyboard-midi-status');
 	const bend = root.querySelector('#keyboard-pitch-bend');
 	const testInput = root.querySelector('#voice-test-mml');
+	const selectionPlay = root.querySelector('#voice-test-selection');
 	const testPlay = root.querySelector('#voice-test-play');
 	let outputConnected = false;
 	let resetting = false;
 	let testPlaying = false;
 	let testError = false;
+	let testErrorSource = 'input';
 	let voiceTestChangedChip = false;
 	let voiceAvailable = false;
+	let editorSelection = '';
+	let selectionTooLong = false;
 	function updateTestControls() {
 		if (!testInput) { return; }
 		root.classList.toggle('is-voice-test-pending-reset', voiceTestChangedChip);
 		testInput.disabled = testPlaying || resetting;
+		if (selectionPlay) {
+			const hasSelection = !!editorSelection.trim();
+			const selectionError = testError && testErrorSource === 'selection';
+			selectionPlay.disabled = resetting || testPlaying || !outputConnected || !voiceAvailable || !hasSelection || selectionTooLong;
+			selectionPlay.classList.toggle('transport-play', !selectionPlay.disabled);
+			selectionPlay.classList.toggle('is-error', selectionError);
+			selectionPlay.title = selectionError ? 'MML error'
+				: selectionTooLong ? 'Editor selection is too long (maximum 8192 characters)' : 'Play editor selection';
+			selectionPlay.setAttribute('aria-label', selectionPlay.title);
+			selectionPlay.setAttribute('aria-invalid', String(selectionError));
+		}
+		const inputError = testError && testErrorSource === 'input';
 		testPlay.disabled = resetting || !testPlaying && (!outputConnected || !voiceAvailable || !testInput.value.trim());
 		testPlay.classList.toggle('is-busy', resetting && outputConnected && voiceAvailable && !!testInput.value.trim());
 		testPlay.classList.toggle('transport-play', !testPlaying);
 		testPlay.classList.toggle('transport-stop', testPlaying);
-		testPlay.classList.toggle('is-error', testError);
-		testPlay.title = testError ? 'MML error' : testPlaying ? 'Stop voice test' : 'Play voice test';
+		testPlay.classList.toggle('is-error', inputError);
+		testPlay.title = inputError ? 'MML error' : testPlaying ? 'Stop voice test' : 'Play voice test';
 		testPlay.setAttribute('aria-label', testPlaying ? 'Stop voice test' : 'Play voice test');
 		testPlay.setAttribute('aria-pressed', String(testPlaying));
-		testInput.setAttribute('aria-invalid', String(testError));
+		testInput.setAttribute('aria-invalid', String(inputError));
 	}
-	testInput?.addEventListener('input', () => { testError = false; updateTestControls(); });
+	testInput?.addEventListener('input', () => {
+		if (testErrorSource === 'input') { testError = false; }
+		updateTestControls();
+	});
 	testInput?.addEventListener('keydown', event => {
 		if (event.key !== 'Enter' || event.isComposing || event.keyCode === 229 || event.repeat || testInput.disabled || testPlaying) { return; }
 		event.preventDefault(); event.stopPropagation();
 		testPlay.click();
 	});
-	testPlay?.addEventListener('click', () => { if (!testPlay.disabled) { testError = false; updateTestControls(); onVoiceTest(testPlaying ? 'stop' : 'play', testInput.value); } });
+	testPlay?.addEventListener('click', () => {
+		if (!testPlay.disabled) {
+			if (!testPlaying) { testErrorSource = 'input'; }
+			testError = false; updateTestControls();
+			onVoiceTest(testPlaying ? 'stop' : 'play', testInput.value);
+		}
+	});
+	selectionPlay?.addEventListener('click', () => {
+		if (!selectionPlay.disabled) {
+			testErrorSource = 'selection'; testError = false; updateTestControls();
+			onVoiceTest('playSelection', editorSelection);
+		}
+	});
 	let bendValue = 8192;
 	let bending = false;
 
@@ -189,6 +220,15 @@ export function createKeyboardControls(root, onModeChange = () => {}, onNote = (
 			}
 		},
 		setVoiceAvailable(value) { voiceAvailable = value === true; updateTestControls(); },
+		setEditorSelection(value, tooLong = false) {
+			const nextSelection = typeof value === 'string' ? value.slice(0, 8192) : '';
+			const nextTooLong = tooLong === true;
+			if (testError && testErrorSource === 'selection'
+				&& (nextSelection !== editorSelection || nextTooLong !== selectionTooLong)) { testError = false; }
+			editorSelection = nextSelection;
+			selectionTooLong = nextTooLong;
+			updateTestControls();
+		},
 		setResetting(value) { resetting = value === true; this.setConnected(outputConnected); },
 		setVoiceTest(playing, error = false) {
 			if (error) { voiceTestChangedChip = false; }
