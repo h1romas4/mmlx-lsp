@@ -3,7 +3,7 @@
 	--op2: #e38369;
 	--op3: #80b85b;
 	--op4: #c4a646;
-	--accent-teal: #39c5bb;
+	--accent-teal: #2fb3aa;
 	--playback-surface: #111615;
 	--playback-foreground: #f3edff;
 	--playback-playing: #81d88a;
@@ -94,6 +94,9 @@ h1.empty { font-size: inherit; font-weight: 400; }
 .playback-volume { display: flex; align-items: center; gap: 8px; width: 140px; max-width: 100%; margin-left: auto; }
 .playback-volume span { flex: 0 0 16px; mask-image: url('volume-2.svg'); color: var(--playback-foreground); }
 .playback-volume input { width: 100%; padding: 0; border: 0; background: transparent; accent-color: var(--accent-teal); }
+.playback-volume input:focus { outline: none; }
+.playback-volume input:focus-visible::-webkit-slider-thumb,
+.playback-volume input:focus-visible::-moz-range-thumb { outline: 2px solid var(--vscode-focusBorder, #39a9c7); outline-offset: 2px; }
 .playback-note { margin: 4px 0; padding: 3px 0 3px 10px; border-left: 2px solid var(--op4); color: var(--vscode-descriptionForeground, #666); font-size: 12px; overflow-wrap: anywhere; }
 .playback-channels { --channel-accent: var(--op1); margin: 18px 0; padding: 10px 14px; border: 1px solid var(--vscode-widget-border, var(--vscode-panel-border, #d7dce1)); border-radius: 8px; background: var(--playback-surface); color: var(--playback-foreground); }
 .playback-channel { display: grid; grid-template-columns: 102px minmax(0, 1fr); align-items: center; gap: 8px; height: 46px; padding: 4px 0; border-bottom: 1px solid var(--vscode-panel-border, #ddd); }

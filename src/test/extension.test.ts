@@ -3100,6 +3100,9 @@ finally:
 							const serial = { type: 'serialSettings', folder: 'test', connection: '/dev/test', ports: [{ path: '/dev/test' }], connected: true, firmware: '1.0b8', model: 'NanoDrive 8' };
 							send(serial); check(!button.disabled, 'Settings connection must enable output');
 							check(playbackMode.value === 'nanodrive8' && !play.disabled && cursor.disabled && !volume.disabled, 'NanoDrive Playback auto-selection with output volume');
+							volume.focus();
+							check(getComputedStyle(volume).outlineStyle === 'none', 'Playback volume focus does not draw an outer frame');
+							volume.blur();
 							volume.value = '50'; volume.dispatchEvent(new Event('input'));
 							check(messages.at(-1).type === 'playbackVolume' && messages.at(-1).mode === 'nanodrive8' && messages.at(-1).volume === .5, 'Hardware volume routes to the output');
 							check(api.getState().playbackVolume === 50, 'Hardware volume is saved');
