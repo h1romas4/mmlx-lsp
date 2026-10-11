@@ -18,6 +18,7 @@ import { NanoDriveWorker } from '../nanodriveWorker';
 import { NanoDriveRuntime } from '../nanodriveRuntime';
 import { NanoDriveThreadClient, type NanoDriveThreadEvent } from '../nanodriveThreadClient';
 import { PlaybackSourceTracker } from '../playbackSource';
+import { WasiMcpHttpBridge } from '../mcpServer';
 import type { NanoDriveConnection } from '../nanodrive';
 import { Port as NanoDriveTestPort, codec as nanoDriveTestCodec } from './nanodrive.test';
 
@@ -3377,6 +3378,12 @@ finally:
 						assert(nativeLabelElement.querySelector('span').textContent === 'NanoDrive8 native engine', 'Native engine label must identify NanoDrive8');
 						assert(nativeLabelElement.previousElementSibling.contains(select), 'Native engine must follow NanoDrive8 serial controls');
 						assert(nativeLabelElement.nextElementSibling.contains(document.getElementById('midi-connection')), 'Native engine must precede MIDI-IN');
+						const mcpConnection = document.getElementById('mcp-connection');
+						const mcpConnect = document.getElementById('connect-mcp');
+						assert(document.getElementById('midi-connection').closest('.build-field').nextElementSibling.contains(mcpConnection), 'MCP Server must follow MIDI-IN');
+						assert(mcpConnection.options.length === 1 && mcpConnection.options[0].textContent === 'mmlx MCP (experimental)', 'MCP Server must have one experimental mmlx MCP option');
+						assert(mcpConnection.parentElement.contains(mcpConnect), 'MCP connection button must be next to its selector');
+						assert(!document.getElementById('mcp-settings-description'), 'MCP explanatory copy must be absent');
 						assert(platform.textContent === 'Windows: try if buffer underruns occur' && native.getAttribute('aria-describedby') === platform.id, 'Native engine must describe when to try it');
 						const base = { type: 'serialSettings', folder: 'test', connection: '/dev/test', ports: [{ path: '/dev/test' }], editable: true, canConnect: true };
 						controls.render(base);
@@ -3402,6 +3409,18 @@ finally:
 						for (const width of [120, 320, 640]) {
 							const root = document.getElementById('settings-controls');
 							root.style.width = width + 'px';
+							controls.render({ type: 'buildSettings', folder: 'test', editable: true, saving: false,
+								mcpEnabled: false, mcpSupported: true, values: {} });
+							const mcpWidth = mcpConnection.getBoundingClientRect().width;
+							const serialWidth = select.getBoundingClientRect().width;
+							const gap = parseFloat(getComputedStyle(mcpConnection.parentElement).columnGap);
+							const serialConnectLeft = document.getElementById('connect-serial').getBoundingClientRect().left;
+							const mcpConnectLeft = mcpConnect.getBoundingClientRect().left;
+							assert(mcpWidth > serialWidth && Math.abs(mcpConnection.getBoundingClientRect().right
+								- mcpConnectLeft + gap) < 0.5,
+								'MCP dropdown must extend into the refresh slot while keeping a gap before the button at ' + width);
+							assert(Math.abs(mcpConnectLeft - serialConnectLeft) < 0.5,
+								'MCP connect button position must match serial at ' + width);
 							const nativeBounds = native.getBoundingClientRect();
 							const nativeLabel = nativeLabelElement.getBoundingClientRect();
 							assert(nativeBounds.left >= nativeLabel.left && nativeBounds.right <= nativeLabel.right, 'Native control must fit at ' + width);
@@ -3438,6 +3457,19 @@ finally:
 								assert(Math.abs(message.getBoundingClientRect().left - bounds.left) < 0.5 && Math.abs(select.getBoundingClientRect().width - selectBounds.width) < 0.5, prefix + ' long error moved controls at ' + width);
 							}
 						}
+						controls.render({ type: 'buildSettings', folder: 'test', editable: true, saving: false,
+							mcpEnabled: false, mcpSupported: true, values: {} });
+						assert(!mcpConnection.disabled && !mcpConnect.disabled && mcpConnect.getAttribute('aria-pressed') === 'false', 'Available MCP server must be connectable');
+						mcpConnect.click();
+						assert(messages.at(-1).type === 'setMcpEnabled' && messages.at(-1).value === true, 'MCP connect click');
+						controls.render({ type: 'buildSettings', folder: 'test', editable: true, saving: false,
+							mcpEnabled: true, mcpSupported: true, values: {} });
+						assert(mcpConnect.getAttribute('aria-pressed') === 'true' && mcpConnect.title === 'Disconnect mmlx MCP', 'MCP connected state');
+						mcpConnect.click();
+						assert(messages.at(-1).type === 'setMcpEnabled' && messages.at(-1).value === false, 'MCP disconnect click');
+						controls.render({ type: 'buildSettings', folder: 'test', editable: true, saving: false,
+							mcpEnabled: false, mcpSupported: false, values: {} });
+						assert(mcpConnection.disabled && mcpConnect.disabled, 'Unsupported MCP server must be disabled');
 						api.postMessage({});
 					} catch (error) { api.postMessage({ error: String(error) }); }
 				</script></body>`);
@@ -3544,10 +3576,12 @@ finally:
 		}
 	});
 
-	test('Build settings panel saves folder configuration and rejects invalid or stale requests', async function () {
+	test('Build settings persist while MCP connection toggles only in memory', async function () {
 		this.timeout(20000);
 		const extension = vscode.extensions.all.find(extension => extension.packageJSON.name === 'mmlx-lsp');
 		assert.ok(extension);
+		const configurationProperties = extension.packageJSON.contributes.configuration.properties;
+		assert.ok(!Object.hasOwn(configurationProperties, 'mmlx.mcp.enabled'));
 		const folder = vscode.workspace.workspaceFolders?.[0];
 		assert.ok(folder);
 		const configuration = vscode.workspace.getConfiguration('mmlx', folder.uri);
@@ -3556,11 +3590,16 @@ finally:
 			const setting = configuration.inspect(`build.${key}`);
 			return vscode.workspace.workspaceFile ? setting?.workspaceFolderValue : setting?.workspaceValue;
 		});
+		let mcpEnabled = false;
+		const mcpServer = {
+			get enabled() { return mcpEnabled; },
+			setEnabled(enabled: boolean) { mcpEnabled = enabled; }
+		};
 		const context = { extensionUri: extension.extensionUri, subscriptions: [] as vscode.Disposable[] };
 		const events = new vscode.EventEmitter<void>();
 		const messages = new vscode.EventEmitter<unknown>();
 		type SettingsMessage = { type: string; folder: string; editable: boolean; saving: boolean;
-			error: string; values: Record<string, unknown> };
+			error: string; values: Record<string, unknown>; mcpEnabled?: boolean; mcpSupported?: boolean; mcpEditable?: boolean };
 		const updates = new vscode.EventEmitter<SettingsMessage>();
 		let latest: SettingsMessage | undefined;
 		const notifications: string[] = [];
@@ -3578,7 +3617,8 @@ finally:
 				const timeout = setTimeout(() => { subscription.dispose(); reject(new Error('Settings update timed out')); }, 4000);
 			});
 		}
-		const provider = new VoiceViewProvider(context as unknown as vscode.ExtensionContext, () => undefined);
+		const provider = new VoiceViewProvider(context as unknown as vscode.ExtensionContext, () => undefined,
+			undefined, undefined, undefined, undefined, undefined, undefined, undefined, mcpServer);
 		const view = { visible: true, onDidChangeVisibility: events.event, onDidDispose: events.event,
 			webview: { cspSource: 'https://test.invalid', asWebviewUri: (uri: vscode.Uri) => uri,
 				onDidReceiveMessage: messages.event, postMessage: (message: SettingsMessage) => {
@@ -3607,6 +3647,17 @@ finally:
 			assert.strictEqual(vscode.workspace.getConfiguration('mmlx', folder.uri).get('build.format'), 'vgm');
 			await configuration.update('build.format', 'mdx', vscode.ConfigurationTarget.WorkspaceFolder);
 			await waitFor(message => message.values.format === 'mdx');
+			const settingsBeforeMcp = await vscode.workspace.fs.readFile(vscode.Uri.joinPath(folder.uri, '.vscode', 'settings.json'));
+			messages.fire({ type: 'setMcpEnabled', value: true });
+			await waitFor(message => message.mcpEditable === true && !message.saving && message.mcpEnabled === true);
+			assert.strictEqual(mcpEnabled, true);
+			assert.deepStrictEqual(await vscode.workspace.fs.readFile(vscode.Uri.joinPath(folder.uri, '.vscode', 'settings.json')), settingsBeforeMcp);
+			messages.fire({ type: 'setMcpEnabled', value: 'yes' });
+			assert.strictEqual(latest?.error, 'Invalid MCP connection action.');
+			messages.fire({ type: 'setMcpEnabled', value: false });
+			await waitFor(message => message.mcpEditable === true && !message.saving && message.mcpEnabled === false);
+			assert.strictEqual(mcpEnabled, false);
+			assert.deepStrictEqual(await vscode.workspace.fs.readFile(vscode.Uri.joinPath(folder.uri, '.vscode', 'settings.json')), settingsBeforeMcp);
 		} finally {
 			provider.dispose();
 			for (const subscription of context.subscriptions) { subscription.dispose(); }
@@ -3615,6 +3666,95 @@ finally:
 				await configuration.update(`build.${key}`, previous[index], vscode.ConfigurationTarget.WorkspaceFolder);
 			}
 			events.dispose(); messages.dispose(); updates.dispose();
+		}
+	});
+
+	test('WASI MCP bridge serves analysis tools over local Streamable HTTP', async function () {
+		this.timeout(30000);
+		const extension = vscode.extensions.all.find(extension => extension.packageJSON.name === 'mmlx-lsp');
+		assert.ok(extension);
+		const output = vscode.window.createOutputChannel('mmlx MCP bridge test');
+		const wasm = await Wasm.load();
+		const module = await wasm.compile(vscode.Uri.joinPath(extension.extensionUri, 'server', 'target', 'wasm32-wasip1-threads',
+			'release', 'mmlx-mcp-server.wasm'));
+		const bridge = await WasiMcpHttpBridge.start(wasm, module, output);
+		const request = async (message: Record<string, unknown>) => fetch(bridge.uri.toString(), {
+			method: 'POST',
+			headers: { 'content-type': 'application/json', ...bridge.headers },
+			body: JSON.stringify(message)
+		});
+		try {
+			const initialized = await request({ jsonrpc: '2.0', id: 1, method: 'initialize',
+				params: { protocolVersion: '2025-11-25', capabilities: {}, clientInfo: { name: 'test', version: '1' } } });
+			assert.strictEqual(initialized.status, 200);
+			assert.strictEqual((await initialized.json()).result.serverInfo.name, 'mmlx-mcp-server');
+			assert.strictEqual((await request({ jsonrpc: '2.0', method: 'notifications/initialized' })).status, 202);
+			const tools = await request({ jsonrpc: '2.0', id: 2, method: 'tools/list', params: {} });
+			const listedTools = (await tools.json()).result.tools as Array<{
+				name: string;
+				description: string;
+				inputSchema: { required?: string[] };
+			}>;
+			const toolNames = listedTools.map((tool) => tool.name).sort();
+			assert.deepStrictEqual(toolNames, ['mdx_parse', 'mml_check', 'mml_command_reference', 'mml_grammar',
+				'mml_parse', 'mml_vgm_trace', 'mmlx_help', 'vgm_parse'].sort());
+			for (const [toolName, required] of Object.entries({
+				vgm_parse: ['data_base64', 'start_command', 'max_commands'],
+				mdx_parse: ['data_base64', 'start_command', 'max_commands'],
+				mml_parse: ['source', 'start_command', 'max_commands'],
+				mml_vgm_trace: ['source', 'tick', 'radius', 'max_commands']
+			})) {
+				assert.deepStrictEqual(listedTools.find((tool) => tool.name === toolName)?.inputSchema.required, required);
+			}
+			for (const toolName of ['vgm_parse', 'mdx_parse', 'mml_parse', 'mml_vgm_trace']) {
+				assert.match(listedTools.find((tool) => tool.name === toolName)?.description ?? '', /smallest useful/);
+			}
+			const help = await request({ jsonrpc: '2.0', id: 8, method: 'tools/call',
+				params: { name: 'mmlx_help', arguments: {} } });
+			const helpText = JSON.parse((await help.json()).result.content[0].text);
+			assert.ok(helpText.formats.MML.includes('mml_parse'));
+			const commands = await request({ jsonrpc: '2.0', id: 9, method: 'tools/call',
+				params: { name: 'mml_command_reference', arguments: {} } });
+			const commandList = JSON.parse((await commands.json()).result.content[0].text);
+			assert.ok(commandList.command_count > 0);
+			assert.ok(commandList.commands.some((command: { command: string }) => command.command === 't'));
+			const grammar = await request({ jsonrpc: '2.0', id: 10, method: 'tools/call',
+				params: { name: 'mml_grammar', arguments: {} } });
+			const grammarText = JSON.parse((await grammar.json()).result.content[0].text);
+			assert.strictEqual(grammarText.copied_from, 'crates/mmlx/src/mdx/mml.pest');
+			assert.ok(grammarText.grammar.includes('document = { SOI ~ line* ~ EOI }'));
+			const parsedMml = await request({ jsonrpc: '2.0', id: 4, method: 'tools/call',
+				params: { name: 'mml_parse', arguments: { source: 'A r4', start_command: 0, max_commands: 20 } } });
+			assert.strictEqual(JSON.parse((await parsedMml.json()).result.content[0].text).format, 'MML');
+			const checkedMml = await request({ jsonrpc: '2.0', id: 5, method: 'tools/call',
+				params: { name: 'mml_check', arguments: { source: 'A r4' } } });
+			assert.strictEqual(JSON.parse((await checkedMml.json()).result.content[0].text).playback_check, 'passed');
+			const tracedMml = await request({ jsonrpc: '2.0', id: 6, method: 'tools/call',
+				params: { name: 'mml_vgm_trace', arguments: { source: 'A t120 o4 c4', tick: 2, radius: 1, max_commands: 20 } } });
+			const trace = JSON.parse((await tracedMml.json()).result.content[0].text);
+			assert.strictEqual(trace.requested_tick, 2);
+			assert.strictEqual(trace.start_tick, 1);
+			assert.strictEqual(trace.end_tick, 3);
+			assert.ok(trace.commands.length > 0);
+			const payloadSize = 11 * 1024 * 1024;
+			const vgm = Buffer.alloc(0x40 + 7 + payloadSize + 1);
+			vgm.write('Vgm ', 0, 'ascii');
+			vgm.writeUInt32LE(vgm.length - 4, 4);
+			vgm.writeUInt32LE(0x171, 8);
+			vgm.writeUInt32LE(0x0c, 0x34);
+			vgm[0x40] = 0x67;
+			vgm[0x41] = 0x66;
+			vgm[0x42] = 0;
+			vgm.writeUInt32LE(payloadSize, 0x43);
+			vgm[vgm.length - 1] = 0x66;
+			const parsedLargeVgm = await request({ jsonrpc: '2.0', id: 7, method: 'tools/call',
+				params: { name: 'vgm_parse', arguments: { data_base64: vgm.toString('base64'), start_command: 0, max_commands: 10 } } });
+			const largeVgm = JSON.parse((await parsedLargeVgm.json()).result.content[0].text);
+			assert.strictEqual(largeVgm.file_bytes, vgm.length);
+			assert.strictEqual(largeVgm.commands[0].command, 'DataBlock(type=0x00, size=11534336)');
+		} finally {
+			await bridge.disposeAsync();
+			output.dispose();
 		}
 	});
 

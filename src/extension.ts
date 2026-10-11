@@ -3,6 +3,7 @@ import { LanguageClient, ServerOptions } from 'vscode-languageclient/node';
 import { Wasm } from '@vscode/wasm-wasi/v1';
 import { createStdioOptions, createUriConverters, startServer } from '@vscode/wasm-wasi-lsp';
 import { registerBuildTasks } from './tasks';
+import { registerMcpServerProvider } from './mcpServer';
 import { registerTrackLengthStatus } from './trackLengthStatus';
 import { registerVoiceView, type VoiceViewProvider } from './voiceView';
 
@@ -17,6 +18,10 @@ export async function activate(context: ExtensionContext): Promise<void> {
 	const wasm = await Wasm.load();
 	channel.appendLine('WASI runtime loaded.');
 	registerBuildTasks(context, wasm);
+	const mcpServer = registerMcpServerProvider(context, wasm, channel);
+	if (!mcpServer) {
+		channel.appendLine('MCP server providers are not supported by this VS Code version.');
+	}
 
 	const serverOptions: ServerOptions = async () => {
 		channel.appendLine('Starting WASM language server.');
@@ -62,7 +67,7 @@ export async function activate(context: ExtensionContext): Promise<void> {
 	});
 	await client.start();
 	registerTrackLengthStatus(context, () => client, channel);
-	voiceView = registerVoiceView(context, () => client, wasm, playbackLog);
+	voiceView = registerVoiceView(context, () => client, wasm, playbackLog, mcpServer);
 	context.subscriptions.push(commands.registerCommand('mmlx.showVoiceReferences', async (
 		documentUri: string | { scheme: string; authority?: string; path?: string; query?: string; fragment?: string },
 		position: { line: number; character: number },

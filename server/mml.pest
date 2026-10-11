@@ -1,0 +1,106 @@
+// Parser definition for the MXDRV MDX MML dialect.
+document = { SOI ~ line* ~ EOI }
+
+line = { title | pcmfile | voice | track | comment | block_comment | blank }
+
+title = { ^"#title" ~ string ~ NEWLINE? }
+pcmfile = { ^"#pcmfile" ~ string ~ NEWLINE? }
+
+voice = {
+	"@" ~ voice_padding* ~ voice_number ~ voice_padding* ~ "="
+	~ voice_padding* ~ "{" ~ voice_padding*
+	~ voice_operator ~ voice_operator ~ voice_operator ~ voice_operator
+	~ voice_global ~ voice_padding* ~ "}" ~ NEWLINE?
+}
+voice_operator = _{
+	number ~ voice_separator ~ number ~ voice_separator ~ number ~ voice_separator
+	~ number ~ voice_separator ~ number ~ voice_separator ~ number ~ voice_separator
+	~ number ~ voice_separator ~ number ~ voice_separator ~ number ~ voice_separator
+	~ number ~ voice_separator ~ number ~ voice_separator
+}
+voice_global = _{ number ~ voice_separator ~ number ~ voice_separator ~ number }
+voice_separator = _{ voice_padding* ~ "," ~ voice_padding* }
+voice_padding = _{ block_comment | comment | NEWLINE }
+
+track = { channel ~ command* ~ NEWLINE? }
+channel = @{ ('A'..'H' | 'P'..'W')+ }
+
+command = _{
+	block_comment
+	| repeat_start | repeat_end
+	| pitch_lfo_on | pitch_lfo_off | volume_lfo_on | volume_lfo_off
+	| opm_lfo_on | opm_lfo_off
+	| opm_tempo | fine_gate | fine_volume | voice_select
+	| pitch_lfo | volume_lfo | opm_lfo
+	| tempo | note | numeric_note | rest | octave | octave_down | octave_up
+	| default_length | gate | portamento | legato | volume | volume_down
+	| volume_up | pan | loop_start | detune | loop_escape
+	| register_write | key_on_delay | noise_frequency | sync_send | sync_wait
+	| lfo_delay | ignore | pcm_frequency
+}
+
+repeat_start = { "[" }
+repeat_end = { "]" ~ repeat_count? }
+
+tempo = { "t" ~ tempo_number }
+opm_tempo = { "@t" ~ number }
+voice_select = { "@" ~ voice_number }
+note = { note_name ~ accidental? ~ length_expression? }
+note_name = @{ 'a'..'g' }
+accidental = { "+" | "-" }
+numeric_note = { "n" ~ number ~ ("," ~ duration)? }
+rest = { "r" ~ length_expression? }
+duration = { length_expression }
+length_expression = { length_term ~ (length_operator ~ length_term)* }
+length_operator = { "^" | "~" }
+length_term = { length_ticks? ~ number ~ length_dot* }
+length_ticks = { "%" }
+length_dot = { "." }
+octave = { "o" ~ number }
+octave_down = { "<" }
+octave_up = { ">" }
+default_length = { "l" ~ length_expression? }
+gate = { "q" ~ number }
+fine_gate = { "@q" ~ number }
+portamento = { "_" }
+legato = { "&" }
+volume = { "v" ~ number }
+fine_volume = { "@v" ~ number }
+volume_down = { "(" }
+volume_up = { ")" }
+pan = { "p" ~ number }
+loop_start = { "L" }
+detune = { "D" ~ signed_number }
+loop_escape = { "/" }
+register_write = { "y" ~ number ~ "," ~ number }
+key_on_delay = { "k" ~ number }
+noise_frequency = { "w" ~ number }
+sync_send = { "S" ~ channel_ref }
+sync_wait = { "W" }
+pitch_lfo = { "MP" ~ number ~ "," ~ number ~ "," ~ signed_number }
+pitch_lfo_on = { "MPON" }
+pitch_lfo_off = { "MPOF" }
+volume_lfo = { "MA" ~ number ~ "," ~ number ~ "," ~ signed_number }
+volume_lfo_on = { "MAON" }
+volume_lfo_off = { "MAOF" }
+lfo_delay = { "MD" ~ number }
+opm_lfo = { "MH" ~ number ~ "," ~ number ~ "," ~ number ~ "," ~ number ~ "," ~ number ~ "," ~ number ~ "," ~ number }
+opm_lfo_on = { "MHON" }
+opm_lfo_off = { "MHOF" }
+ignore = { "!" }
+pcm_frequency = { "F" ~ number }
+number = @{ ASCII_DIGIT+ }
+voice_number = { number }
+tempo_number = { number }
+repeat_count = { number }
+dotted_length = { number ~ "."+ }
+signed_number = @{ "-"? ~ ASCII_DIGIT+ }
+channel_ref = @{ 'A'..'H' | 'P'..'W' | number }
+
+string = @{ "\"" ~ (!"\"" ~ ANY)* ~ "\"" }
+comment = { ";" ~ (!NEWLINE ~ ANY)* ~ NEWLINE? }
+block_comment = @{ "/*" ~ (!"*/" ~ ANY)* ~ "*/" }
+blank = { NEWLINE }
+
+NEWLINE = _{ "\r\n" | "\n" }
+WHITESPACE = _{ " " | "\t" | block_comment }

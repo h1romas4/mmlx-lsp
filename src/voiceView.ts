@@ -12,6 +12,7 @@ import { NanoDriveConnection, openNanoDrivePort, type NanoDriveAdpcmMode, type N
 import { NanoDriveWorker } from './nanodriveWorker';
 import { NanoDriveThreadClient } from './nanodriveThreadClient';
 import { PlaybackSourceTracker } from './playbackSource';
+import type { McpServerController } from './mcpServer';
 import { findPdx, resolveUri } from './tasks';
 
 interface VoiceDefinition {
@@ -71,10 +72,11 @@ export function registerVoiceView(
 	context: ExtensionContext,
 	getClient: () => LanguageClient | undefined,
 	wasm?: Wasm,
-	playbackLog?: OutputChannel
+	playbackLog?: OutputChannel,
+	mcpServer?: McpServerController
 ): VoiceViewProvider {
 	const provider = new VoiceViewProvider(context, getClient, undefined, undefined, undefined, wasm,
-		undefined, undefined, playbackLog);
+		undefined, undefined, playbackLog, mcpServer);
 	context.subscriptions.push(provider,
 		window.registerWebviewViewProvider('mmlx.voice', provider, { webviewOptions: { retainContextWhenHidden: true } }),
 		commands.registerCommand('mmlx.showVoicePanel', () => commands.executeCommand('mmlx.voice.focus')));
@@ -134,7 +136,7 @@ export class VoiceViewProvider implements WebviewViewProvider {
 		private readonly getMidiInputPorts: () => Promise<string[]> = listMidiInputPorts,
 		createInput: () => Promise<MidiInputPort> = createMidiInput, wasm?: Wasm,
 		openSerial: (path: string) => Promise<NanoDrivePort> = openNanoDrivePort, codec?: NanoDriveCodec,
-		private readonly playbackLog?: OutputChannel) {
+		private readonly playbackLog?: OutputChannel, private readonly mcpServer?: McpServerController) {
 		const threaded = !!wasm && !codec && openSerial === openNanoDrivePort;
 		this.nanodriveWorker = wasm && !threaded ? new NanoDriveWorker(context.extensionUri, wasm,
 			error => { void this.nanodrive.disconnect(error); }) : undefined;
@@ -280,6 +282,7 @@ export class VoiceViewProvider implements WebviewViewProvider {
 				else if (message?.type === 'openStarter') { void this.openStarter(); }
 				else if (message?.type === 'editVoice') { void this.edit(message); }
 				else if (message?.type === 'updateBuildSetting') { void this.updateBuildSetting(message); }
+				else if (message?.type === 'setMcpEnabled') { this.setMcpEnabled(message); }
 				else if (message?.type === 'getBuildSettings') { this.sendBuildSettings(); }
 				else if (message?.type === 'getSerialPorts') { void this.refreshSerialPorts(); }
 				else if (message?.type === 'updateSerialConnection') { void this.updateSerialConnection(message); }
@@ -602,7 +605,8 @@ export class VoiceViewProvider implements WebviewViewProvider {
 		const configuration = workspace.getConfiguration('mmlx', folder?.uri);
 		const values = Object.fromEntries(Object.entries(buildSettingsDefaults)
 			.map(([key, fallback]) => [key, configuration.get(`build.${key}`, fallback)]));
-		void this.view?.webview.postMessage({ type: 'buildSettings', values, folder: folder?.uri.toString() ?? '',
+		void this.view?.webview.postMessage({ type: 'buildSettings', values, mcpEnabled: this.mcpServer?.enabled ?? false,
+			mcpSupported: !!this.mcpServer, mcpEditable: !this.savingSettings, folder: folder?.uri.toString() ?? '',
 			source: folder ? `${folder.name}/.vscode/settings.json` : '',
 			editable: !!folder && !this.savingSettings, saving: this.savingSettings,
 			error: error || (folder ? '' : 'Open a workspace folder to edit build settings.') });
@@ -635,6 +639,20 @@ export class VoiceViewProvider implements WebviewViewProvider {
 			this.sendBuildSettings(error);
 			this.sendConnectionSettings();
 		}
+	}
+
+	private setMcpEnabled(message: { value?: unknown }): void {
+		if (this.savingSettings) { this.sendBuildSettings(); return; }
+		if (typeof message.value !== 'boolean' || !this.mcpServer) {
+			this.clearSettingsErrorNotification('mcp');
+			const error = typeof message.value !== 'boolean' ? 'Invalid MCP connection action.'
+				: 'MCP server providers are not supported by this VS Code version.';
+			this.notifySettingsError('mcp', 'MCP server', error);
+			this.sendBuildSettings(error); return;
+		}
+		this.clearSettingsErrorNotification('mcp');
+		this.mcpServer.setEnabled(message.value);
+		this.sendBuildSettings();
 	}
 
 	private sendConnectionSettings(): void {

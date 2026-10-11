@@ -1,6 +1,8 @@
 export function createSettingsControls(root, onChange = () => {}) {
 	const controls = [...root.querySelectorAll('[data-build-setting]')];
 	const fieldset = root.querySelector('#build-settings-fields');
+	const mcpConnection = root.querySelector('#mcp-connection');
+	const mcpConnect = root.querySelector('#connect-mcp');
 	const source = root.querySelector('#build-settings-source');
 	const status = root.querySelector('#build-settings-status');
 	let snapshot;
@@ -74,14 +76,29 @@ export function createSettingsControls(root, onChange = () => {}) {
 		if (message?.type !== 'buildSettings') { return; }
 		snapshot = message;
 		fieldset.disabled = !message.editable;
+		const mcpEditable = message.mcpEditable ?? message.editable;
+		mcpConnection.disabled = !mcpEditable || !message.mcpSupported;
+		mcpConnection.value = 'mmlx';
+		mcpConnect.disabled = !mcpEditable || !message.mcpSupported;
+		mcpConnect.title = `${message.mcpEnabled ? 'Disconnect' : 'Connect'} mmlx MCP`;
+		mcpConnect.setAttribute('aria-label', mcpConnect.title);
+		mcpConnect.setAttribute('aria-pressed', String(message.mcpEnabled === true));
 		source.textContent = message.source ?? '';
-		status.textContent = message.saving ? 'Saving' : '';
+		status.textContent = message.error || (message.saving ? 'Saving' : '');
 		for (const control of controls) {
 			const value = message.values?.[control.dataset.buildSetting];
 			if (control.type === 'checkbox') { control.checked = value === true; }
 			else { control.value = value === undefined ? '' : String(value); }
 		}
 	}
+
+	mcpConnect.addEventListener('click', () => {
+		if (!(snapshot?.mcpEditable ?? snapshot?.editable) || !snapshot?.mcpSupported) { return; }
+		const value = !snapshot.mcpEnabled;
+		if (snapshot.mcpEnabled === value) { return; }
+		render({ ...snapshot, mcpEnabled: value, editable: false, mcpEditable: false, saving: true });
+		onChange({ type: 'setMcpEnabled', value });
+	});
 
 	for (const control of controls) {
 		control.addEventListener('change', () => {

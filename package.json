@@ -23,7 +23,8 @@
   ],
   "activationEvents": [
     "onLanguage:mmlx",
-    "onTaskType:mmlx"
+    "onTaskType:mmlx",
+    "onMcpServerDefinitionProvider:mmlx-lsp.mcp"
   ],
   "extensionDependencies": [
     "ms-vscode.wasm-wasi-core"
@@ -85,6 +86,12 @@
         }
       ]
     },
+    "mcpServerDefinitionProviders": [
+      {
+        "id": "mmlx-lsp.mcp",
+        "label": "mmlx"
+      }
+    ],
     "taskDefinitions": [
       {
         "type": "mmlx",
@@ -305,11 +312,12 @@
     "test:helix": "node native/tree-sitter/run.mjs test",
     "vscode:prepublish": "npm run package",
     "build": "npm run build:wasm && npm run build:nanodrive-native && npm run compile",
-    "build:wasm": "npm run build:server && npm run build:compiler && npm run build:emulator && npm run build:nanodrive",
+    "build:wasm": "npm run build:server && npm run build:compiler && npm run build:emulator && npm run build:nanodrive && npm run build:mcp",
     "build:nanodrive-native": "node tools/build-nanodrive-native.cjs",
     "build:nanodrive": "cargo build --locked -j 1 --manifest-path server/Cargo.toml --features nanodrive --bin mmlx-nanodrive --release --target wasm32-wasip1-threads",
     "build:emulator": "cargo build --locked -j 1 --manifest-path server/Cargo.toml --features emulation --bin mmlx-emulator --release --target wasm32-wasip1-threads && npm run build:browser-emulator",
     "build:browser-emulator": "cargo build --locked -j 1 --manifest-path server/Cargo.toml --features emulation --bin mmlx-emulator --release --target wasm32-wasip1",
+    "build:mcp": "cargo build --locked -j 1 --manifest-path server/Cargo.toml --features mcp --bin mmlx-mcp-server --release --target wasm32-wasip1-threads",
     "build:server": "cargo build --locked -j 1 --manifest-path server/Cargo.toml --bin mmlx-lsp-server --release --target wasm32-wasip1-threads",
     "build:compiler": "cargo build --locked -j 1 --manifest-path server/Cargo.toml --bin mmlx-build --release --target wasm32-wasip1-threads",
     "test:server": "cargo test --manifest-path server/Cargo.toml",
