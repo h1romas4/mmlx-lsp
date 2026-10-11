@@ -1,6 +1,9 @@
 # mmlx-lsp
 
 MML (Music Macro Language) support for VS Code and Helix.
+
+Write MML. Hear it come alive—instantly.
+
 Currently supports the MDX (MXDRV) dialect and `.mml` files.
 
 For installation, see [VS Code](#manual-installation-in-vs-code) or
