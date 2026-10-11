@@ -2,6 +2,10 @@
 
 All notable changes to the "mmlx-lsp" extension will be documented in this file.
 
+## [0.17.1] - 2026-10-12
+
+- Disable the MCP Server dropdown while connected.
+
 ## [0.17.0] - 2026-10-12
 
 - Play selected MML passages and add editor support for formatting, commenting, and selection navigation.

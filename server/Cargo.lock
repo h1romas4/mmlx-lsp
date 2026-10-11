@@ -718,7 +718,7 @@ dependencies = [
 
 [[package]]
 name = "mmlx-lsp-server"
-version = "0.17.0"
+version = "0.17.1"
 dependencies = [
  "base64 0.22.1",
  "lsp-server",

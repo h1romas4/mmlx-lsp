@@ -3476,9 +3476,15 @@ finally:
 						assert(messages.at(-1).type === 'setMcpEnabled' && messages.at(-1).value === true, 'MCP connect click');
 						controls.render({ type: 'buildSettings', folder: 'test', editable: true, saving: false,
 							mcpEnabled: true, mcpSupported: true, values: {} });
-						assert(mcpConnect.getAttribute('aria-pressed') === 'true' && mcpConnect.title === 'Disconnect mmlx MCP', 'MCP connected state');
+						assert(mcpConnection.disabled && !mcpConnect.disabled
+							&& mcpConnect.getAttribute('aria-pressed') === 'true'
+							&& mcpConnect.title === 'Disconnect mmlx MCP',
+						'Connected MCP selector must be disabled while disconnect remains available');
 						mcpConnect.click();
 						assert(messages.at(-1).type === 'setMcpEnabled' && messages.at(-1).value === false, 'MCP disconnect click');
+						controls.render({ type: 'buildSettings', folder: 'test', editable: true, saving: false,
+							mcpEnabled: false, mcpSupported: true, values: {} });
+						assert(!mcpConnection.disabled, 'Disconnected MCP selector must be enabled');
 						controls.render({ type: 'buildSettings', folder: 'test', editable: true, saving: false,
 							mcpEnabled: false, mcpSupported: false, values: {} });
 						assert(mcpConnection.disabled && mcpConnect.disabled, 'Unsupported MCP server must be disabled');

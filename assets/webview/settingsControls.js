@@ -77,7 +77,7 @@ export function createSettingsControls(root, onChange = () => {}) {
 		snapshot = message;
 		fieldset.disabled = !message.editable;
 		const mcpEditable = message.mcpEditable ?? message.editable;
-		mcpConnection.disabled = !mcpEditable || !message.mcpSupported;
+		mcpConnection.disabled = !mcpEditable || !message.mcpSupported || message.mcpEnabled === true;
 		mcpConnection.value = 'mmlx';
 		mcpConnect.disabled = !mcpEditable || !message.mcpSupported;
 		mcpConnect.title = `${message.mcpEnabled ? 'Disconnect' : 'Connect'} mmlx MCP`;
