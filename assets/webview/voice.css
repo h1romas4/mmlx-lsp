@@ -43,6 +43,7 @@ main > section { min-width: 0; }
 header { display: flex; align-items: center; flex-wrap: wrap; gap: 12px 24px; padding-bottom: 12px; }
 #voice-controls > header { min-height: 38px; }
 .identity { display: flex; align-items: baseline; flex-wrap: wrap; gap: 12px; min-width: 0; }
+.identity #voice-label { color: var(--vscode-descriptionForeground, #666); font-size: 14px; overflow-wrap: anywhere; }
 h1 { font-size: 18px; font-weight: 600; margin: 0; }
 h1.empty { font-size: inherit; font-weight: 400; }
 .playback-header { padding: 6px 0 16px; }

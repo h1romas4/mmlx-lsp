@@ -68,6 +68,7 @@ pub fn at_position(source: &str, position: Position) -> Option<Value> {
     Some(json!({
         "number": number, "algorithm": parameters[44],
         "feedback": parameters[45], "operatorMask": parameters[46],
+        "name": crate::completion::voice_name_before(source, voice.span.start()),
         "operators": operators,
         "position": position_at(source, voice.span.start()),
         "range": Range::new(
@@ -194,7 +195,22 @@ mod tests {
             assert_eq!(voice["operators"][0]["ar"], 31);
             assert_eq!(voice["operators"][0]["tl"], 20);
             assert_eq!(voice["operators"][3]["ame"], 0);
+            assert!(voice["name"].is_null());
         }
+    }
+
+    #[test]
+    fn voice_request_returns_only_an_adjacent_semicolon_comment_as_name() {
+        let named = source().replacen("@7", "; Grand Piano\n@7", 1);
+        let voice = at_position(&named, position(&named, named.find("@7").unwrap())).unwrap();
+        assert_eq!(voice["name"], "Grand Piano");
+
+        let unnamed = source().replace(
+            "#title \"日本 🎵\"\n",
+            "#title \"日本 🎵\"\n; Detached name\n\n",
+        );
+        let voice = at_position(&unnamed, position(&unnamed, unnamed.find("@7").unwrap())).unwrap();
+        assert!(voice["name"].is_null());
     }
 
     #[test]

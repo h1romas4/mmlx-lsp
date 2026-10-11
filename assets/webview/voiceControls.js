@@ -530,7 +530,12 @@ export function createVoiceControls(root, onEdit = () => {}) {
 		const voiceName = root.querySelector('#voice-name');
 		voiceName.textContent = voice ? `@${voice.number}` : 'Move the cursor to a voice definition.';
 		voiceName.classList.toggle('empty', !voice);
-		root.querySelector('#source').textContent = voice ? message.source : '';
+		const voiceLabel = root.querySelector('#voice-label');
+		const label = typeof message.name === 'string' ? message.name.trim() : '';
+		voiceLabel.textContent = label;
+		voiceLabel.hidden = !label;
+		const source = typeof message.source === 'string' ? message.source : '';
+		root.querySelector('#source').textContent = voice && source ? `(${source})` : '';
 		root.querySelector('#summary').hidden = !voice;
 		algorithms.hidden = !voice;
 		operators.hidden = !voice;

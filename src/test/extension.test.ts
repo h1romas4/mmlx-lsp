@@ -790,10 +790,10 @@ suite('mmlx extension', () => {
 		const visibility = new vscode.EventEmitter<void>();
 		const disposed = new vscode.EventEmitter<void>();
 		type Update = { type: string; id?: number; connected?: boolean; connecting?: boolean; pcm?: ArrayBuffer;
-			voice?: unknown; playing?: boolean; mml?: string; tooLong?: boolean };
+			voice?: unknown; name?: string | null; playing?: boolean; mml?: string; tooLong?: boolean };
 		const updates: Update[] = [];
 		const changed = new vscode.EventEmitter<Update>();
-		const voice = { number: 0, algorithm: 7, feedback: 0, operatorMask: 15, position: { line: 0, character: 0 },
+		const voice = { number: 0, name: 'Grand Piano', algorithm: 7, feedback: 0, operatorMask: 15, position: { line: 0, character: 0 },
 			parameterRanges: [], range: { start: { line: 0, character: 0 }, end: { line: 6, character: 1 } },
 			operators: Array.from({ length: 4 }, () => ({ ar: 31, d1r: 0, d2r: 0, rr: 15, d1l: 0, tl: 32, ks: 0, mul: 1, dt1: 0, dt2: 0, ame: 0 })) };
 		const client = { isRunning: () => true, sendRequest: async () => voice,
@@ -816,7 +816,10 @@ suite('mmlx extension', () => {
 		}
 		try {
 			await provider.resolveWebviewView(view as unknown as vscode.WebviewView);
-			await waitFor(message => message.type === 'voice' && !!message.voice);
+			const initialVoice = await waitFor(message => message.type === 'voice' && !!message.voice);
+			assert.strictEqual(initialVoice.name, 'Grand Piano');
+			assert.strictEqual(typeof initialVoice.voice === 'object' && initialVoice.voice !== null
+				? Object.hasOwn(initialVoice.voice, 'name') : false, false);
 			editor.selection = new vscode.Selection(1, 0, 2, 3);
 			const selectedMml = document.getText(editor.selection);
 			assert.strictEqual((await waitFor(message => message.type === 'editorSelection' && !!message.mml)).mml, selectedMml,
@@ -1674,9 +1677,16 @@ suite('mmlx extension', () => {
 					lowest.dispatchEvent(new KeyboardEvent('keyup', { key: 'Enter' }));
 				}
 				const operator = { ar: 22, d1r: 0, d2r: 1, rr: 2, d1l: 1, tl: 47, ks: 2, mul: 12, dt1: 0, dt2: 0, ame: 0 };
-				const renderVoice = (operatorMask = 15, values = {}, state = {}) => send({ type: 'voice', editable: true, editToken: 42, source: 'test.mml',
+				const renderVoice = (operatorMask = 15, values = {}, state = {}, name) => send({ type: 'voice', name, editable: true, editToken: 42, source: 'test.mml',
 					voice: { number: 1, algorithm: 2, feedback: 7, operatorMask, operators: Array.from({ length: 4 }, () => ({ ...operator, ...values })) }, ...state });
 				renderVoice();
+				const voiceLabel = document.getElementById('voice-label');
+				check(voiceLabel.hidden && voiceLabel.textContent === '', 'Unnamed voices do not show a label');
+				renderVoice(15, {}, {}, 'Grand Piano');
+				check(!voiceLabel.hidden && voiceLabel.textContent === 'Grand Piano', 'Adjacent voice comment is shown beside the voice number');
+				check(document.getElementById('source').textContent === '(test.mml)', 'Source filename is shown in parentheses');
+				renderVoice();
+				check(voiceLabel.hidden && voiceLabel.textContent === '', 'Voice labels clear when no name is defined');
 				const sections = [...document.querySelectorAll('#operators .operator')];
 				const algorithmSelect = document.querySelector('#algorithm');
 				check(algorithmSelect.closest('label').hidden, 'Redundant algorithm dropdown must be hidden');

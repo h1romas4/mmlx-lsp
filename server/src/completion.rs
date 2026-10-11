@@ -285,7 +285,7 @@ fn defined_voice_items(
         .collect()
 }
 
-fn voice_name_before(source: &str, definition_start: usize) -> Option<String> {
+pub(crate) fn voice_name_before(source: &str, definition_start: usize) -> Option<String> {
     let line_start = source[..definition_start]
         .rfind('\n')
         .map_or(0, |index| index + 1);

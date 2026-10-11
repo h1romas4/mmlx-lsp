@@ -25,6 +25,10 @@ interface VoiceDefinition {
 	parameterRanges: { start: { line: number; character: number }; end: { line: number; character: number } }[];
 }
 
+interface VoiceAtPosition extends VoiceDefinition {
+	name?: string | null;
+}
+
 interface SerialPortInfo {
 	path: string;
 	manufacturer?: string;
@@ -121,8 +125,8 @@ export class VoiceViewProvider implements WebviewViewProvider {
 	private pendingBends = new Map<string, Extract<NanoDriveInput, { type: 'pitchBend' }>>();
 	private midiFolder = '';
 	private editTarget: { document: TextDocument; version: number; token: number; voice: VoiceDefinition } | undefined;
-	private snapshot: { voice: VoiceDefinition | null; source: string; retained: boolean; error: boolean } = {
-		voice: null, source: '', retained: false, error: false
+	private snapshot: { voice: VoiceDefinition | null; name?: string | null; source: string; retained: boolean; error: boolean } = {
+		voice: null, name: null, source: '', retained: false, error: false
 	};
 
 	constructor(private readonly context: ExtensionContext, private readonly getClient: () => LanguageClient | undefined,
@@ -245,7 +249,7 @@ export class VoiceViewProvider implements WebviewViewProvider {
 					this.editor = undefined;
 					this.sequence++;
 					this.editTarget = undefined;
-					this.snapshot = { voice: null, source: '', retained: false, error: false };
+					this.snapshot = { voice: null, name: null, source: '', retained: false, error: false };
 					this.send();
 				}
 			})
@@ -890,12 +894,18 @@ export class VoiceViewProvider implements WebviewViewProvider {
 		const document = editor.document;
 		const version = document.version;
 		try {
-			const voice = await client.sendRequest<VoiceDefinition | null>('mmlx/voiceAtPosition',
+			const response = await client.sendRequest<VoiceAtPosition | null>('mmlx/voiceAtPosition',
 				client.code2ProtocolConverter.asTextDocumentPositionParams(document, position ?? editor.selection.active));
 			if (sequence !== this.sequence || document.version !== version || document.isClosed) { return; }
-			this.snapshot = voice
-				? { voice, source: basename(document.uri.path), retained: false, error: false }
-				: { ...this.snapshot, retained: this.snapshot.voice !== null, error: false };
+			let voice: VoiceDefinition | null = response;
+			if (response) {
+				const { name, ...definition } = response;
+				voice = definition;
+				this.snapshot = { voice, name: typeof name === 'string' ? name : null,
+					source: basename(document.uri.path), retained: false, error: false };
+			} else {
+				this.snapshot = { ...this.snapshot, retained: this.snapshot.voice !== null, error: false };
+			}
 			this.editTarget = voice?.parameterRanges?.length === 47
 				? { document, version, token: ++this.editToken, voice } : undefined;
 			this.send();

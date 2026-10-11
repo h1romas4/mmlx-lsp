@@ -1,6 +1,7 @@
 #title "My first song"
 
 ; Park your cursor in this voice, then give it a spin in the mmlx panel's FM Voice tab.
+; Synth Brass
 @1 = {
     /* AR  D1R D2R RR D1L  TL KS MUL DT1 DT2 AME */
         28, 4,  0,  5,  1, 37, 2,  1,  7,  0,  0,
