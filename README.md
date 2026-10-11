@@ -21,6 +21,7 @@ For installation, see [VS Code](#manual-installation-in-vs-code) or
 - **Built-in VS Code build tasks** for MML to MDX and MML/MDX to VGM.
 - **FM Voice panel** with cursor-linked operator envelopes and two-way parameter editing.
 - **MML playback** with editor highlighting that follows the playback position.
+- **Real-chip playback** with [NanoDrive8](https://github.com/Fujix1/NanoDrive8)—bring your MML to life on authentic hardware.
 
 ## Usage
 
