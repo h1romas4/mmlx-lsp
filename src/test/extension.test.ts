@@ -1211,13 +1211,23 @@ suite('mmlx extension', () => {
 		const events = new vscode.EventEmitter<void>();
 		const messages = new vscode.EventEmitter<unknown>();
 		const changed = new vscode.EventEmitter<void>();
+		const wasm = await Wasm.load();
+		const playbackLog: string[] = [];
+		const playbackOutput = { appendLine: (message: string) => playbackLog.push(message) } as unknown as vscode.OutputChannel;
+		const notifications: string[] = [];
+		const showErrorMessage = vscode.window.showErrorMessage;
+		vscode.window.showErrorMessage = ((message: string) => {
+			notifications.push(message);
+			return Promise.resolve(undefined);
+		}) as typeof showErrorMessage;
 		let state: Record<string, unknown> = {};
 		let blocks = 0;
 		const keyMessages: { id: number; keys: FmKeyEvent[] }[] = [];
 		let browserInit: Record<string, unknown> | undefined;
 		let browserAsset: Record<string, unknown> | undefined;
 		const provider = new VoiceViewProvider(context as unknown as vscode.ExtensionContext, () => undefined,
-			async () => [], async () => [], async () => { throw new Error('MIDI is not used'); }, await Wasm.load());
+			async () => [], async () => [], async () => { throw new Error('MIDI is not used'); }, wasm,
+			undefined, undefined, playbackOutput);
 		const sources = Reflect.get(provider, 'playbackSources') as PlaybackSourceTracker;
 		assert.ok(sources);
 		async function highlighted(token: string): Promise<void> {
@@ -1248,6 +1258,7 @@ suite('mmlx extension', () => {
 		}
 		try {
 			await provider.resolveWebviewView(view);
+			assert.ok(!view.webview.html.includes('id="playback-error"'), 'Playback errors are not rendered in the panel');
 			assert.strictEqual(state.available, true);
 			assert.ok(!view.webview.html.includes('OKI ADPCM is not supported yet'));
 			messages.fire({ type: 'playbackAction', action: 'play', id: 1, document: document.uri.toString(), sampleRate: 48000 });
@@ -1302,6 +1313,8 @@ suite('mmlx extension', () => {
 			messages.fire({ type: 'playbackAction', action: 'playFromCursor', id: 4, document: document.uri.toString(), sampleRate: 48000 });
 			await until(() => state.loading === false && state.id === 4 && !!state.error);
 			assert.match(String(state.error), /No playable command/);
+			assert.ok(notifications.some(message => message.includes('No playable command')));
+			assert.ok(playbackLog.some(message => message.includes('No playable command')));
 			messages.fire({ type: 'playbackAction', action: 'play', id: 5, document: document.uri.toString(), sampleRate: 48000 });
 			messages.fire({ type: 'playbackAction', action: 'stop', id: 5 });
 			assert.strictEqual(state.loading, false); assert.strictEqual(state.playing, false);
@@ -1344,6 +1357,7 @@ suite('mmlx extension', () => {
 			messages.fire({ type: 'playbackAction', action: 'stop', id: 7 });
 		} finally {
 			provider.dispose();
+			vscode.window.showErrorMessage = showErrorMessage;
 			for (const disposable of context.subscriptions) { disposable.dispose(); }
 			events.dispose(); messages.dispose(); changed.dispose();
 		}
@@ -1626,7 +1640,7 @@ suite('mmlx extension', () => {
 				send({ type: 'midiNotes', notes: [64] });
 				check(document.querySelector('#keyboard [data-midi-note="64"]').classList.contains('is-active'), 'MIDI feedback must remain independent of output');
 				send({ ...midi, connected: false, error: 'MIDI test error' });
-				check(badge.hidden && document.getElementById('midi-settings-status').textContent === 'MIDI test error', 'Disconnect must hide badge and preserve errors');
+				check(badge.hidden && document.getElementById('midi-settings-status').textContent === '', 'Disconnect must hide badge without showing the error in Settings');
 				send({ type: 'outputConnection', target: 'keyboard', id: 0, connected: true, connecting: false });
 				const body = keyboard.querySelector('.p-keyboard__body');
 				for (const [width, note, label] of [[800, 36, 'C2'], [320, 48, 'C3'], [800, 36, 'C2']]) {
@@ -2110,6 +2124,12 @@ suite('mmlx extension', () => {
 		let failure = false;
 		let openFailure = false;
 		let destroyed = 0;
+		const notifications: string[] = [];
+		const showErrorMessage = vscode.window.showErrorMessage;
+		vscode.window.showErrorMessage = ((message: string) => {
+			notifications.push(message);
+			return Promise.resolve(undefined);
+		}) as typeof showErrorMessage;
 		const inputs: NodeEventEmitter[] = [];
 		let notes: number[] = [];
 		const noteEvents: unknown[] = [];
@@ -2166,6 +2186,7 @@ suite('mmlx extension', () => {
 			openFailure = true;
 			messages.fire({ type: 'setMidiInputConnection', folder: folder.uri.toString(), connected: true });
 			await waitFor(message => message.error === 'MIDI open failed');
+			assert.ok(notifications.includes('MIDI input: MIDI open failed'));
 			assert.strictEqual(destroyed, 1);
 			assert.strictEqual(view.badge, undefined);
 			openFailure = false;
@@ -2194,6 +2215,7 @@ suite('mmlx extension', () => {
 			failure = true;
 			messages.fire({ type: 'getMidiInputPorts' });
 			await waitFor(message => !message.loading && message.error === 'MIDI enumeration failed');
+			assert.ok(notifications.includes('MIDI input: MIDI enumeration failed'));
 			failure = false;
 			ports = ['Keyboard 2'];
 			messages.fire({ type: 'getMidiInputPorts' });
@@ -2234,6 +2256,7 @@ suite('mmlx extension', () => {
 		} finally {
 			provider.dispose();
 			for (const subscription of context.subscriptions) { subscription.dispose(); }
+			vscode.window.showErrorMessage = showErrorMessage;
 			await configuration.update('midi.input', previous, vscode.ConfigurationTarget.WorkspaceFolder);
 			events.dispose(); messages.dispose(); updates.dispose();
 		}
@@ -3309,7 +3332,7 @@ finally:
 						controls.render({ ...base, closing: true, phase: 'Disconnecting' });
 						assert(button.disabled && select.disabled, 'Closing state');
 						controls.render({ ...base, canConnect: false, error: 'Unsupported firmware' });
-						assert(button.disabled && status.textContent === 'Unsupported firmware', 'Error state');
+						assert(button.disabled && status.textContent === '', 'Errors must not appear in Settings');
 						controls.render({ ...base, nativeAvailable: true });
 						native.click();
 						assert(messages.at(-1).type === 'updateSerialNative' && messages.at(-1).value === true && native.disabled, 'Native selection saves and locks while saving');
@@ -3340,7 +3363,7 @@ finally:
 								const build = document.querySelector('[aria-labelledby="build-settings-heading"]');
 								const top = build.getBoundingClientRect().top;
 								document.getElementById('refresh-' + prefix + '-ports').click();
-								assert(messages.at(-1).type === refreshType && message.textContent.startsWith('Loading'), prefix + ' refresh');
+								assert(messages.at(-1).type === refreshType && message.textContent === '', prefix + ' refresh must not show a loading message');
 								assert(Math.abs(message.getBoundingClientRect().height - height) < 0.5, prefix + ' message height changed while refreshing at ' + width);
 								assert(Math.abs(build.getBoundingClientRect().top - top) < 0.5, prefix + ' refresh moved Build at ' + width);
 								assert(Math.abs(message.getBoundingClientRect().left - bounds.left) < 0.5 && Math.abs(select.getBoundingClientRect().width - selectBounds.width) < 0.5, prefix + ' refresh moved controls at ' + width);
@@ -3348,7 +3371,7 @@ finally:
 								assert(Math.abs(build.getBoundingClientRect().top - top) < 0.5, prefix + ' completed refresh moved Build at ' + width);
 								const error = 'Connection error '.repeat(20);
 								controls.render({ ...settings, error });
-								assert(message.textContent === error && message.title === error, prefix + ' must preserve the full error');
+								assert(message.textContent === '' && message.title === '', prefix + ' must not show errors in Settings');
 								assert(Math.abs(message.getBoundingClientRect().height - height) < 0.5, prefix + ' long error resized the message at ' + width);
 								assert(Math.abs(build.getBoundingClientRect().top - top) < 0.5, prefix + ' long error moved Build at ' + width);
 								assert(Math.abs(message.getBoundingClientRect().left - bounds.left) < 0.5 && Math.abs(select.getBoundingClientRect().width - selectBounds.width) < 0.5, prefix + ' long error moved controls at ' + width);
@@ -3381,6 +3404,12 @@ finally:
 		let ports = [{ path: '/dev/ttyUSB10', manufacturer: 'NanoDrive8' }, { path: '/dev/ttyUSB2', manufacturer: 'USB' },
 			{ path: '/dev/ttyUSB2', manufacturer: 'USB' }];
 		let failure = false;
+		const notifications: string[] = [];
+		const showErrorMessage = vscode.window.showErrorMessage;
+		vscode.window.showErrorMessage = ((message: string) => {
+			notifications.push(message);
+			return Promise.resolve(undefined);
+		}) as typeof showErrorMessage;
 		function waitFor(predicate: (message: SerialMessage) => boolean): Promise<SerialMessage> {
 			if (latest && predicate(latest)) { return Promise.resolve(latest); }
 			return new Promise((resolve, reject) => {
@@ -3438,6 +3467,8 @@ finally:
 			failure = true;
 			messages.fire({ type: 'getSerialPorts' });
 			await waitFor(message => !message.loading && message.error === 'Enumeration failed');
+			assert.ok(notifications.includes('NanoDrive8: Enumeration failed'));
+			assert.strictEqual(notifications.filter(message => message === 'NanoDrive8: Enumeration failed').length, 1);
 			messages.fire({ type: 'updateSerialConnection', folder: folder.uri.toString(), value: '' });
 			await waitFor(message => message.editable && message.connection === '');
 			await configuration.update('serial.connection', '/dev/external', vscode.ConfigurationTarget.WorkspaceFolder);
@@ -3445,6 +3476,7 @@ finally:
 		} finally {
 			provider.dispose();
 			for (const subscription of context.subscriptions) { subscription.dispose(); }
+			vscode.window.showErrorMessage = showErrorMessage;
 			await configuration.update('serial.connection', previous, vscode.ConfigurationTarget.WorkspaceFolder);
 			await configuration.update('serial.windowsNative', previousNative, vscode.ConfigurationTarget.WorkspaceFolder);
 			events.dispose(); messages.dispose(); updates.dispose();
@@ -3470,6 +3502,12 @@ finally:
 			error: string; values: Record<string, unknown> };
 		const updates = new vscode.EventEmitter<SettingsMessage>();
 		let latest: SettingsMessage | undefined;
+		const notifications: string[] = [];
+		const showErrorMessage = vscode.window.showErrorMessage;
+		vscode.window.showErrorMessage = ((message: string) => {
+			notifications.push(message);
+			return Promise.resolve(undefined);
+		}) as typeof showErrorMessage;
 		function waitFor(predicate: (message: SettingsMessage) => boolean): Promise<SettingsMessage> {
 			if (latest && predicate(latest)) { return Promise.resolve(latest); }
 			return new Promise((resolve, reject) => {
@@ -3503,6 +3541,7 @@ finally:
 				messages.fire({ type: 'updateBuildSetting', folder: folder.uri.toString(), key, value });
 				assert.ok(latest?.error);
 			}
+			assert.ok(notifications.includes('Build settings: Invalid build setting.'));
 			messages.fire({ type: 'updateBuildSetting', folder: 'file:///wrong-folder', key: 'format', value: 'mdx' });
 			assert.strictEqual(vscode.workspace.getConfiguration('mmlx', folder.uri).get('build.format'), 'vgm');
 			await configuration.update('build.format', 'mdx', vscode.ConfigurationTarget.WorkspaceFolder);
@@ -3510,6 +3549,7 @@ finally:
 		} finally {
 			provider.dispose();
 			for (const subscription of context.subscriptions) { subscription.dispose(); }
+			vscode.window.showErrorMessage = showErrorMessage;
 			for (const [index, key] of keys.entries()) {
 				await configuration.update(`build.${key}`, previous[index], vscode.ConfigurationTarget.WorkspaceFolder);
 			}

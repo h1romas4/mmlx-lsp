@@ -11,7 +11,8 @@ let voiceView: VoiceViewProvider | undefined;
 
 export async function activate(context: ExtensionContext): Promise<void> {
 	const channel = window.createOutputChannel('mmlx Language Server', { log: true });
-	context.subscriptions.push(channel);
+	const playbackLog = window.createOutputChannel('mmlx');
+	context.subscriptions.push(channel, playbackLog);
 	channel.appendLine('Activating mmlx language support.');
 	const wasm = await Wasm.load();
 	channel.appendLine('WASI runtime loaded.');
@@ -61,7 +62,7 @@ export async function activate(context: ExtensionContext): Promise<void> {
 	});
 	await client.start();
 	registerTrackLengthStatus(context, () => client, channel);
-	voiceView = registerVoiceView(context, () => client, wasm);
+	voiceView = registerVoiceView(context, () => client, wasm, playbackLog);
 	context.subscriptions.push(commands.registerCommand('mmlx.showVoiceReferences', async (
 		documentUri: string | { scheme: string; authority?: string; path?: string; query?: string; fragment?: string },
 		position: { line: number; character: number },

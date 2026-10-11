@@ -63,8 +63,14 @@ const buildSettingsValidators: Record<keyof typeof buildSettingsDefaults, (value
 	maxTicks: value => typeof value === 'number' && Number.isInteger(value) && value >= 1 && value <= 4294967295
 };
 
-export function registerVoiceView(context: ExtensionContext, getClient: () => LanguageClient | undefined, wasm?: Wasm): VoiceViewProvider {
-	const provider = new VoiceViewProvider(context, getClient, undefined, undefined, undefined, wasm);
+export function registerVoiceView(
+	context: ExtensionContext,
+	getClient: () => LanguageClient | undefined,
+	wasm?: Wasm,
+	playbackLog?: OutputChannel
+): VoiceViewProvider {
+	const provider = new VoiceViewProvider(context, getClient, undefined, undefined, undefined, wasm,
+		undefined, undefined, playbackLog);
 	context.subscriptions.push(provider,
 		window.registerWebviewViewProvider('mmlx.voice', provider, { webviewOptions: { retainContextWhenHidden: true } }),
 		commands.registerCommand('mmlx.showVoicePanel', () => commands.executeCommand('mmlx.voice.focus')));
@@ -79,6 +85,7 @@ export class VoiceViewProvider implements WebviewViewProvider {
 	private editToken = 0;
 	private editing = false;
 	private savingSettings = false;
+	private readonly settingsErrorNotifications = new Map<string, string>();
 	private serialPorts: SerialPortInfo[] = [];
 	private serialLoading = false;
 	private serialError = '';
@@ -101,6 +108,7 @@ export class VoiceViewProvider implements WebviewViewProvider {
 	private browserPdxLoader?: (name: string) => Promise<Uint8Array>;
 	private playbackMode = 'emulation';
 	private playbackId = 0;
+	private lastPlaybackError = '';
 	private playbackState = { playing: false, paused: false, loading: false, position: 0, finished: false, error: '' };
 	private playbackMuted = 0;
 	private outputId = 0;
@@ -121,7 +129,8 @@ export class VoiceViewProvider implements WebviewViewProvider {
 		private readonly getSerialPorts: () => Promise<SerialPortInfo[]> = listSerialPorts,
 		private readonly getMidiInputPorts: () => Promise<string[]> = listMidiInputPorts,
 		createInput: () => Promise<MidiInputPort> = createMidiInput, wasm?: Wasm,
-		openSerial: (path: string) => Promise<NanoDrivePort> = openNanoDrivePort, codec?: NanoDriveCodec) {
+		openSerial: (path: string) => Promise<NanoDrivePort> = openNanoDrivePort, codec?: NanoDriveCodec,
+		private readonly playbackLog?: OutputChannel) {
 		const threaded = !!wasm && !codec && openSerial === openNanoDrivePort;
 		this.nanodriveWorker = wasm && !threaded ? new NanoDriveWorker(context.extensionUri, wasm,
 			error => { void this.nanodrive.disconnect(error); }) : undefined;
@@ -132,7 +141,12 @@ export class VoiceViewProvider implements WebviewViewProvider {
 		const callbacks: ConstructorParameters<typeof NanoDriveThreadClient> = [
 			Uri.joinPath(context.extensionUri, 'dist', 'nanodriveThread.js').fsPath,
 			Uri.joinPath(context.extensionUri, 'server', 'target', 'wasm32-wasip1-threads', 'release', 'mmlx-nanodrive.wasm').fsPath,
-			() => { this.updateConnectionMarker(); this.sendSerialSettings(); }, state => {
+			state => {
+				if (state.error) { this.notifySettingsError('serial', 'NanoDrive8', state.error); }
+				else { this.clearSettingsErrorNotification('serial'); }
+				this.updateConnectionMarker();
+				this.sendSerialSettings();
+			}, state => {
 			if (this.keyboardOutputMode !== 'nanodrive8') { return; }
 			if (state.connected) { this.nanodrive.setVoice(this.snapshot.voice); this.restorePitchBends(); }
 			void this.view?.webview.postMessage({ type: 'outputConnection', target: 'keyboard', mode: 'nanodrive8', id: this.outputId, ...state });
@@ -196,7 +210,11 @@ export class VoiceViewProvider implements WebviewViewProvider {
 				if (changed) { this.sendPlayback(); }
 			}, undefined,
 			keys => { if (this.playbackMode === 'emulation') { void this.view?.webview.postMessage({ type: 'playbackKeys', id: this.playbackId, mode: 'emulation', keys }); } }) : undefined;
-		this.midiInput = new MidiInputConnection(() => this.sendMidiSettings(), createInput,
+		this.midiInput = new MidiInputConnection(state => {
+			if (state.error) { this.notifySettingsError('midi', 'MIDI input', state.error); }
+			else { this.clearSettingsErrorNotification('midi'); }
+			this.sendMidiSettings();
+		}, createInput,
 			notes => { void this.view?.webview.postMessage({ type: 'midiNotes', notes }); },
 			event => {
 				this.note({ ...event, source: 1 });
@@ -454,6 +472,7 @@ export class VoiceViewProvider implements WebviewViewProvider {
 	}
 
 	private sendPlayback(): void {
+		this.reportPlaybackError(this.playbackState.error);
 		const document = this.playbackDocument;
 		void this.view?.webview.postMessage({ type: 'playback', id: this.playbackId,
 			available: !!document && !document.isClosed && workspace.isTrusted && (!!this.playback || this.nanodriveAvailable),
@@ -480,6 +499,7 @@ export class VoiceViewProvider implements WebviewViewProvider {
 
 	private async playbackAction(message: { action?: unknown; mode?: unknown; id?: unknown; document?: unknown; sampleRate?: unknown; browser?: unknown; looped?: unknown; volume?: unknown; muted?: unknown; error?: unknown }): Promise<void> {
 		if (!Number.isSafeInteger(message.id)) { return; }
+		try {
 		if (message.action === 'play' || message.action === 'playFromCursor') {
 			const document = this.playbackDocument;
 			const hardware = message.mode === 'nanodrive8';
@@ -496,6 +516,7 @@ export class VoiceViewProvider implements WebviewViewProvider {
 			this.playbackId = message.id as number;
 			this.playbackMode = hardware ? 'nanodrive8' : 'emulation';
 			this.browserPlayback = !hardware && message.browser === true;
+			this.reportPlaybackError('');
 			if (this.browserPlayback) { this.playbackConnected = false; }
 			this.playbackMuted = Number.isInteger(message.muted) && (message.muted as number) >= 0 && (message.muted as number) <= 511 ? message.muted as number : 0;
 			this.playbackState = { playing: false, paused: false, loading: true, position: 0, finished: false, error: '' };
@@ -535,11 +556,35 @@ export class VoiceViewProvider implements WebviewViewProvider {
 				this.playbackState.paused = false; this.playbackState.playing = true; this.sendPlayback();
 			}
 		}
+		} catch (failure) {
+			this.stopPlayback(true, failure instanceof Error ? failure.message : String(failure));
+		}
+	}
+
+	private reportPlaybackError(error: string): void {
+		if (!error) {
+			this.lastPlaybackError = '';
+			return;
+		}
+		if (error === this.lastPlaybackError) { return; }
+		this.lastPlaybackError = error;
+		this.playbackLog?.appendLine(`${new Date().toISOString()} Playback error: ${error}`);
+		void window.showErrorMessage(`Playback: ${error}`);
 	}
 
 	private buildSettingsFolder() {
 		const resource = window.activeTextEditor?.document.uri ?? this.editor?.document.uri;
 		return (resource ? workspace.getWorkspaceFolder(resource) : undefined) ?? workspace.workspaceFolders?.[0];
+	}
+
+	private clearSettingsErrorNotification(source: string): void {
+		this.settingsErrorNotifications.delete(source);
+	}
+
+	private notifySettingsError(source: string, label: string, message: string): void {
+		if (!message || this.settingsErrorNotifications.get(source) === message) { return; }
+		this.settingsErrorNotifications.set(source, message);
+		void window.showErrorMessage(`${label}: ${message}`);
 	}
 
 	private sendBuildSettings(error = ''): void {
@@ -561,8 +606,11 @@ export class VoiceViewProvider implements WebviewViewProvider {
 		}
 		if (typeof key !== 'string' || !Object.prototype.hasOwnProperty.call(buildSettingsValidators, key)
 			|| !buildSettingsValidators[key as keyof typeof buildSettingsDefaults](value)) {
+			this.clearSettingsErrorNotification('build');
+			this.notifySettingsError('build', 'Build settings', 'Invalid build setting.');
 			this.sendBuildSettings('Invalid build setting.'); return;
 		}
+		this.clearSettingsErrorNotification('build');
 		this.savingSettings = true;
 		this.sendBuildSettings();
 		this.sendConnectionSettings();
@@ -571,6 +619,7 @@ export class VoiceViewProvider implements WebviewViewProvider {
 			await workspace.getConfiguration('mmlx', folder.uri).update(`build.${key}`, value, ConfigurationTarget.WorkspaceFolder);
 		} catch (failure) {
 			error = failure instanceof Error ? failure.message : 'Could not save build settings.';
+			this.notifySettingsError('build', 'Build settings', error);
 		} finally {
 			this.savingSettings = false;
 			this.sendBuildSettings(error);
@@ -608,21 +657,37 @@ export class VoiceViewProvider implements WebviewViewProvider {
 		if (!folder || message.folder !== folder.uri.toString() || typeof message.connected !== 'boolean') {
 			this.sendSerialSettings(); return;
 		}
-		if (!message.connected) { await this.nanodrive.disconnect(); return; }
+		this.clearSettingsErrorNotification('serial');
+		if (!message.connected) {
+			try { await this.nanodrive.disconnect(); }
+			catch (failure) {
+				const error = failure instanceof Error ? failure.message : String(failure);
+				this.notifySettingsError('serial', 'NanoDrive8', error);
+				this.sendSerialSettings(error);
+			}
+			return;
+		}
 		const state = this.nanodrive.state;
 		if (!workspace.isTrusted || !this.nanodriveAvailable || this.savingSettings || this.serialLoading || state.connected || state.connecting || state.closing) {
 			this.sendSerialSettings(); return;
 		}
 		const connection = workspace.getConfiguration('mmlx', folder.uri).get<string>('serial.connection', '');
 		if (!connection || !this.serialPorts.some(port => port.path === connection)) {
+			this.notifySettingsError('serial', 'NanoDrive8', 'Select an available NanoDrive8 port.');
 			this.sendSerialSettings('Select an available NanoDrive8 port.'); return;
 		}
 		this.serialFolder = folder.uri.toString();
-		await this.nanodrive.connect(connection);
+		try { await this.nanodrive.connect(connection); }
+		catch (failure) {
+			const error = failure instanceof Error ? failure.message : String(failure);
+			this.notifySettingsError('serial', 'NanoDrive8', error);
+			this.sendSerialSettings(error);
+		}
 	}
 
 	private async refreshSerialPorts(): Promise<void> {
 		if (this.serialLoading) { this.sendSerialSettings(); return; }
+		this.clearSettingsErrorNotification('serial');
 		this.serialLoading = true;
 		this.serialError = '';
 		this.sendSerialSettings();
@@ -636,6 +701,7 @@ export class VoiceViewProvider implements WebviewViewProvider {
 		} catch (failure) {
 			this.serialPorts = [];
 			this.serialError = failure instanceof Error ? failure.message : 'Could not list serial ports.';
+			this.notifySettingsError('serial', 'NanoDrive8', this.serialError);
 		} finally {
 			this.serialLoading = false;
 			this.sendSerialSettings();
@@ -649,9 +715,12 @@ export class VoiceViewProvider implements WebviewViewProvider {
 			|| state.connected || state.connecting || state.closing) {
 			this.sendSerialSettings(); return;
 		}
+		this.clearSettingsErrorNotification('serial');
 		if (native ? typeof message.value !== 'boolean' || (message.value && (process.platform !== 'win32' || process.arch !== 'x64'))
 			: typeof message.value !== 'string' || (message.value !== '' && !this.serialPorts.some(port => port.path === message.value))) {
-			this.sendSerialSettings(native ? 'Windows native requires Windows x64 and a boolean setting.' : 'Invalid serial port.'); return;
+			const error = native ? 'Windows native requires Windows x64 and a boolean setting.' : 'Invalid serial port.';
+			this.notifySettingsError('serial', 'NanoDrive8 settings', error);
+			this.sendSerialSettings(error); return;
 		}
 		this.savingSettings = true;
 		this.sendBuildSettings();
@@ -661,6 +730,7 @@ export class VoiceViewProvider implements WebviewViewProvider {
 			await workspace.getConfiguration('mmlx', folder.uri).update(native ? 'serial.windowsNative' : 'serial.connection', message.value, ConfigurationTarget.WorkspaceFolder);
 		} catch (failure) {
 			error = failure instanceof Error ? failure.message : 'Could not save connection settings.';
+			this.notifySettingsError('serial', 'NanoDrive8 settings', error);
 		} finally {
 			this.savingSettings = false;
 			this.sendBuildSettings();
@@ -703,19 +773,27 @@ export class VoiceViewProvider implements WebviewViewProvider {
 		if (!folder || message.folder !== folder.uri.toString() || typeof message.connected !== 'boolean') {
 			this.sendMidiSettings(); return;
 		}
+		this.clearSettingsErrorNotification('midi');
 		if (!message.connected) { this.midiInput.disconnect(); return; }
 		const connection = workspace.getConfiguration('mmlx', folder.uri).get<string>('midi.input', '');
 		if (!workspace.isTrusted || this.savingSettings || this.midiLoading || this.midiInput.state.connecting
 			|| this.midiInput.state.connected) { this.sendMidiSettings(); return; }
 		if (!connection || !this.midiPorts.includes(connection)) {
+			this.notifySettingsError('midi', 'MIDI input', 'Select an available MIDI input port.');
 			this.sendMidiSettings('Select an available MIDI input port.'); return;
 		}
 		this.midiFolder = folder.uri.toString();
-		await this.midiInput.connect(connection);
+		try { await this.midiInput.connect(connection); }
+		catch (failure) {
+			const error = failure instanceof Error ? failure.message : String(failure);
+			this.notifySettingsError('midi', 'MIDI input', error);
+			this.sendMidiSettings(error);
+		}
 	}
 
 	private async refreshMidiInputPorts(): Promise<void> {
 		if (this.midiLoading) { this.sendMidiSettings(); return; }
+		this.clearSettingsErrorNotification('midi');
 		this.midiLoading = true;
 		this.midiError = '';
 		this.sendMidiSettings();
@@ -728,6 +806,7 @@ export class VoiceViewProvider implements WebviewViewProvider {
 		} catch (failure) {
 			this.midiPorts = [];
 			this.midiError = failure instanceof Error ? failure.message : 'Could not list MIDI input ports.';
+			this.notifySettingsError('midi', 'MIDI input', this.midiError);
 		} finally {
 			this.midiLoading = false;
 			this.sendMidiSettings();
@@ -740,7 +819,9 @@ export class VoiceViewProvider implements WebviewViewProvider {
 			|| this.midiInput.state.connected || this.midiInput.state.connecting) {
 			this.sendMidiSettings(); return;
 		}
+		this.clearSettingsErrorNotification('midi');
 		if (typeof message.value !== 'string' || (message.value !== '' && !this.midiPorts.includes(message.value))) {
+			this.notifySettingsError('midi', 'MIDI input settings', 'Invalid MIDI input port.');
 			this.sendMidiSettings('Invalid MIDI input port.'); return;
 		}
 		this.savingSettings = true;
@@ -751,6 +832,7 @@ export class VoiceViewProvider implements WebviewViewProvider {
 			await workspace.getConfiguration('mmlx', folder.uri).update('midi.input', message.value, ConfigurationTarget.WorkspaceFolder);
 		} catch (failure) {
 			error = failure instanceof Error ? failure.message : 'Could not save MIDI input settings.';
+			this.notifySettingsError('midi', 'MIDI input settings', error);
 		} finally {
 			this.savingSettings = false;
 			this.sendBuildSettings();

@@ -31,7 +31,7 @@ export function createSettingsControls(root, onChange = () => {}) {
 				connect.setAttribute('aria-label', connect.title);
 				connect.setAttribute('aria-pressed', String(!!message.connected));
 			}
-			status.textContent = message.error || message.phase || (message.loading ? `Loading ${label} ports` : message.saving ? 'Saving'
+			status.textContent = message.phase || (message.saving ? 'Saving'
 				: message.connected ? (prefix === 'midi' ? '' : `${message.model} / FW ${message.firmware}`)
 				: message.ports.length === 0 ? `No ${label} ports found` : '');
 			status.title = status.textContent;
@@ -75,7 +75,7 @@ export function createSettingsControls(root, onChange = () => {}) {
 		snapshot = message;
 		fieldset.disabled = !message.editable;
 		source.textContent = message.source ?? '';
-		status.textContent = message.error || (message.saving ? 'Saving' : '');
+		status.textContent = message.saving ? 'Saving' : '';
 		for (const control of controls) {
 			const value = message.values?.[control.dataset.buildSetting];
 			if (control.type === 'checkbox') { control.checked = value === true; }

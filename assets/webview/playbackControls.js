@@ -17,7 +17,6 @@ export function createPlaybackControls(root, onModeChange = () => {}, onAction =
 	const loop = root.querySelector('#playback-loop');
 	const volume = root.querySelector('#playback-volume');
 	const time = root.querySelector('#playback-time');
-	const error = root.querySelector('#playback-error');
 	let snapshot;
 	let nanoDriveAvailable = false;
 	let looped = false;
@@ -95,8 +94,6 @@ export function createPlaybackControls(root, onModeChange = () => {}, onAction =
 			const seconds = Math.max(0, Math.floor(state?.position || 0));
 			setText(time, `${Math.floor(seconds / 60)}:${String(seconds % 60).padStart(2, '0')}`);
 		}
-		setText(error, state?.error || '');
-		error.hidden = !state?.error;
 	}
 	mode.addEventListener('change', () => { onModeChange(mode.value); render(snapshot); });
 	play.addEventListener('click', () => onAction(snapshot?.playing ? 'pause' : snapshot?.paused ? 'resume' : 'play'));
