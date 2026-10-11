@@ -57,6 +57,10 @@ enum Operation {
     PlaybackFilter {
         bytes: Vec<u8>,
     },
+    PlaybackPrepare {
+        bytes: Vec<u8>,
+        position: u32,
+    },
     PlaybackMute {
         muted: u16,
         #[serde(rename = "requestId")]
@@ -399,6 +403,10 @@ impl Bridge {
             Operation::PlaybackFilter { bytes } => {
                 self.playback.as_ref().ok_or("Playback not initialized")?;
                 Ok(Output::Bytes(self.mute.filter(&bytes)?, None))
+            }
+            Operation::PlaybackPrepare { bytes, position } => {
+                self.playback.as_ref().ok_or("Playback not initialized")?;
+                Ok(Output::Bytes(self.mute.prepare(&bytes, position)?, None))
             }
             Operation::PlaybackMute {
                 muted,

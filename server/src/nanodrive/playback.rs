@@ -147,18 +147,52 @@ impl Playback {
     }
 }
 
-#[derive(Default)]
+#[derive(Clone, Default)]
 pub struct MuteFilter {
     mute: PlaybackMute,
+    checkpoints: std::collections::VecDeque<(u32, PlaybackMute)>,
+    checkpoint_position: u32,
 }
 
 impl MuteFilter {
+    pub fn prepare(&mut self, bytes: &[u8], position: u32) -> Result<Vec<u8>, String> {
+        if self.checkpoints.is_empty() {
+            self.checkpoints
+                .push_back((self.checkpoint_position, self.mute.clone()));
+        }
+        let output = self.filter(bytes)?;
+        if self
+            .checkpoints
+            .back()
+            .is_some_and(|(end, _)| *end == position)
+        {
+            self.checkpoints.pop_back();
+        }
+        self.checkpoints.push_back((position, self.mute.clone()));
+        while self.checkpoints.len() > 64 {
+            self.checkpoints.pop_front();
+        }
+        Ok(output)
+    }
+
     pub fn set_muted(
         &mut self,
         mask: u16,
         request_id: u16,
         position: Option<u32>,
     ) -> Result<Vec<u8>, String> {
+        if let Some(position) = position {
+            if let Some((_, mute)) = self
+                .checkpoints
+                .iter()
+                .rev()
+                .find(|(end, _)| *end <= position)
+            {
+                self.mute = mute.clone();
+            }
+            self.checkpoints.clear();
+            self.checkpoint_position = position;
+        }
         let writes = self
             .mute
             .set_mask(mask)?
@@ -630,6 +664,29 @@ impl AudioPlayback {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn prepared_mute_rewinds_pan_to_submitted_position() {
+        let mut filter = MuteFilter::default();
+        let past = [RegisterWrite::new(0x20, 0x47)];
+        let future = [RegisterWrite::new(0x20, 0x87)];
+        let past = Command::WriteYm2151Burst(&past).encode(1).unwrap();
+        let future = Command::WriteYm2151Burst(&future).encode(2).unwrap();
+        filter.prepare(past.as_bytes(), 160).unwrap();
+        filter.prepare(future.as_bytes(), 320).unwrap();
+        filter.set_muted(1, 3, Some(160)).unwrap();
+        let restored = filter.set_muted(0, 4, Some(160)).unwrap();
+        let frame_end = restored[1..].iter().position(|byte| *byte == 0).unwrap() + 1;
+        let frame = Frame::decode(&restored[1..frame_end]).unwrap();
+        assert_eq!(&frame.payload()[5..], &[0x20, 0x47]);
+        for _ in 0..100 {
+            filter.prepare(future.as_bytes(), 320).unwrap();
+        }
+        assert_eq!(filter.checkpoints.front().unwrap().0, 160);
+        assert_eq!(filter.checkpoints.len(), 2);
+        filter.set_muted(1, 5, Some(160)).unwrap();
+        assert_eq!(filter.checkpoint_position, 160);
+    }
 
     #[test]
     fn mute_filter_preserves_audio_and_timing_and_restores_latest_pan() {

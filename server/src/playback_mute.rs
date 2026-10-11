@@ -1,4 +1,4 @@
-#[derive(Default)]
+#[derive(Clone, Default)]
 pub struct PlaybackMute {
     mask: u16,
     fm_pan: [u8; 8],

@@ -8,13 +8,23 @@ export async function runNanoDriveEngine(path: string, port: MessagePort, signal
 	const memory = new WebAssembly.Memory({ initial: 160, maximum: 2048, shared: true });
 	const wasi = new WASI({ version: 'preview1', args: ['mmlx-nanodrive'], env: {}, preopens: {}, returnOnExit: true });
 	let input = Buffer.alloc(0);
+	let executing: { id: number; operation: string; started: number } | undefined;
 	const imports = { ...wasi.wasiImport,
 		fd_read: (descriptor: number, vectors: number, count: number, result: number) => {
 			if (descriptor !== 0) { return 8; }
+			if (!input.length && executing) {
+				port.postMessage({ timing: { id: executing.id, operation: executing.operation, executionMs: performance.now() - executing.started } });
+				executing = undefined;
+			}
 			while (input.length === 0) {
 				const sequence = Atomics.load(signal, 0);
 				const message = receiveMessageOnPort(port);
-				if (message) { input = Buffer.from(message.message as Uint8Array); }
+				if (message) {
+					const command = message.message as { bytes: Uint8Array; id: number; operation: string; queuedAt: number };
+					input = Buffer.from(command.bytes);
+					executing = { id: command.id, operation: command.operation, started: performance.now() };
+					port.postMessage({ timing: { id: command.id, operation: command.operation, queueMs: executing.started - command.queuedAt } });
+				}
 				else { Atomics.wait(signal, 0, sequence); }
 			}
 			const view = new DataView(memory.buffer);
@@ -48,7 +58,8 @@ export async function runNanoDriveEngine(path: string, port: MessagePort, signal
 export class NanoDriveRuntime {
 	private readonly worker: Worker;
 	private readonly signal = new Int32Array(new SharedArrayBuffer(4));
-	private readonly pending = new Map<number, { resolve: (result: Awaited<ReturnType<NanoDriveCodec>>) => void; reject: (error: Error) => void; timer: ReturnType<typeof setTimeout> }>();
+	private readonly pending = new Map<number, { resolve: (result: Awaited<ReturnType<NanoDriveCodec>>) => void; reject: (error: Error) => void; timer: ReturnType<typeof setTimeout>; operation: string; started: number }>();
+	private readonly measurements = new Map<string, { count: number; maxQueueMs: number; maxExecutionMs: number; maxRoundTripMs: number }>();
 	private id = 0;
 	private stopped = false;
 	private stderr = '';
@@ -72,14 +83,31 @@ export class NanoDriveRuntime {
 				...(kind === 4 || kind === 6 ? { fm: true, synchronize: (view.getUint8(10) & 2) !== 0 } : {}) } });
 		}, (kind, length) => (kind === 1 && length > 0 && length <= 65536) || (kind === 2 && length >= 6 && length <= 65536)
 			|| ((kind === 3 || kind === 4) && length >= 11 && length <= 65536) || ((kind === 5 || kind === 6) && length >= 15 && length <= 131088));
-		this.worker.on('message', ({ descriptor, bytes }: { descriptor: number; bytes: Uint8Array }) => {
+		this.worker.on('message', ({ descriptor, bytes, timing }: { descriptor: number; bytes: Uint8Array; timing?: { operation: string; queueMs?: number; executionMs?: number } }) => {
 			try {
+				if (timing) {
+					const metric = this.measurement(timing.operation);
+					metric.maxQueueMs = Math.max(metric.maxQueueMs, timing.queueMs ?? 0);
+					metric.maxExecutionMs = Math.max(metric.maxExecutionMs, timing.executionMs ?? 0);
+					return;
+				}
 				if (descriptor === 1) { decoder.push(bytes); }
 				else { this.stderr = (this.stderr + new TextDecoder().decode(bytes)).slice(-4096); }
 			} catch (error) { this.fail(error); }
 		});
 		this.worker.on('error', error => this.fail(error));
 		this.worker.on('exit', code => { if (!this.stopped) { this.fail(new Error(this.stderr || `NanoDrive8 engine exited (${code}).`)); } });
+	}
+
+	private measurement(operation: string) {
+		let metric = this.measurements.get(operation);
+		if (!metric) { metric = { count: 0, maxQueueMs: 0, maxExecutionMs: 0, maxRoundTripMs: 0 }; this.measurements.set(operation, metric); }
+		return metric;
+	}
+
+	get diagnostics() {
+		return { operations: Object.fromEntries([...this.measurements].map(([operation, metric]) => [operation, { ...metric }])),
+			pending: [...this.pending.values()].map(item => ({ operation: item.operation, ageMs: performance.now() - item.started })) };
 	}
 
 	readonly request: NanoDriveCodec = async params => {
@@ -89,9 +117,10 @@ export class NanoDriveRuntime {
 		const bytes = Buffer.from(`${JSON.stringify({ id, params })}\n`);
 		if (bytes.length > 65536) { throw new Error('NanoDrive8 command is too large.'); }
 		return new Promise((resolve, reject) => {
+			const started = performance.now();
 			const timer = setTimeout(() => this.fail(new Error('NanoDrive8 engine timed out.')), 15000);
-			this.pending.set(id, { resolve, reject, timer });
-			this.worker.postMessage(bytes);
+			this.pending.set(id, { resolve, reject, timer, operation: params.operation, started });
+			this.worker.postMessage({ bytes, id, operation: params.operation, queuedAt: started });
 			Atomics.add(this.signal, 0, 1); Atomics.notify(this.signal, 0);
 		});
 	};
@@ -100,6 +129,8 @@ export class NanoDriveRuntime {
 		const pending = this.pending.get(value?.id);
 		if (!pending || (typeof value.error !== 'string' && !Object.hasOwn(value, 'result'))) { throw new Error('Invalid NanoDrive8 engine reply.'); }
 		this.pending.delete(value.id); clearTimeout(pending.timer);
+		const metric = this.measurement(pending.operation); metric.count++;
+		metric.maxRoundTripMs = Math.max(metric.maxRoundTripMs, performance.now() - pending.started);
 		if (typeof value.error === 'string') { pending.reject(new Error(value.error)); }
 		else { pending.resolve(value.result!); }
 	}

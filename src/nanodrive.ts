@@ -33,6 +33,7 @@ export type NanoDriveCodec = (params: { operation: 'encode'; command: NanoDriveC
     | { operation: 'playbackInit'; looped: boolean; adpcmMode?: NanoDriveAdpcmMode; muted?: number }
     | { operation: 'playbackNext'; requestId: number }
     | { operation: 'playbackFilter'; bytes: number[] }
+    | { operation: 'playbackPrepare'; bytes: number[]; position: number }
     | { operation: 'playbackMute'; muted: number; requestId: number; position: number }
     | { operation: 'voiceTestInit'; session: number; mml: string; voice: unknown }
     | { operation: 'voiceTestNext' | 'voiceTestStop'; session: number; requestId: number }) => Promise<{ bytes: number[] | Uint8Array; count?: number; position?: number; ended?: boolean; fm?: boolean; synchronize?: boolean; keys?: FmKeyEvent[] } | { pdxName?: string | null; audio?: boolean } | import('./playbackSource').SourceBatch | NanoDriveReply | null>;
@@ -101,8 +102,10 @@ export class NanoDriveConnection {
     private playbackGeneration = 0;
     private playbackStopping?: Promise<void>;
     private playbackMuted = 0;
+    private playbackMuteVersion = 0;
     private playbackSubmitted = 0;
     private playbackTransfers = Promise.resolve();
+    private playbackPreparations = Promise.resolve();
     private hardwarePlayback: NanoDrivePlaybackState = { busy: false, playing: false, loading: false, position: 0, finished: false, error: '' };
 
     constructor(private readonly codec: NanoDriveCodec, private readonly onState: (state: NanoDriveState) => void,
@@ -122,6 +125,12 @@ export class NanoDriveConnection {
         const transfer = this.playbackTransfers.then(action);
         this.playbackTransfers = transfer.catch(() => undefined);
         return transfer;
+    }
+
+    private preparePlayback(action: () => Promise<void>): Promise<void> {
+        const preparation = this.playbackPreparations.then(action);
+        this.playbackPreparations = preparation.catch(() => undefined);
+        return preparation;
     }
 
     private async writePlayback(chunk: NanoDriveChunk, connection: number, token: number, check: () => void): Promise<void> {
@@ -150,14 +159,15 @@ export class NanoDriveConnection {
         if (!this.hardwarePlayback.playing) { return; }
         const token = this.playbackGeneration; const connection = this.generation;
         try {
-            await this.transferPlayback(async () => {
+            await this.transferPlayback(() => this.preparePlayback(async () => {
                 if (token !== this.playbackGeneration || connection !== this.generation) { return; }
+                this.playbackMuteVersion++;
                 const requestId = this.requestId & 0xffff; this.requestId += 16;
                 const result = await this.codec({ operation: 'playbackMute', muted, requestId, position: this.playbackSubmitted });
                 if (token !== this.playbackGeneration || connection !== this.generation) { return; }
                 if (!result || !('bytes' in result)) { throw new Error('Invalid playback mute response.'); }
                 if (result.bytes.length) { await this.write(result.bytes, connection, false, token); }
-            });
+            }));
         } catch (error) {
             if (token === this.playbackGeneration) { await this.stopPlayback(error instanceof Error ? error.message : String(error)); }
         }
@@ -260,6 +270,7 @@ export class NanoDriveConnection {
         let resetting = false;
         let lastStatus: NanoDriveReply | undefined;
         let maxGenerationMs = 0; let maxWriteMs = 0; let maxStatusRttMs = 0;
+        let maxPrepareMs = 0; let maxReadyWaitMs = 0; let minReadyChunks = 24;
         let maxSupplyGapMs = 0;
         let minPending: number | undefined;
         let produced = 0; let submitted = 0; let generationEnded = false;
@@ -286,9 +297,37 @@ export class NanoDriveConnection {
             const reset = await this.request('audioStatus'); check();
             if (reset.accepted !== 0 || reset.played !== 0 || reset.pending !== 0 || reset.running !== false || reset.fault !== false) { throw new Error('Invalid NanoDrive8 reset status.'); }
             await this.send('setPlaybackClock'); check();
+            const preparedChunks = new Map<NanoDriveChunk, { version: number; parts: Uint8Array[] }>();
+            const prepareOne = async (chunk: NanoDriveChunk) => {
+                check();
+                if (preparedChunks.get(chunk)?.version === this.playbackMuteVersion) { return; }
+                const started = performance.now(); const version = this.playbackMuteVersion;
+                const bytes = chunk.bytes instanceof Uint8Array ? chunk.bytes : Uint8Array.from(chunk.bytes);
+                const parts: Uint8Array[] = [];
+                for (let offset = 0; offset < bytes.length;) {
+                    let end = Math.min(offset + 8192, bytes.length);
+                    if (end < bytes.length) { end = bytes.lastIndexOf(0, end - 1) + 1; }
+                    if (end <= offset + 1) { throw new Error('Invalid playback frame boundary.'); }
+                    const result = await this.codec({ operation: 'playbackPrepare', bytes: Array.from(bytes.subarray(offset, end)), position: chunk.position! }); check();
+                    if (!result || !('bytes' in result)) { throw new Error('Invalid prepared playback response.'); }
+                    parts.push(Uint8Array.from(result.bytes));
+                    offset = end;
+                    if (offset < bytes.length && bytes[offset] !== 0) { offset--; }
+                }
+                preparedChunks.set(chunk, { version, parts });
+                maxPrepareMs = Math.max(maxPrepareMs, performance.now() - started);
+            };
+            const prepare = async (chunk: NanoDriveChunk) => {
+                for (const earlier of buffered) {
+                    if (earlier === chunk) { break; }
+                    await prepareOne(earlier);
+                }
+                await prepareOne(chunk);
+            };
             const prefetch = () => {
                 if (producing || generationEnded || productionFailure) { return; }
                 producing = (async () => {
+                    for (const chunk of buffered) { await this.preparePlayback(() => prepare(chunk)); }
                     while (buffered.length < 24 && !generationEnded) {
                         check(); const requestId = this.requestId & 0xffff; this.requestId += 8192;
                         const generationStarted = performance.now();
@@ -297,7 +336,7 @@ export class NanoDriveConnection {
                         if (!chunk || !('bytes' in chunk) || !Number.isInteger(chunk.count) || chunk.count! < 1 || chunk.count! > 8192
                             || !Number.isSafeInteger(chunk.position) || chunk.position! <= produced || chunk.position! - produced > 160 || typeof chunk.ended !== 'boolean') { throw new Error('Invalid NanoDrive8 playback chunk.'); }
                         produced = chunk.position!; generationEnded = chunk.ended;
-                        buffered.push(chunk);
+                        await this.preparePlayback(() => prepare(chunk)); check(); buffered.push(chunk);
                     }
                 })().catch(error => { productionFailure = error; }).finally(() => { producing = undefined; });
             };
@@ -305,16 +344,30 @@ export class NanoDriveConnection {
                 check(); prefetch();
                 if (!buffered.length) { await producing; check(); }
                 if (productionFailure) { throw productionFailure; }
-                const chunk = buffered.shift();
+                const chunk = buffered[0];
                 if (!chunk) { throw new Error('NanoDrive8 PCM prefetch exhausted.'); }
-                prefetch();
-                submitted = chunk.position!;
+                const readyStarted = performance.now();
                 const writeStarted = performance.now();
-                await this.writePlayback(chunk, connection, token, check); check();
+                await this.transferPlayback(async () => {
+                    if (preparedChunks.get(chunk)?.version !== this.playbackMuteVersion) {
+                        await this.preparePlayback(() => prepare(chunk));
+                    }
+                    check();
+                    maxReadyWaitMs = Math.max(maxReadyWaitMs, performance.now() - readyStarted);
+                    minReadyChunks = Math.min(minReadyChunks, buffered.filter(item => preparedChunks.get(item)?.version === this.playbackMuteVersion).length);
+                    submitted = chunk.position!;
+                    for (const part of preparedChunks.get(chunk)!.parts) {
+                        await this.write(part, connection, false, token); check();
+                    }
+                    this.playbackSubmitted = chunk.position!;
+                    preparedChunks.delete(chunk); buffered.shift();
+                });
+                prefetch();
                 if (chunk.keys) { this.onPlaybackKeys(decodeFmKeyEvents(chunk.keys)); }
                 maxWriteMs = Math.max(maxWriteMs, performance.now() - writeStarted);
                 sent = chunk.position!; ended = chunk.ended!;
             };
+            prefetch(); await producing; check();
             while (sent < 1600 && !ended) { await submit(); }
             await this.request('ping', [...randomBytes(8)]); check();
             await this.send('audioStart'); check();
@@ -363,7 +416,9 @@ export class NanoDriveConnection {
                     this.onDiagnostic(`NanoDrive8 playback failed: ${message}\n${JSON.stringify({
                         model: this.snapshot.model, firmware: this.snapshot.firmware, port: this.snapshot.port, adpcmMode: options.adpcmMode ?? 'resample',
                         clockHz: 8000000, divider: 512, produced, submitted, sent, bufferedChunks: buffered.length, ended, status: lastStatus, minPending,
-                        maxGenerationMs, maxWriteMs, maxStatusRttMs, maxSupplyGapMs, serial: { ...this.serialWrites }
+                        maxGenerationMs, maxPrepareMs, maxReadyWaitMs, minReadyChunks,
+                        maxWriteMs, maxStatusRttMs, maxSupplyGapMs, statusPendingMs: poll ? performance.now() - polledAt : 0,
+                        serial: { ...this.serialWrites }
                     })}`);
                 } catch {}
                 if (resetting) { await this.disconnect(message, false); }

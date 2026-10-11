@@ -2178,10 +2178,18 @@ suite('mmlx extension', () => {
 				for (let index = 0; index < 1000 && !ended; index++) {
 					const chunk = await runtime.request({ operation: 'playbackNext', requestId: index * 128 });
 					assert.ok(chunk && 'bytes' in chunk && chunk.bytes instanceof Uint8Array);
+					if (audio && chunk.bytes.length) {
+						const prepared = await runtime.request({ operation: 'playbackPrepare', bytes: Array.from(chunk.bytes), position: chunk.position! });
+						assert.ok(prepared && 'bytes' in prepared && prepared.bytes instanceof Uint8Array);
+					}
 					assert.ok(chunk.position! >= position); position = chunk.position!; ended = chunk.ended!;
 				}
 				assert.ok(ended && position > 0); await runtime.request({ operation: 'playbackStop' });
 			}
+			const timings = runtime.diagnostics.operations;
+			assert.ok(timings.playbackNext.count > 0 && timings.playbackNext.maxExecutionMs > 0);
+			assert.ok(timings.playbackNext.maxQueueMs >= 0 && timings.playbackNext.maxRoundTripMs > 0);
+			assert.ok(timings.playbackPrepare.count > 0 && timings.playbackPrepare.maxExecutionMs > 0);
 			await assert.rejects(runtime.request({ operation: 'encode', command: 'setOutputVolume', requestId: 42, payload: [97] }));
 		} finally { await runtime.dispose(); }
 		await assert.rejects(runtime.request({ operation: 'playbackInfo' }), /stopped/);

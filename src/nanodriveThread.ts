@@ -42,11 +42,29 @@ if (workerData?.engine && parentPort) {
 		if (process.connected) { process.send!(event, error => { if (error) { process.exit(1); } }); }
 	};
 	const runtime = new NanoDriveRuntime(__filename, process.argv[3], error => { void connection.disconnect(error.message); });
-	const connection = new NanoDriveConnection(runtime.request, state => send({ type: 'state', state }), undefined, undefined,
-		state => send({ type: 'output', state }), state => send({ type: 'playback', state }), message => send({ type: 'diagnostic', message }),
+	const transport = new NanoDriveRuntime(__filename, process.argv[3], error => { void connection.disconnect(error.message); });
+	const diagnostics = () => ({ generation: runtime.diagnostics, transport: transport.diagnostics });
+	let playing = false;
+	const logTiming = () => send({ type: 'diagnostic', message: `NanoDrive8 engine timing: ${JSON.stringify(diagnostics())}` });
+	const connection = new NanoDriveConnection(params =>
+		(params.operation === 'encode' || params.operation === 'decode' ? transport : runtime).request(params),
+		state => send({ type: 'state', state }), undefined, undefined,
+		state => send({ type: 'output', state }), state => {
+			send({ type: 'playback', state });
+			if (playing && !state.playing) { logTiming(); }
+			playing = state.playing;
+		}, message => {
+			send({ type: 'diagnostic', message });
+			logTiming();
+		},
 		(playing, error) => send({ type: 'voiceTest', playing, error }), keys => send({ type: 'keys', keys }));
+	const timer = setInterval(() => {
+		if (connection.playbackState.playing) { logTiming(); }
+	}, 5000);
+	timer.unref();
 	runNanoDriveService(connection, send);
 	process.once('disconnect', () => {
-		void connection.disconnect().finally(() => runtime.dispose()).finally(() => process.exit(0));
+		clearInterval(timer);
+		void connection.disconnect().finally(() => Promise.all([runtime.dispose(), transport.dispose()])).finally(() => process.exit(0));
 	});
 }

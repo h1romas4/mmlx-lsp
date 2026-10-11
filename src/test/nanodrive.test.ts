@@ -53,7 +53,7 @@ export class Port implements NanoDrivePort {
 }
 
 export const codec: NanoDriveCodec = async params => {
-    if (params.operation === 'playbackFilter') { return { bytes: params.bytes }; }
+    if (params.operation === 'playbackFilter' || params.operation === 'playbackPrepare') { return { bytes: params.bytes }; }
     if (params.operation === 'playbackMute') { return { bytes: [0, ...Buffer.from(JSON.stringify({ ...params, command: 'playbackMute', payload: [] })), 0] }; }
     if (params.operation === 'encode') { return { bytes: [0, ...Buffer.from(JSON.stringify(params)), 0] }; }
     if (params.operation === 'audition') {
@@ -199,7 +199,7 @@ suite('NanoDrive8 connection', () => {
             let applying = false;
             const connection = new NanoDriveConnection(async params => {
                 operations.push(params);
-                if (params.operation === 'playbackFilter' || params.operation === 'playbackMute') {
+                if (params.operation === 'playbackFilter' || params.operation === 'playbackPrepare' || params.operation === 'playbackMute') {
                     assert.strictEqual(applying, false, 'Filter caches and mute patches must not race');
                     applying = true;
                     await new Promise(resolve => setTimeout(resolve, 1));
@@ -228,14 +228,15 @@ suite('NanoDrive8 connection', () => {
                 assert.strictEqual(operations.filter(params => params.operation === 'playbackMute').length, 2);
                 await playing;
                 assert.strictEqual(connection.playbackState.error, '');
-                assert.ok(operations.slice(operations.findIndex(params => params.operation === 'playbackMute') + 1).some(params => params.operation === 'playbackFilter'), 'Later prefetched chunks are filtered after the mute change');
+                assert.ok(operations.slice(operations.findIndex(params => params.operation === 'playbackMute') + 1).some(params => params.operation === 'playbackFilter' || params.operation === 'playbackPrepare'), 'Later prefetched chunks are filtered after the mute change');
                 assert.ok(connection.playbackState.finished && connection.state.connected);
             } finally { await connection.disconnect(); }
         }
     });
 
     test('playback mute filters large register chunks within bounded worker requests', async () => {
-        const port = new Port(); const base = fmCodec(); let expanded = false; let filters = 0;
+        for (const audio of [false, true]) {
+        const port = new Port(); const base = audio ? playbackCodec(1600) : fmCodec(); let expanded = false; let filters = 0;
         const write = port.write.bind(port);
         port.write = async bytes => {
             let start = 0;
@@ -246,7 +247,7 @@ suite('NanoDrive8 connection', () => {
             }
         };
         const connection = new NanoDriveConnection(async params => {
-            if (params.operation === 'playbackFilter') {
+            if (params.operation === 'playbackFilter' || params.operation === 'playbackPrepare') {
                 filters++; assert.ok(params.bytes.length <= 8192);
                 assert.ok(Buffer.byteLength(JSON.stringify(params)) < 65536);
                 assert.strictEqual(params.bytes[0], 0); assert.strictEqual(params.bytes.at(-1), 0);
@@ -266,8 +267,9 @@ suite('NanoDrive8 connection', () => {
             await connection.startPlayback('A c1', false, async () => new Uint8Array(0));
             assert.strictEqual(connection.playbackState.error, '');
             assert.ok(filters > 3 && connection.playbackState.finished);
-            assert.strictEqual(port.commands.filter(request => request.command === 'fmBurst').length, 502);
+            if (!audio) { assert.strictEqual(port.commands.filter(request => request.command === 'fmBurst').length, 502); }
         } finally { await connection.disconnect(); }
+        }
     });
 
     test('Stop cancels an in-flight mute before RESET and keeps the selection for restart', async () => {
@@ -394,6 +396,27 @@ suite('NanoDrive8 connection', () => {
             assert.strictEqual(port.commands.at(-1)?.command, 'reset');
         } finally { await connection.disconnect(); }
     });
+    test('prepared PCM supplies without waiting for a 120ms filter request', async () => {
+        const port = new Port(); port.detectUnderflow = true;
+        const base = playbackCodec(9600);
+        let preparing = false; let stalled = false; let supplied = false;
+        const connection = new NanoDriveConnection(async params => {
+            if (params.operation === 'playbackPrepare' && port.commands.some(command => command.command === 'audioStart') && !stalled) {
+                stalled = true; preparing = true;
+                await new Promise(resolve => setTimeout(resolve, 120)); preparing = false;
+            }
+            return base(params);
+        }, () => {}, async () => port, 500, undefined, state => {
+            if (state.playing && state.position > .02 && preparing) { supplied = true; }
+        });
+        try {
+            await connection.connect('test');
+            await connection.startPlayback('P c4', false, async () => new Uint8Array(0));
+            assert.ok(stalled && supplied, 'Prepared data advances the device clock while filtering is pending');
+            assert.strictEqual(connection.playbackState.error, '');
+            assert.ok(connection.playbackState.finished);
+        } finally { await connection.disconnect(); }
+    });
     test('output volume changes during PCM playback without blocking DATA or STATUS', async () => {
         const port = new Port(); port.detectUnderflow = true;
         const base = playbackCodec(4800); const changes: Promise<void>[] = [];
@@ -491,6 +514,9 @@ suite('NanoDrive8 connection', () => {
             assert.match(diagnostics[0], /maxSupplyGapMs/);
             const detail = JSON.parse(diagnostics[0].slice(diagnostics[0].indexOf('\n') + 1));
             assert.ok(stalled && detail.maxSupplyGapMs >= 20, 'Diagnostics capture supply callback stalls');
+            assert.ok(detail.maxPrepareMs >= 0 && detail.maxReadyWaitMs >= 0);
+            assert.ok(detail.minReadyChunks >= 0 && detail.minReadyChunks <= 24);
+            assert.ok(detail.statusPendingMs >= 0);
             assert.strictEqual(port.commands.at(-1)!.command, 'reset'); assert.ok(port.isOpen);
         } finally { await connection.disconnect(); }
     });
