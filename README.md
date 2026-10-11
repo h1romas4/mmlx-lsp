@@ -4,7 +4,11 @@ MML (Music Macro Language) support for VS Code and Helix.
 Currently supports the MDX (MXDRV) dialect and `.mml` files.
 
 For installation, see [VS Code](#manual-installation-in-vs-code) or
-[Helix](#install-in-helix). Build commands and the mmlx panel are VS Code-only.
+[Helix](#install-in-helix).
+
+<img src="https://raw.githubusercontent.com/h1romas4/mmlx-lsp/main/assets/docs/mmlx-007.png" alt="FM Voice panel with YM2151 algorithms and operator envelopes" width="720">
+
+<img src="https://raw.githubusercontent.com/h1romas4/mmlx-lsp/main/assets/docs/mmlx-008.png" alt="Playback panel with ymfm" width="720">
 
 ## Features
 
@@ -16,8 +20,6 @@ For installation, see [VS Code](#manual-installation-in-vs-code) or
 - **Built-in VS Code build tasks** for MML to MDX and MML/MDX to VGM.
 - **FM Voice panel** with cursor-linked operator envelopes and two-way parameter editing.
 - **MML playback** with editor highlighting that follows the playback position.
-
-<img src="https://raw.githubusercontent.com/h1romas4/mmlx-lsp/main/assets/docs/mmlx-007.png" alt="FM Voice panel with YM2151 algorithms and operator envelopes" width="720">
 
 ## Usage
 
