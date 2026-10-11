@@ -149,7 +149,7 @@ pub fn items(
         Position::new(start_line as u32, start_column as u32),
         Position::new(end_line as u32, end_column as u32),
     );
-    COMMANDS
+    let mut items: Vec<_> = COMMANDS
         .iter()
         .filter(|command| command.label.starts_with(prefix))
         .map(|command| CompletionItem {
@@ -191,6 +191,86 @@ pub fn items(
                 },
             })),
             ..CompletionItem::default()
+        })
+        .collect();
+    if let Some((voice_start, voice_end, voice_prefix)) = voice_select_context(source, offset) {
+        let Some(file) = SourceFile::new(source) else {
+            return items;
+        };
+        let index = file.line_index();
+        let (voice_start_line, voice_start_column) = index.utf16_position(voice_start).unwrap();
+        let (voice_end_line, voice_end_column) = index.utf16_position(voice_end).unwrap();
+        let voice_range = Range::new(
+            Position::new(voice_start_line as u32, voice_start_column as u32),
+            Position::new(voice_end_line as u32, voice_end_column as u32),
+        );
+        items.extend(defined_voice_items(
+            source,
+            voice_start,
+            voice_end,
+            voice_range,
+            &voice_prefix,
+        ));
+    }
+    items
+}
+
+fn voice_select_context(source: &str, offset: usize) -> Option<(usize, usize, String)> {
+    let start = source[..offset].rfind('@')?;
+    if source[start..offset].contains('\n') {
+        return None;
+    }
+    let prefix = &source[start..offset];
+    let number = prefix.strip_prefix('@')?;
+    if !number.bytes().all(|byte| byte.is_ascii_digit()) {
+        return None;
+    }
+    let end = offset
+        + source[offset..]
+            .bytes()
+            .take_while(u8::is_ascii_digit)
+            .count();
+    Some((start, end, prefix.to_owned()))
+}
+
+fn defined_voice_items(
+    source: &str,
+    start: usize,
+    end: usize,
+    range: Range,
+    prefix: &str,
+) -> Vec<CompletionItem> {
+    let mut parse_source = format!("{}@0{}", &source[..start], &source[end..]);
+    if mmlx::mdx::frontend::parse(&parse_source).is_err() {
+        parse_source = format!("{}c4", &source[..start]);
+    }
+    let Ok(parsed) = mmlx::mdx::frontend::parse(&parse_source) else {
+        return Vec::new();
+    };
+    let mut numbers: Vec<_> = parsed
+        .ast()
+        .voices
+        .iter()
+        .map(|voice| voice.number)
+        .collect();
+    numbers.sort_unstable();
+    numbers.dedup();
+    numbers
+        .into_iter()
+        .filter_map(|number| {
+            let label = format!("@{number}");
+            label.starts_with(prefix).then_some(CompletionItem {
+                label: label.clone(),
+                kind: Some(CompletionItemKind::REFERENCE),
+                detail: Some("Defined FM voice".into()),
+                filter_text: Some(label.clone()),
+                sort_text: Some(format!("0{number:03}")),
+                text_edit: Some(CompletionTextEdit::Edit(TextEdit {
+                    range,
+                    new_text: label,
+                })),
+                ..CompletionItem::default()
+            })
         })
         .collect()
 }
@@ -989,6 +1069,27 @@ mod tests {
             .unwrap();
         assert_eq!(item.label, "t(BPM)");
         assert_eq!(item.insert_text_format, Some(InsertTextFormat::PLAIN_TEXT));
+    }
+
+    #[test]
+    fn voice_select_completion_lists_previously_defined_voices() {
+        let source = format!(
+            "@7 = {{\n{}\n5,3,15\n}}\nA @",
+            "31,12,4,8,6,20,1,2,3,1,0,\n".repeat(4)
+        );
+        let position = Position::new(8, 3);
+        let items = super::items(&source, position, true, Language::English);
+        let voice = items.iter().find(|item| item.label == "@7").unwrap();
+        assert_eq!(voice.kind, Some(CompletionItemKind::REFERENCE));
+        assert_eq!(voice.detail.as_deref(), Some("Defined FM voice"));
+        let Some(CompletionTextEdit::Edit(edit)) = &voice.text_edit else {
+            panic!("expected text edit");
+        };
+        assert_eq!(edit.new_text, "@7");
+        assert_eq!(
+            edit.range,
+            Range::new(Position::new(8, 2), Position::new(8, 3))
+        );
     }
 
     #[test]

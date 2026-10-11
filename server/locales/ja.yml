@@ -9,6 +9,9 @@ mdx:
     label: '@ 音色定義'
     syntax: '@<音色番号> = { ... }'
     description: 47 パラメーターを持つ FM 音色を定義します。
+  voice_reference:
+    one: 1 件の参照
+    many: "%{count} 件の参照"
   commands:
     t:
       syntax: t<19..4882 BPM>

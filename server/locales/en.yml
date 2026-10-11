@@ -9,6 +9,9 @@ mdx:
     label: '@ Voice definition'
     syntax: '@<voice number> = { ... }'
     description: Defines an FM voice with 47 parameters.
+  voice_reference:
+    one: 1 reference
+    many: "%{count} references"
   commands:
     t:
       syntax: t<19..4882 BPM>

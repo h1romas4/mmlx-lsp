@@ -1,6 +1,6 @@
 use crate::i18n::Language;
 use lsp_types::{
-    CompletionItem, CompletionOptions, Diagnostic, InitializeParams, Position,
+    CodeLensOptions, CompletionItem, CompletionOptions, Diagnostic, InitializeParams, Position,
     PositionEncodingKind, SelectionRange, SemanticTokens, SemanticTokensFullOptions,
     SemanticTokensOptions, ServerCapabilities, SignatureHelp, SignatureHelpOptions,
     TextDocumentSyncCapability, TextDocumentSyncKind,
@@ -76,6 +76,9 @@ impl Dialect {
                     .into(),
                 ),
                 selection_range_provider: Some(true.into()),
+                code_lens_provider: Some(CodeLensOptions {
+                    resolve_provider: Some(false),
+                }),
                 ..ServerCapabilities::default()
             },
         }

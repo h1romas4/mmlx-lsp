@@ -1,8 +1,9 @@
-import { commands, ExtensionContext, Uri, window, workspace } from 'vscode';
+import { commands, ExtensionContext, Location, Position, Range, Uri, window, workspace } from 'vscode';
 import { LanguageClient, ServerOptions } from 'vscode-languageclient/node';
 import { Wasm } from '@vscode/wasm-wasi/v1';
 import { createStdioOptions, createUriConverters, startServer } from '@vscode/wasm-wasi-lsp';
 import { registerBuildTasks } from './tasks';
+import { registerTrackLengthStatus } from './trackLengthStatus';
 import { registerVoiceView, type VoiceViewProvider } from './voiceView';
 
 let client: LanguageClient | undefined;
@@ -59,7 +60,44 @@ export async function activate(context: ExtensionContext): Promise<void> {
 		}
 	});
 	await client.start();
+	registerTrackLengthStatus(context, () => client, channel);
 	voiceView = registerVoiceView(context, () => client, wasm);
+	context.subscriptions.push(commands.registerCommand('mmlx.showVoiceReferences', async (
+		documentUri: string | { scheme: string; authority?: string; path?: string; query?: string; fragment?: string },
+		position: { line: number; character: number },
+		references: {
+			uri: string | { scheme: string; authority?: string; path?: string; query?: string; fragment?: string };
+			range: {
+				start: { line: number; character: number };
+				end: { line: number; character: number };
+			};
+		}[]
+	) => {
+		const languageClient = client;
+		if (!languageClient?.isRunning()) { throw new Error('mmlx language server is not running.'); }
+		const toUri = (value: typeof documentUri): Uri => languageClient.protocol2CodeConverter.asUri(
+			typeof value === 'string' ? value : Uri.from({
+				scheme: value.scheme,
+				authority: value.authority ?? '',
+				path: value.path ?? '',
+				query: value.query ?? '',
+				fragment: value.fragment ?? ''
+			}).toString()
+		);
+		const locations = references.map(reference => new Location(
+			toUri(reference.uri),
+			new Range(
+				new Position(reference.range.start.line, reference.range.start.character),
+				new Position(reference.range.end.line, reference.range.end.character)
+			)
+		));
+		await commands.executeCommand(
+			'editor.action.showReferences',
+			toUri(documentUri),
+			new Position(position.line, position.character),
+			locations
+		);
+	}));
 	context.subscriptions.push(commands.registerCommand('mmlx.toggleComment', async () => {
 		const editor = window.activeTextEditor;
 		if (!editor || editor.document.languageId !== 'mmlx') { return; }

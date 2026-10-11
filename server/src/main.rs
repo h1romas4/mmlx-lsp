@@ -3,6 +3,7 @@ mod dialect;
 mod i18n;
 mod selection_range;
 mod semantic;
+mod track_length;
 mod voice;
 
 rust_i18n::i18n!("locales", fallback = "ja");
@@ -13,7 +14,7 @@ use std::error::Error;
 use dialect::Dialect;
 use lsp_server::{Connection, ErrorCode, Message, Notification, Request, Response};
 use lsp_types::{
-    CompletionParams, Diagnostic, DiagnosticSeverity, DidChangeTextDocumentParams,
+    CodeLensParams, CompletionParams, Diagnostic, DiagnosticSeverity, DidChangeTextDocumentParams,
     DidCloseTextDocumentParams, DidOpenTextDocumentParams, InitializeParams, NumberOrString,
     Position, PublishDiagnosticsParams, Range, SelectionRangeParams, SemanticTokensParams,
     SignatureHelpParams, TextDocumentPositionParams, Uri,
@@ -118,6 +119,37 @@ fn handle_request(
                     .map(String::as_str)
                     .unwrap_or("");
                 Response::new_ok(request.id, voice::at_position(source, params.position))
+            }
+            Err(error) => Response::new_err(
+                request.id,
+                ErrorCode::InvalidParams as i32,
+                error.to_string(),
+            ),
+        };
+    }
+    if request.method == "mmlx/trackLengthAtPosition" {
+        return match serde_json::from_value::<TextDocumentPositionParams>(request.params) {
+            Ok(params) => {
+                let result = documents
+                    .get(&params.text_document.uri)
+                    .and_then(|source| track_length::at_position(source, params.position));
+                Response::new_ok(request.id, result)
+            }
+            Err(error) => Response::new_err(
+                request.id,
+                ErrorCode::InvalidParams as i32,
+                error.to_string(),
+            ),
+        };
+    }
+    if request.method == "textDocument/codeLens" {
+        return match serde_json::from_value::<CodeLensParams>(request.params) {
+            Ok(params) => {
+                let lenses = documents
+                    .get(&params.text_document.uri)
+                    .map(|source| voice::code_lenses(source, params.text_document.uri, language))
+                    .unwrap_or_default();
+                Response::new_ok(request.id, lenses)
             }
             Err(error) => Response::new_err(
                 request.id,
@@ -552,6 +584,29 @@ mod tests {
                 serde_json::from_value(response.response_result.unwrap()).unwrap();
             assert_eq!(help.signatures[0].label, label);
         }
+    }
+
+    #[test]
+    fn track_length_request_returns_cursor_ticks_and_loop_state() {
+        let uri = "file:///length.mml".parse::<Uri>().unwrap();
+        let documents = HashMap::from([(uri.clone(), "A l8 c d [e r]2\n".to_string())]);
+        let response = super::handle_request(
+            Request::new(
+                1.into(),
+                "mmlx/trackLengthAtPosition".into(),
+                serde_json::json!({
+                    "textDocument": { "uri": uri }, "position": { "line": 0, "character": 0 }
+                }),
+            ),
+            &documents,
+            false,
+            i18n::Language::English,
+            Dialect::Mdx,
+        );
+        assert_eq!(
+            response.response_result.unwrap(),
+            serde_json::json!({ "channel": "A", "ticks": 0, "looping": false })
+        );
     }
 
     #[test]

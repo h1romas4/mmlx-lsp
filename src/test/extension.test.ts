@@ -3707,6 +3707,45 @@ finally:
 		}
 	});
 
+	test('shows voice references and offers defined voices in @ completion', async function () {
+		this.timeout(30000);
+		const extension = vscode.extensions.all.find(extension => extension.packageJSON.name === 'mmlx-lsp');
+		assert.ok(extension);
+		await extension.activate();
+		const voice = '@3 = {\n' + '31,0,0,15,0,32,0,1,0,0,0,\n'.repeat(4) + '7,0,15\n}\n';
+		const workspaceFolder = vscode.workspace.workspaceFolders?.[0];
+		assert.ok(workspaceFolder, 'reference navigation test needs a workspace folder');
+		const uri = vscode.Uri.joinPath(workspaceFolder.uri, `.mmlx-voice-refs-${randomUUID()}.mml`);
+		await vscode.workspace.fs.writeFile(uri, Buffer.from(`${voice}A @3 c4 @3\n`));
+		try {
+			const document = await vscode.workspace.openTextDocument(uri);
+			const lenses = await vscode.commands.executeCommand<vscode.CodeLens[]>(
+				'vscode.executeCodeLensProvider', document.uri);
+			assert.strictEqual(lenses?.length, 1);
+			assert.match(lenses[0].command?.title ?? '', /2 (references|件の参照)/);
+			assert.strictEqual(lenses[0].command?.command, 'mmlx.showVoiceReferences');
+			await vscode.window.showTextDocument(document);
+			const protocolUri = String(lenses[0].command?.arguments?.[0]);
+			assert.notStrictEqual(protocolUri, document.uri.toString(), 'workspace URIs should be translated for WASM');
+			await vscode.commands.executeCommand(
+				lenses[0].command!.command,
+				...(lenses[0].command!.arguments ?? [])
+			);
+			assert.strictEqual(
+				vscode.window.activeTextEditor?.document.uri.toString(),
+				document.uri.toString(),
+				'reference navigation must not try to open the WASM mount path'
+			);
+			const completion = await vscode.commands.executeCommand<vscode.CompletionList>(
+				'vscode.executeCompletionItemProvider', document.uri, new vscode.Position(7, 3), '@');
+			const definedVoice = completion?.items.find(item => item.label === '@3');
+			assert.ok(definedVoice);
+			assert.strictEqual(definedVoice.detail, 'Defined FM voice');
+		} finally {
+			await vscode.workspace.fs.delete(uri);
+		}
+	});
+
 	test('activates the development extension and publishes diagnostics', async function () {
 		this.timeout(30000);
 		const extension = vscode.extensions.all.find(extension => extension.packageJSON.name === 'mmlx-lsp');

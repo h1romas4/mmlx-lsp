@@ -1,5 +1,7 @@
-use lsp_types::{Position, Range};
+use lsp_types::{CodeLens, Command, Location, Position, Range, Uri};
 use serde_json::{Value, json};
+
+use crate::i18n::Language;
 
 fn position_at(source: &str, offset: usize) -> Position {
     let before = &source[..offset];
@@ -30,6 +32,7 @@ pub fn at_position(source: &str, position: Position) -> Option<Value> {
     if parameters.len() != 47 {
         return None;
     }
+
     let limits = [31, 31, 31, 15, 15, 127, 3, 15, 7, 3, 1];
     if parameters[..44]
         .iter()
@@ -73,6 +76,86 @@ pub fn at_position(source: &str, position: Position) -> Option<Value> {
         ),
         "parameterRanges": parameter_ranges,
     }))
+}
+
+pub fn code_lenses(source: &str, uri: Uri, language: Language) -> Vec<CodeLens> {
+    let Some(parsed) = mmlx::mdx::frontend::parse(source).ok() else {
+        return Vec::new();
+    };
+    let syntax = parsed.syntax();
+    let references: Vec<_> = syntax
+        .arguments()
+        .iter()
+        .filter_map(|argument| {
+            if !is_fm_track_command(source, argument.command.start()) {
+                return None;
+            }
+            let command = argument.command.text(source)?;
+            let number = command.strip_prefix('@')?;
+            if number.is_empty() || !number.bytes().all(|byte| byte.is_ascii_digit()) {
+                return None;
+            }
+            let number = number.parse::<u8>().ok()?;
+            Some((
+                number,
+                Location::new(uri.clone(), span_range(source, argument.command)?),
+            ))
+        })
+        .collect();
+
+    syntax
+        .voices()
+        .iter()
+        .filter_map(|voice| {
+            let number = voice.number.text(source)?.parse::<u8>().ok()?;
+            let definition_position = position_at(source, voice.number.start());
+            let voice_references: Vec<_> = references
+                .iter()
+                .filter(|(reference_number, _)| *reference_number == number)
+                .map(|(_, location)| location.clone())
+                .collect();
+            let count = voice_references.len();
+            let title = if count == 1 {
+                rust_i18n::t!("mdx.voice_reference.one", locale = language.locale()).to_string()
+            } else {
+                rust_i18n::t!(
+                    "mdx.voice_reference.many",
+                    locale = language.locale(),
+                    count = count
+                )
+                .to_string()
+            };
+            Some(CodeLens {
+                range: span_range(source, voice.span)?,
+                command: Some(Command {
+                    title,
+                    command: "mmlx.showVoiceReferences".into(),
+                    arguments: Some(vec![
+                        json!(uri),
+                        json!(definition_position),
+                        json!(voice_references),
+                    ]),
+                }),
+                data: None,
+            })
+        })
+        .collect()
+}
+
+fn span_range(source: &str, span: mmlx::source::Span) -> Option<Range> {
+    Some(Range::new(
+        position_at(source, span.start()),
+        position_at(source, span.end()),
+    ))
+}
+
+fn is_fm_track_command(source: &str, offset: usize) -> bool {
+    let line_start = source[..offset].rfind('\n').map_or(0, |index| index + 1);
+    source[line_start..offset]
+        .trim_start_matches([' ', '\t'])
+        .bytes()
+        .next()
+        .is_some_and(|channel| matches!(channel, b'A'..=b'H'))
 }
 
 #[cfg(test)]
@@ -183,5 +266,23 @@ mod tests {
         }
         let invalid = source.replace("31,12", "32,12");
         assert!(at_position(&invalid, position(&invalid, invalid.find("@7").unwrap())).is_none());
+    }
+
+    #[test]
+    fn voice_code_lenses_count_only_matching_voice_selects() {
+        let source = source().replace("A @7 c4", "A @7 @t193 @8 @7 c4\nP @7 c4");
+        let uri: Uri = "file:///voice.mml".parse().unwrap();
+        let lenses = code_lenses(&source, uri, Language::English);
+        assert_eq!(lenses.len(), 1);
+        let command = lenses[0].command.as_ref().unwrap();
+        assert_eq!(command.title, "2 references");
+        assert_eq!(command.command, "mmlx.showVoiceReferences");
+        assert_eq!(
+            command.arguments.as_ref().unwrap()[2]
+                .as_array()
+                .unwrap()
+                .len(),
+            2
+        );
     }
 }
