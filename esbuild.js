@@ -38,8 +38,7 @@ async function main() {
 	const ctx = await esbuild.context({
 		entryPoints: [
 			'src/extension.ts',
-			'src/nanodriveThread.ts',
-			'src/nanodriveProcessHost.ts'
+			'src/nanodriveThread.ts'
 		],
 		bundle: true,
 		format: 'cjs',

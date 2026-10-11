@@ -196,6 +196,12 @@
           "scope": "resource",
           "description": "Serial port path selected for NanoDrive8. Empty means no port selected. Selection does not open the port or transmit data."
         },
+        "mmlx.serial.windowsNative": {
+          "type": "boolean",
+          "default": false,
+          "scope": "resource",
+          "description": "Use the bundled native NanoDrive8 engine on Windows x64 instead of WASM. Takes effect on the next connection. Other platforms use WASM."
+        },
         "mmlx.midi.input": {
           "type": "string",
           "default": "",

@@ -3206,9 +3206,11 @@ finally:
 						const button = document.getElementById('connect-serial');
 						const select = document.getElementById('serial-connection');
 						const status = document.getElementById('serial-settings-status');
+						const native = document.getElementById('serial-windows-native');
 						const assert = (condition, message) => { if (!condition) throw new Error(message); };
 						const base = { type: 'serialSettings', folder: 'test', connection: '/dev/test', ports: [{ path: '/dev/test' }], editable: true, canConnect: true };
 						controls.render(base);
+						assert(native.disabled && !native.checked, 'Native must default off and require Windows x64');
 						assert(!button.disabled && !select.disabled, 'Available port must enable connection');
 						button.click();
 						assert(messages[0].type === 'setSerialConnection' && messages[0].connected === true, 'Connect click');
@@ -3222,9 +3224,17 @@ finally:
 						assert(button.disabled && select.disabled, 'Closing state');
 						controls.render({ ...base, canConnect: false, error: 'Unsupported firmware' });
 						assert(button.disabled && status.textContent === 'Unsupported firmware', 'Error state');
+						controls.render({ ...base, nativeAvailable: true });
+						native.click();
+						assert(messages.at(-1).type === 'updateSerialNative' && messages.at(-1).value === true && native.disabled, 'Native selection saves and locks while saving');
+						controls.render({ ...base, nativeAvailable: true, windowsNative: true, connected: true });
+						assert(native.checked && native.disabled, 'Native cannot change while connected');
 						for (const width of [120, 320, 640]) {
 							const root = document.getElementById('settings-controls');
 							root.style.width = width + 'px';
+							const nativeBounds = native.getBoundingClientRect();
+							const nativeLabel = native.parentElement.getBoundingClientRect();
+							assert(nativeBounds.left >= nativeLabel.left && nativeBounds.right <= nativeLabel.right, 'Native control must fit at ' + width);
 							for (const [prefix, settings, refreshType] of [
 								['serial', base, 'getSerialPorts'],
 								['midi', { ...base, type: 'midiSettings', connection: 'test', ports: ['test'] }, 'getMidiInputPorts'],
@@ -3271,11 +3281,13 @@ finally:
 		const configuration = vscode.workspace.getConfiguration('mmlx', folder.uri);
 		const setting = configuration.inspect<string>('serial.connection');
 		const previous = vscode.workspace.workspaceFile ? setting?.workspaceFolderValue : setting?.workspaceValue;
+		const nativeSetting = configuration.inspect<boolean>('serial.windowsNative');
+		const previousNative = vscode.workspace.workspaceFile ? nativeSetting?.workspaceFolderValue : nativeSetting?.workspaceValue;
 		const context = { extensionUri: extension.extensionUri, subscriptions: [] as vscode.Disposable[] };
 		const events = new vscode.EventEmitter<void>();
 		const messages = new vscode.EventEmitter<unknown>();
 		type SerialMessage = { type: string; folder: string; connection: string; editable: boolean;
-			loading: boolean; error: string; ports: { path: string; manufacturer?: string }[] };
+			loading: boolean; error: string; ports: { path: string; manufacturer?: string }[]; windowsNative: boolean; nativeAvailable: boolean };
 		const updates = new vscode.EventEmitter<SerialMessage>();
 		let latest: SerialMessage | undefined;
 		let ports = [{ path: '/dev/ttyUSB10', manufacturer: 'NanoDrive8' }, { path: '/dev/ttyUSB2', manufacturer: 'USB' },
@@ -3308,6 +3320,18 @@ finally:
 			assert.match(view.webview.html, /<button id="connect-serial" class="output-connection"[^>]*aria-pressed="false" disabled><\/button>/);
 			assert.deepStrictEqual(listed.ports.map(port => port.path), ['/dev/ttyUSB2', '/dev/ttyUSB10']);
 			assert.strictEqual(listed.ports[1].manufacturer, 'NanoDrive8');
+			assert.strictEqual(listed.nativeAvailable, process.platform === 'win32' && process.arch === 'x64');
+			const nativeValue = listed.nativeAvailable;
+			messages.fire({ type: 'updateSerialNative', folder: folder.uri.toString(), value: nativeValue });
+			await waitFor(message => message.editable && message.windowsNative === nativeValue);
+			assert.strictEqual(vscode.workspace.getConfiguration('mmlx', folder.uri).get('serial.windowsNative'), nativeValue);
+			messages.fire({ type: 'updateSerialNative', folder: folder.uri.toString(), value: 'true' });
+			assert.match(latest!.error, /Windows native/);
+			if (!listed.nativeAvailable) {
+				messages.fire({ type: 'updateSerialNative', folder: folder.uri.toString(), value: true });
+				assert.match(latest!.error, /Windows x64/);
+				assert.strictEqual(vscode.workspace.getConfiguration('mmlx', folder.uri).get('serial.windowsNative'), false);
+			}
 			messages.fire({ type: 'updateSerialConnection', folder: folder.uri.toString(), value: '/dev/ttyUSB2' });
 			await waitFor(message => message.editable && message.connection === '/dev/ttyUSB2');
 			assert.strictEqual(vscode.workspace.getConfiguration('mmlx', folder.uri).get('serial.connection'), '/dev/ttyUSB2');
@@ -3334,6 +3358,7 @@ finally:
 			provider.dispose();
 			for (const subscription of context.subscriptions) { subscription.dispose(); }
 			await configuration.update('serial.connection', previous, vscode.ConfigurationTarget.WorkspaceFolder);
+			await configuration.update('serial.windowsNative', previousNative, vscode.ConfigurationTarget.WorkspaceFolder);
 			events.dispose(); messages.dispose(); updates.dispose();
 		}
 	});

@@ -1,6 +1,7 @@
 import * as assert from 'node:assert';
 import { join, resolve } from 'node:path';
-import { NanoDriveProcess } from '../nanodriveProcess';
+import { existsSync } from 'node:fs';
+import { NanoDriveThreadClient } from '../nanodriveThreadClient';
 import { NanoDriveNativeCodec } from '../nanodriveNativeCodec';
 
 const root = resolve(__dirname, '../..');
@@ -9,13 +10,12 @@ async function until(check: () => boolean): Promise<void> {
     for (let count = 0; count < 400; count++) { if (check()) { return; } await delay(10); }
     assert.fail('State transition timed out');
 }
-function simulated(diagnostics: string[] = []): NanoDriveProcess {
-    return new NanoDriveProcess(root, () => {}, undefined, undefined, message => diagnostics.push(message), undefined, undefined,
-        join(root, 'tools', 'nanodrive-process-test-host.cjs'));
+function simulated(diagnostics: string[] = [], native: () => string | undefined = () => undefined): NanoDriveThreadClient {
+    return new NanoDriveThreadClient(join(root, 'tools', 'nanodrive-process-test-host.cjs'), 'unused.wasm',
+        () => {}, () => {}, () => {}, message => diagnostics.push(message), () => {}, () => {}, native);
 }
 
 suite('NanoDrive8 dedicated process', () => {
-    suiteSetup(function () { if (process.platform !== 'win32') { this.skip(); } });
     test('continues clocked PCM supply while the parent event loop is blocked for 1.5 seconds', async function () {
         this.timeout(12000);
         const diagnostics: string[] = [];
@@ -62,17 +62,37 @@ suite('NanoDrive8 dedicated process', () => {
         try {
             await player.connect('simulator');
             const playing = player.startPlayback('P c1', true, async () => new Uint8Array(0));
-            const rejected = assert.rejects(playing, /process exited/);
+            const rejected = assert.rejects(playing, /service exited|service disconnected/);
             await until(() => player.playbackState.playing);
-            Reflect.get(player, 'child').kill();
+            Reflect.get(player, 'worker').kill();
             await rejected;
             assert.ok(!player.state.connected && !player.playbackState.busy);
         } finally { await player.dispose(); }
     });
 
-    test('native engine generates binary ADPCM chunks, filters mute and recovers from an operation error', async function () {
+    test('backend selection is refreshed on reconnect and defaults to WASM', async () => {
+        const diagnostics: string[] = []; let native: string | undefined;
+        const player = simulated(diagnostics, () => native);
+        try {
+            await player.connect('simulator');
+            assert.ok(diagnostics.includes('Simulator backend: wasm'));
+            await player.disconnect(); native = 'bundled-engine.exe';
+            await player.connect('simulator');
+            assert.ok(diagnostics.includes('Simulator backend: native'));
+            await player.disconnect(); native = undefined;
+            await player.connect('simulator');
+            assert.strictEqual(diagnostics.filter(message => message === 'Simulator backend: wasm').length, 2);
+        } finally { await player.dispose(); }
+    });
+});
+
+suite('NanoDrive8 native engine', () => {
+    test('native engine generates binary ADPCM chunks, prepares mute and recovers from an operation error', async function () {
         this.timeout(10000);
-        const engine = new NanoDriveNativeCodec(join(root, 'dist', 'native', `mmlx-nanodrive${process.platform === 'win32' ? '.exe' : ''}`));
+        const executable = process.platform === 'win32' ? join(root, 'dist', 'native', 'mmlx-nanodrive.exe')
+            : join(root, 'server', 'target', 'release', 'mmlx-nanodrive');
+        if (!existsSync(executable)) { this.skip(); }
+        const engine = new NanoDriveNativeCodec(executable);
         try {
             await assert.rejects(engine.request({ operation: 'playbackNext', requestId: 0 }), /not initialized/);
             const source = new TextEncoder().encode('#pcmfile "drums"\nP o1 c4\n');
@@ -87,11 +107,12 @@ suite('NanoDrive8 dedicated process', () => {
                 assert.ok(chunk && 'bytes' in chunk && chunk.bytes instanceof Uint8Array);
                 assert.ok(chunk.position! > position && chunk.position! - position <= 160);
                 position = chunk.position!; ended = chunk.ended!;
-                const filtered = await engine.request({ operation: 'playbackFilter', bytes: Array.from(chunk.bytes) });
+                const filtered = await engine.request({ operation: 'playbackPrepare', bytes: Array.from(chunk.bytes), position });
                 assert.ok(filtered && 'bytes' in filtered && filtered.bytes instanceof Uint8Array);
                 if (i === 0) { await engine.request({ operation: 'playbackMute', muted: 256, position, requestId: 1 }); }
             }
             assert.ok(ended && position > 160);
+            assert.ok(engine.diagnostics.operations.playbackPrepare.count > 0);
             await engine.request({ operation: 'playbackStop' });
         } finally { await engine.dispose(); }
     });

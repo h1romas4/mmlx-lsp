@@ -1,4 +1,4 @@
-import { constants, setPriority } from 'node:os';
+import { constants, getPriority, setPriority } from 'node:os';
 import { spawn, type ChildProcessWithoutNullStreams } from 'node:child_process';
 import { EmulationFrameDecoder, decodeFmKeyEvents } from './emulationProtocol';
 import type { NanoDriveCodec } from './nanodrive';
@@ -8,15 +8,19 @@ type Result = Awaited<ReturnType<NanoDriveCodec>>;
 // The native build uses the same framed protocol as mmlx-nanodrive.wasm.
 export class NanoDriveNativeCodec {
     private readonly child: ChildProcessWithoutNullStreams;
-    private readonly pending = new Map<number, { resolve: (value: Result) => void; reject: (error: Error) => void; timer: NodeJS.Timeout }>();
+    private readonly pending = new Map<number, { resolve: (value: Result) => void; reject: (error: Error) => void; timer: NodeJS.Timeout; operation: string; started: number }>();
+    private readonly measurements = new Map<string, { count: number; maxRoundTripMs: number }>();
     private id = 0;
     private stopped = false;
     private stderr = '';
 
-    constructor(executable: string, private readonly onFailure: (error: string) => void = () => {}) {
+    constructor(executable: string, private readonly onFailure: (error: string) => void = () => {}, onDiagnostic: (message: string) => void = () => {}) {
         this.child = spawn(executable, [], { windowsHide: true, stdio: 'pipe' });
         if (process.platform === 'win32' && this.child.pid !== undefined) {
-            try { setPriority(this.child.pid, constants.priority.PRIORITY_HIGH); } catch (error) { console.error(`NanoDrive8 engine priority: ${String(error)}`); }
+            try {
+                setPriority(this.child.pid, constants.priority.PRIORITY_HIGH);
+                onDiagnostic(`NanoDrive8 native engine priority set (pid=${this.child.pid}, priority=${getPriority(this.child.pid)}).`);
+            } catch (error) { onDiagnostic(`Could not raise NanoDrive8 native engine priority; continuing: ${String(error)}`); }
         }
         const decoder = new EmulationFrameDecoder((kind, bytes) => {
             if (kind === 1) { this.reply(JSON.parse(Buffer.from(bytes).toString('utf8'))); return; }
@@ -54,16 +58,24 @@ export class NanoDriveNativeCodec {
         if (Buffer.byteLength(command) > 65536) { return Promise.reject(new Error('NanoDrive8 command is too large.')); }
         return new Promise<Result>((resolve, reject) => {
             const timer = setTimeout(() => this.fail(new Error('NanoDrive8 native engine timed out.')), 15000);
-            this.pending.set(id, { resolve, reject, timer });
+            this.pending.set(id, { resolve, reject, timer, operation: params.operation, started: performance.now() });
             this.child.stdin.write(command, error => { if (error) { this.fail(error); } });
         });
     };
+
+    get diagnostics() {
+        return { operations: Object.fromEntries([...this.measurements].map(([operation, metric]) => [operation, { ...metric }])),
+            pending: [...this.pending.values()].map(item => ({ operation: item.operation, ageMs: performance.now() - item.started })) };
+    }
 
     private reply(value: { id?: unknown; result?: Result; error?: unknown }): void {
         if (!value || !Number.isInteger(value.id) || !this.pending.has(value.id as number)
             || (typeof value.error !== 'string' && !Object.hasOwn(value, 'result'))) { throw new Error('Invalid NanoDrive8 native reply.'); }
         const pending = this.pending.get(value.id as number)!;
         this.pending.delete(value.id as number); clearTimeout(pending.timer);
+        const metric = this.measurements.get(pending.operation) ?? { count: 0, maxRoundTripMs: 0 };
+        metric.count++; metric.maxRoundTripMs = Math.max(metric.maxRoundTripMs, performance.now() - pending.started);
+        this.measurements.set(pending.operation, metric);
         if (typeof value.error === 'string') { pending.reject(new Error(value.error)); }
         else { pending.resolve(value.result!); }
     }

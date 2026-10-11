@@ -15,6 +15,9 @@ export class NanoDriveThreadClient implements Pick<NanoDriveConnection, Method |
 	private worker?: ChildProcess;
 	private id = 0;
 	private disposed = false;
+	private muted = 0;
+	private volume = 1;
+	private nativeExecutable?: string;
 	private snapshot: NanoDriveState = { port: '', connected: false, connecting: false, closing: false, phase: '', model: '', firmware: '', error: '' };
 	private output: NanoDriveOutputState = { connected: false, connecting: false, error: '' };
 	private playback: NanoDrivePlaybackState = { busy: false, playing: false, loading: false, position: 0, finished: false, error: '' };
@@ -26,7 +29,8 @@ export class NanoDriveThreadClient implements Pick<NanoDriveConnection, Method |
 		private readonly onPlayback: (state: NanoDrivePlaybackState) => void,
 		private readonly onDiagnostic: (message: string) => void,
 		private readonly onVoiceTest: (playing: boolean, error?: boolean) => void,
-		private readonly onKeys: (keys: FmKeyEvent[]) => void) {}
+		private readonly onKeys: (keys: FmKeyEvent[]) => void,
+		private readonly getNativeExecutable: () => string | undefined = () => undefined) {}
 
 	get state(): NanoDriveState { return { ...this.snapshot }; }
 	get outputState(): NanoDriveOutputState { return { ...this.output }; }
@@ -35,7 +39,9 @@ export class NanoDriveThreadClient implements Pick<NanoDriveConnection, Method |
 	private start(): ChildProcess {
 		if (this.disposed) { throw new Error('NanoDrive8 worker disposed.'); }
 		if (this.worker) { return this.worker; }
-		const worker = fork(this.entry, ['--nanodrive-service', this.wasmPath], {
+		const native = this.getNativeExecutable();
+		this.nativeExecutable = native;
+		const worker = fork(this.entry, ['--nanodrive-service', this.wasmPath, ...(native ? ['--native', native] : [])], {
 			serialization: 'advanced', execArgv: [], env: { ...process.env, ELECTRON_RUN_AS_NODE: '1' },
 			stdio: ['ignore', 'ignore', 'pipe', 'ipc']
 		});
@@ -112,15 +118,41 @@ export class NanoDriveThreadClient implements Pick<NanoDriveConnection, Method |
 		this.onDiagnostic(error.message);
 	}
 
-	connect(...args: Parameters<NanoDriveConnection['connect']>): Promise<void> { return this.call('connect', args); }
-	disconnect(...args: Parameters<NanoDriveConnection['disconnect']>): Promise<void> { return this.worker ? this.call('disconnect', args) : Promise.resolve(); }
+	async connect(...args: Parameters<NanoDriveConnection['connect']>): Promise<void> {
+		if (this.worker && this.nativeExecutable !== this.getNativeExecutable()) { await this.disconnect(); }
+		await this.call('connect', args);
+		await this.call('setMuted', [this.muted]);
+		if (this.volume !== 1) { await this.call('setVolume', [this.volume]); }
+	}
+	async disconnect(...args: Parameters<NanoDriveConnection['disconnect']>): Promise<void> {
+		const worker = this.worker;
+		if (!worker) { return; }
+		try { await this.call('disconnect', args); }
+		finally {
+			if (this.worker === worker) {
+				this.worker = undefined;
+				for (const pending of this.pending.values()) { pending.reject(new Error('NanoDrive8 playback canceled.')); }
+				this.pending.clear();
+				if (worker.exitCode === null && worker.signalCode === null) {
+					const exited = new Promise<void>(resolve => worker.once('exit', () => resolve()));
+					worker.disconnect(); await exited;
+				}
+			}
+		}
+	}
 	connectOutput(...args: Parameters<NanoDriveConnection['connectOutput']>): Promise<void> { return this.call('connectOutput', args); }
 	disconnectOutput(): Promise<void> { return this.worker ? this.call('disconnectOutput', []) : Promise.resolve(); }
 	resetOutput(...args: Parameters<NanoDriveConnection['resetOutput']>): Promise<void> { return this.call('resetOutput', args); }
 	setVoice(...args: Parameters<NanoDriveConnection['setVoice']>): void { if (this.worker) { void this.call('setVoice', args).catch(() => {}); } }
 	note(...args: Parameters<NanoDriveConnection['note']>): void { if (this.worker) { void this.call('note', args).catch(() => {}); } }
-	setMuted(...args: Parameters<NanoDriveConnection['setMuted']>): Promise<void> { return this.call('setMuted', args); }
-	setVolume(...args: Parameters<NanoDriveConnection['setVolume']>): Promise<void> { return this.call('setVolume', args); }
+	setMuted(...args: Parameters<NanoDriveConnection['setMuted']>): Promise<void> {
+		if (Number.isInteger(args[0]) && args[0] >= 0 && args[0] <= 511) { this.muted = args[0]; }
+		return this.call('setMuted', args);
+	}
+	setVolume(...args: Parameters<NanoDriveConnection['setVolume']>): Promise<void> {
+		if (Number.isFinite(args[0]) && args[0] >= 0 && args[0] <= 1) { this.volume = args[0]; }
+		return this.call('setVolume', args);
+	}
 	startPlayback(source: string, looped: boolean, loadPdx: (name: string) => Promise<Uint8Array>, options?: Parameters<NanoDriveConnection['startPlayback']>[3]): Promise<void> {
 		return this.call('startPlayback', [source, looped, options], loadPdx);
 	}
