@@ -14,6 +14,7 @@ For installation, see [VS Code](#manual-installation-in-vs-code) or
 
 - **Syntax highlighting** for notes, commands, track labels, voice definitions, and comments.
 - **Error diagnostics** for parsing, compilation, and playback checks.
+- **Voice-definition formatting** with aligned YM2151 operator parameters.
 - **Command completion** with argument snippets and FM voice-definition templates.
 - **Parameter hints** while entering command arguments.
 - **Japanese and English** command descriptions and parameter hints.
@@ -41,6 +42,10 @@ status bar and select **MML(mdx)**, or add this to your VS Code settings:
 Use completion to insert commands and voice definitions. Parameter hints show
 the active argument as you type. To read a command's full description, select
 it in the completion list and choose **Show More** (`Ctrl+Space` toggles the details).
+Run **Format Document** to format FM voice definitions in the aligned block-comment style;
+existing comments inside definitions are replaced by the parameter headings. Other MML content
+is left unchanged.
+Run **Format Document** to format FM voice definitions; other MML content is left unchanged.
 
 ## Settings
 
@@ -173,7 +178,7 @@ Dedicated bottom panel opened with **mmlx: Show mmlx Panel**.
     load or validate PDX sample files.
 - Completion covers commands and voice-definition templates, not notes,
     metadata directives, available voice numbers, or argument values.
-- Hover, go-to-definition, formatting, and browser-based VS Code are not supported.
+- Hover, go-to-definition, general MML formatting, and browser-based VS Code are not supported.
 
 ## Manual Installation in VS Code
 

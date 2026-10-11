@@ -3790,6 +3790,35 @@ finally:
 		}
 	});
 
+	test('formats FM voice definitions without changing other MML', async function () {
+		this.timeout(30000);
+		const extension = vscode.extensions.all.find(extension => extension.packageJSON.name === 'mmlx-lsp');
+		assert.ok(extension);
+		await extension.activate();
+		const source = '@7 = {\n/* old voice comments */\n'
+			+ '31, 12, 4, 8, 6, 20, 1, 2, 3, 1, 0,\n'.repeat(4)
+			+ '5, 3, 15\n}\nA c4\n';
+		const document = await vscode.workspace.openTextDocument({ language: 'mmlx', content: source });
+		const edits = await vscode.commands.executeCommand<vscode.TextEdit[]>(
+			'vscode.executeFormatDocumentProvider',
+			document.uri,
+			{ tabSize: 4, insertSpaces: true }
+		);
+		assert.ok(edits?.length);
+		const workspaceEdit = new vscode.WorkspaceEdit();
+		for (const edit of edits ?? []) {
+			workspaceEdit.replace(document.uri, edit.range, edit.newText);
+		}
+		assert.ok(await vscode.workspace.applyEdit(workspaceEdit));
+		const formatted = document.getText();
+		assert.ok(formatted.startsWith('@7 = {'));
+		assert.ok(formatted.includes('    /* AR  D1R D2R RR D1L  TL KS MUL DT1 DT2 AME */'));
+		assert.ok(formatted.includes('    /* CON FL OP */'));
+		assert.ok(formatted.includes('        31, 12,  4,  8,  6, 20, 1,  2,  3,  1,  0,'));
+		assert.ok(!formatted.includes('old voice comments'));
+		assert.ok(formatted.endsWith('A c4\n'));
+	});
+
 	test('activates the development extension and publishes diagnostics', async function () {
 		this.timeout(30000);
 		const extension = vscode.extensions.all.find(extension => extension.packageJSON.name === 'mmlx-lsp');

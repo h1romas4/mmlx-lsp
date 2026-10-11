@@ -1,5 +1,6 @@
 mod completion;
 mod dialect;
+mod formatter;
 mod i18n;
 mod selection_range;
 mod semantic;
@@ -15,9 +16,10 @@ use dialect::Dialect;
 use lsp_server::{Connection, ErrorCode, Message, Notification, Request, Response};
 use lsp_types::{
     CodeLensParams, CompletionParams, Diagnostic, DiagnosticSeverity, DidChangeTextDocumentParams,
-    DidCloseTextDocumentParams, DidOpenTextDocumentParams, InitializeParams, NumberOrString,
-    Position, PublishDiagnosticsParams, Range, SelectionRangeParams, SemanticTokensParams,
-    SignatureHelpParams, TextDocumentPositionParams, Uri,
+    DidCloseTextDocumentParams, DidOpenTextDocumentParams, DocumentFormattingParams,
+    InitializeParams, NumberOrString, Position, PublishDiagnosticsParams, Range,
+    SelectionRangeParams, SemanticTokensParams, SignatureHelpParams, TextDocumentPositionParams,
+    Uri,
 };
 use mmlx::diagnostic::Severity;
 use mmlx::frontend::SourceFile;
@@ -228,6 +230,22 @@ fn handle_request(
                     .get(&params.text_document.uri)
                     .and_then(|source| dialect.selection_ranges(source, &params.positions));
                 Response::new_ok(request.id, selections)
+            }
+            Err(error) => Response::new_err(
+                request.id,
+                ErrorCode::InvalidParams as i32,
+                error.to_string(),
+            ),
+        };
+    }
+    if request.method == "textDocument/formatting" {
+        return match serde_json::from_value::<DocumentFormattingParams>(request.params) {
+            Ok(params) => {
+                let edits = documents
+                    .get(&params.text_document.uri)
+                    .map(|source| dialect.formatting_edits(source))
+                    .unwrap_or_default();
+                Response::new_ok(request.id, edits)
             }
             Err(error) => Response::new_err(
                 request.id,
@@ -456,6 +474,62 @@ mod tests {
     }
 
     #[test]
+    fn formatting_request_formats_voice_definitions_without_changing_other_mml() {
+        let uri = "file:///voice.mml".parse::<Uri>().unwrap();
+        let source = format!(
+            "@7 = {{\n/* labels */\n{}\n5, 3, 15\n}}\nA c4\n",
+            "31, 12, 4, 8, 6, 20, 1, 2, 3, 1, 0,\n".repeat(4)
+        );
+        let documents = HashMap::from([(uri.clone(), source.clone())]);
+        let response = handle_request(
+            Request::new(
+                1.into(),
+                "textDocument/formatting".into(),
+                serde_json::json!({
+                    "textDocument": { "uri": uri },
+                    "options": { "tabSize": 4, "insertSpaces": true },
+                }),
+            ),
+            &documents,
+            false,
+        );
+        let edits: Vec<lsp_types::TextEdit> =
+            serde_json::from_value(response.response_result.unwrap()).unwrap();
+        assert_eq!(edits.len(), 1);
+        assert!(edits[0].new_text.starts_with("@7 = {"));
+        assert!(
+            edits[0]
+                .new_text
+                .contains("        31, 12,  4,  8,  6, 20, 1,  2,  3,  1,  0,")
+        );
+        assert!(edits[0].new_text.contains("    /* CON FL OP */"));
+        assert!(!edits[0].new_text.contains("labels"));
+        let start = crate::completion::byte_offset(&source, edits[0].range.start).unwrap();
+        let end = crate::completion::byte_offset(&source, edits[0].range.end).unwrap();
+        assert_eq!(&source[..start], "");
+        assert_eq!(&source[end..], "A c4\n");
+    }
+
+    #[test]
+    fn formatting_request_is_a_noop_for_documents_without_voice_definitions() {
+        let uri = "file:///track.mml".parse::<Uri>().unwrap();
+        let documents = HashMap::from([(uri.clone(), "A c4\n".to_string())]);
+        let response = handle_request(
+            Request::new(
+                1.into(),
+                "textDocument/formatting".into(),
+                serde_json::json!({
+                    "textDocument": { "uri": uri },
+                    "options": { "tabSize": 4, "insertSpaces": true },
+                }),
+            ),
+            &documents,
+            false,
+        );
+        assert_eq!(response.response_result.unwrap(), serde_json::json!([]));
+    }
+
+    #[test]
     fn initialization_selects_mdx_with_or_without_an_explicit_option() {
         for options in [
             serde_json::Value::Null,
@@ -484,6 +558,7 @@ mod tests {
                 let capabilities = &response.response_result.unwrap()["capabilities"];
                 assert_eq!(capabilities["positionEncoding"], "utf-16");
                 assert_eq!(capabilities["semanticTokensProvider"]["full"], true);
+                assert_eq!(capabilities["documentFormattingProvider"], true);
                 client
                     .sender
                     .send(Message::Notification(Notification::new(

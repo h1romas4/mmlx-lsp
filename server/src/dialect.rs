@@ -1,9 +1,9 @@
 use crate::i18n::Language;
 use lsp_types::{
-    CodeLensOptions, CompletionItem, CompletionOptions, Diagnostic, InitializeParams, Position,
-    PositionEncodingKind, SelectionRange, SemanticTokens, SemanticTokensFullOptions,
+    CodeLensOptions, CompletionItem, CompletionOptions, Diagnostic, InitializeParams, OneOf,
+    Position, PositionEncodingKind, SelectionRange, SemanticTokens, SemanticTokensFullOptions,
     SemanticTokensOptions, ServerCapabilities, SignatureHelp, SignatureHelpOptions,
-    TextDocumentSyncCapability, TextDocumentSyncKind,
+    TextDocumentSyncCapability, TextDocumentSyncKind, TextEdit,
 };
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -79,6 +79,7 @@ impl Dialect {
                 code_lens_provider: Some(CodeLensOptions {
                     resolve_provider: Some(false),
                 }),
+                document_formatting_provider: Some(OneOf::Left(true)),
                 ..ServerCapabilities::default()
             },
         }
@@ -126,6 +127,12 @@ impl Dialect {
     ) -> Option<Vec<SelectionRange>> {
         match self {
             Self::Mdx => crate::selection_range::ranges(source, positions),
+        }
+    }
+
+    pub fn formatting_edits(self, source: &str) -> Vec<TextEdit> {
+        match self {
+            Self::Mdx => crate::formatter::edits(source),
         }
     }
 }
