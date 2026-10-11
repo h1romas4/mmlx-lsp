@@ -1418,6 +1418,46 @@ suite('mmlx extension', () => {
 		assert.ok((await vscode.languages.getLanguages()).includes('mmlx'));
 	});
 
+	test('toggles MML line comments and block comments based on selection', async () => {
+		const extension = vscode.extensions.all.find(extension => extension.packageJSON.name === 'mmlx-lsp');
+		assert.ok(extension);
+		await extension.activate();
+		assert.ok((await vscode.commands.getCommands()).includes('mmlx.toggleComment'));
+		const language = extension.packageJSON.contributes.languages.find((language: { id: string }) => language.id === 'mmlx');
+		assert.deepStrictEqual(language.configuration, './language-configuration.json');
+		const configuration = JSON.parse(await vscode.workspace.fs.readFile(
+			vscode.Uri.joinPath(extension.extensionUri, language.configuration)).then(bytes => new TextDecoder().decode(bytes)));
+		assert.deepStrictEqual(configuration.comments, { lineComment: ';', blockComment: ['/*', '*/'] });
+		const keybinding = extension.packageJSON.contributes.keybindings.find((binding: { command: string }) => binding.command === 'mmlx.toggleComment');
+		assert.strictEqual(keybinding.key, 'ctrl+/');
+		assert.strictEqual(keybinding.when, 'editorTextFocus && editorLangId == mmlx');
+
+		const document = await vscode.workspace.openTextDocument({ language: 'mmlx', content: 'A t120 c4\nB o4 d4\n' });
+		const editor = await vscode.window.showTextDocument(document);
+		try {
+			editor.selection = new vscode.Selection(0, 0, 0, 0);
+			await vscode.commands.executeCommand('mmlx.toggleComment');
+			assert.strictEqual(document.lineAt(0).text, '; A t120 c4');
+			await vscode.commands.executeCommand('mmlx.toggleComment');
+			assert.strictEqual(document.lineAt(0).text, 'A t120 c4');
+
+			editor.selection = new vscode.Selection(0, 2, 0, 6);
+			await vscode.commands.executeCommand('mmlx.toggleComment');
+			assert.match(document.lineAt(0).text, /^A \/\*.*t120.*\*\/ c4$/);
+
+			editor.selection = new vscode.Selection(0, 0, 1, document.lineAt(1).text.length);
+			await vscode.commands.executeCommand('mmlx.toggleComment');
+			assert.ok(document.lineAt(0).text.startsWith('; ') && document.lineAt(1).text.startsWith('; '),
+				'Multiline selections use line comments on each selected line');
+			editor.selection = new vscode.Selection(0, 0, 1, document.lineAt(1).text.length);
+			await vscode.commands.executeCommand('mmlx.toggleComment');
+			assert.ok(!document.lineAt(0).text.startsWith('; ') && !document.lineAt(1).text.startsWith('; '),
+				'Multiline line comments can be toggled off');
+		} finally {
+			await vscode.commands.executeCommand('workbench.action.closeActiveEditor');
+		}
+	});
+
 	test('output connections enable NanoDrive8 only with a Settings connection', async () => {
 		const extension = vscode.extensions.all.find(extension => extension.packageJSON.name === 'mmlx-lsp');
 		assert.ok(extension);

@@ -44,6 +44,17 @@
       {
         "command": "mmlx.showVoicePanel",
         "title": "mmlx: Show mmlx Panel"
+      },
+      {
+        "command": "mmlx.toggleComment",
+        "title": "mmlx: Toggle Comment"
+      }
+    ],
+    "keybindings": [
+      {
+        "command": "mmlx.toggleComment",
+        "key": "ctrl+/",
+        "when": "editorTextFocus && editorLangId == mmlx"
       }
     ],
     "viewsContainers": {
@@ -227,7 +238,8 @@
         ],
         "extensions": [
           ".mml"
-        ]
+        ],
+        "configuration": "./language-configuration.json"
       }
     ],
     "grammars": [

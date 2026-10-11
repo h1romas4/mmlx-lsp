@@ -60,6 +60,16 @@ export async function activate(context: ExtensionContext): Promise<void> {
 	});
 	await client.start();
 	voiceView = registerVoiceView(context, () => client, wasm);
+	context.subscriptions.push(commands.registerCommand('mmlx.toggleComment', async () => {
+		const editor = window.activeTextEditor;
+		if (!editor || editor.document.languageId !== 'mmlx') { return; }
+		const hasSelection = editor.selections.some(selection => !selection.isEmpty);
+		const hasMultilineSelection = editor.selections.some(selection => selection.start.line !== selection.end.line);
+		const command = hasSelection && !hasMultilineSelection
+			? 'editor.action.blockComment'
+			: 'editor.action.commentLine';
+		await commands.executeCommand(command);
+	}));
 	context.subscriptions.push(commands.registerCommand('mmlx.restartLanguageServer', async () => {
 		await client?.stop();
 		await client?.start();
