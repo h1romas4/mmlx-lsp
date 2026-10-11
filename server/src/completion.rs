@@ -247,32 +247,58 @@ fn defined_voice_items(
     let Ok(parsed) = mmlx::mdx::frontend::parse(&parse_source) else {
         return Vec::new();
     };
-    let mut numbers: Vec<_> = parsed
-        .ast()
-        .voices
+    let mut voices: Vec<_> = parsed
+        .syntax()
+        .voices()
         .iter()
-        .map(|voice| voice.number)
+        .filter_map(|voice| {
+            let number = voice.number.text(&parse_source)?.parse::<u8>().ok()?;
+            Some((number, voice_name_before(&parse_source, voice.span.start())))
+        })
         .collect();
-    numbers.sort_unstable();
-    numbers.dedup();
-    numbers
+    voices.sort_by_key(|(number, _)| *number);
+    voices.dedup_by_key(|(number, _)| *number);
+    voices
         .into_iter()
-        .filter_map(|number| {
-            let label = format!("@{number}");
-            label.starts_with(prefix).then_some(CompletionItem {
-                label: label.clone(),
+        .filter_map(|(number, name)| {
+            let voice_reference = format!("@{number}");
+            if !voice_reference.starts_with(prefix) {
+                return None;
+            }
+            let label = name.map_or_else(
+                || voice_reference.clone(),
+                |name| format!("{voice_reference} ({name})"),
+            );
+            Some(CompletionItem {
+                label,
                 kind: Some(CompletionItemKind::REFERENCE),
                 detail: Some("Defined FM voice".into()),
-                filter_text: Some(label.clone()),
+                filter_text: Some(voice_reference.clone()),
                 sort_text: Some(format!("0{number:03}")),
                 text_edit: Some(CompletionTextEdit::Edit(TextEdit {
                     range,
-                    new_text: label,
+                    new_text: voice_reference,
                 })),
                 ..CompletionItem::default()
             })
         })
         .collect()
+}
+
+fn voice_name_before(source: &str, definition_start: usize) -> Option<String> {
+    let line_start = source[..definition_start]
+        .rfind('\n')
+        .map_or(0, |index| index + 1);
+    if !source[line_start..definition_start].trim().is_empty() {
+        return None;
+    }
+    let comment_end = line_start.checked_sub(1)?;
+    let comment_start = source[..comment_end]
+        .rfind('\n')
+        .map_or(0, |index| index + 1);
+    let comment = source.get(comment_start..comment_end)?.trim();
+    let name = comment.strip_prefix(';')?.trim();
+    (!name.is_empty()).then(|| name.to_owned())
 }
 
 fn voice_definition_item(
@@ -1090,6 +1116,47 @@ mod tests {
             edit.range,
             Range::new(Position::new(8, 2), Position::new(8, 3))
         );
+    }
+
+    #[test]
+    fn voice_select_completion_shows_the_adjacent_semicolon_comment() {
+        let source = format!(
+            "; Grand Piano\n@7 = {{\n{}\n5,3,15\n}}\nA @",
+            "31,12,4,8,6,20,1,2,3,1,0,\n".repeat(4)
+        );
+        let items = super::items(&source, Position::new(9, 3), true, Language::English);
+        let voice = items
+            .iter()
+            .find(|item| item.filter_text.as_deref() == Some("@7"))
+            .unwrap();
+        assert_eq!(voice.label, "@7 (Grand Piano)");
+        assert_eq!(voice.filter_text.as_deref(), Some("@7"));
+        let Some(CompletionTextEdit::Edit(edit)) = &voice.text_edit else {
+            panic!("expected text edit");
+        };
+        assert_eq!(edit.new_text, "@7");
+    }
+
+    #[test]
+    fn voice_select_completion_ignores_non_adjacent_and_inline_comments() {
+        for source in [
+            format!(
+                "; Detached name\n\n@7 = {{\n{}\n5,3,15\n}}\nA @",
+                "31,12,4,8,6,20,1,2,3,1,0,\n".repeat(4)
+            ),
+            format!(
+                "A c4 ; Not a voice name\n@7 = {{\n{}\n5,3,15\n}}\nA @",
+                "31,12,4,8,6,20,1,2,3,1,0,\n".repeat(4)
+            ),
+        ] {
+            let line = source.bytes().filter(|byte| *byte == b'\n').count() as u32;
+            let items = super::items(&source, Position::new(line, 3), true, Language::English);
+            let voice = items
+                .iter()
+                .find(|item| item.filter_text.as_deref() == Some("@7"))
+                .unwrap();
+            assert_eq!(voice.label, "@7");
+        }
     }
 
     #[test]

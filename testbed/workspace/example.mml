@@ -1,5 +1,6 @@
 #title "mmlx LSP test"
 
+; Synth Brass
 @1 = {
     /* AR  D1R D2R RR D1L TL  KS MUL DT1 DT2 AME */
         28, 4,  0,  5, 1,  37, 2, 1,  7,  0,  0,
