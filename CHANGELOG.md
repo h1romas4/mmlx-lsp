@@ -2,6 +2,13 @@
 
 All notable changes to the "mmlx-lsp" extension will be documented in this file.
 
+## [0.17.0] - 2026-10-12
+
+- Play selected MML passages and add editor support for formatting, commenting, and selection navigation.
+- Improve FM Voice editing with voice-name and reference completions, track-length status, and clearer voice testing controls.
+- Refine playback and Settings panel controls, and update the user guide.
+- Add an experimental MCP server for MML, MDX, and VGM analysis, with bounded range-based results.
+
 ## [0.16.0] - 2026-10-11
 
 - Reduce NanoDrive8 supply delays by preparing and mute-filtering PCM ahead of playback and processing STATUS separately from audio generation. Preserve ordered MUTE/SOLO changes.
