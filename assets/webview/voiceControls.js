@@ -525,11 +525,18 @@ export function createVoiceControls(root, onEdit = () => {}) {
 		voicePanel.classList.toggle('voice-editing', editing);
 		voicePanel.setAttribute('aria-busy', String(editing));
 		lockControls(!voice || !message.editable || !!message.retained || !!message.error);
-		root.querySelector('#status').textContent = message.error ? 'Unavailable'
-			: voice ? (message.retained ? 'Retained' : '') : 'No voice selected';
+		const status = root.querySelector('#status');
+		status.textContent = message.warning ? 'Invalid voice values'
+			: message.error ? 'Unavailable'
+				: voice ? (message.retained ? 'Retained' : '') : 'No voice selected';
+		status.classList.toggle('is-warning', !!message.warning);
+		const warning = root.querySelector('#voice-warning');
+		warning.hidden = !Array.isArray(message.warning) || !message.warning.length;
+		warning.textContent = warning.hidden ? '' : `Out-of-range parameters: ${message.warning.join('; ')}`;
 		const voiceName = root.querySelector('#voice-name');
-		voiceName.textContent = voice ? `@${voice.number}` : 'Move the cursor to a voice definition.';
-		voiceName.classList.toggle('empty', !voice);
+		voiceName.textContent = voice ? `@${voice.number}`
+			: Number.isInteger(message.invalidNumber) ? `@${message.invalidNumber}` : 'Move the cursor to a voice definition.';
+		voiceName.classList.toggle('empty', !voice && !Number.isInteger(message.invalidNumber));
 		const voiceLabel = root.querySelector('#voice-label');
 		const label = typeof message.name === 'string' ? message.name.trim() : '';
 		voiceLabel.textContent = label;

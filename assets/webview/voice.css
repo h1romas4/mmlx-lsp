@@ -121,6 +121,8 @@ h1.empty { font-size: inherit; font-weight: 400; }
 .playback-key-black.is-active { background: var(--channel-accent); border-color: var(--channel-accent); }
 .playback-channel-pcm .playback-channel-piano { opacity: .35; }
 #source { color: var(--vscode-descriptionForeground, #666); overflow-wrap: anywhere; }
+.voice-warning { margin: 0 0 12px; padding: 8px 10px; border-left: 2px solid var(--vscode-editorWarning-foreground, #cca700); background: var(--vscode-inputValidation-warningBackground, rgba(204, 167, 0, .1)); color: var(--vscode-editorWarning-foreground, #cca700); font-size: 12px; line-height: 1.4; overflow-wrap: anywhere; }
+.voice-warning[hidden] { display: none; }
 .summary { display: flex; flex-wrap: wrap; gap: 8px 18px; }
 .summary label { display: inline-flex; align-items: center; gap: 6px; }
 input, select {
@@ -145,6 +147,7 @@ input:disabled, select:disabled { opacity: .6; }
 .output-controls { display: inline-flex; align-items: center; flex-wrap: nowrap; gap: 6px; min-width: 0; }
 .output-controls label { display: inline-flex; align-items: center; gap: 6px; min-width: 0; }
 #status { margin-left: auto; color: var(--vscode-descriptionForeground, #666); }
+#status.is-warning { color: var(--vscode-editorWarning-foreground, #cca700); }
 #build-settings-status { margin-left: auto; color: var(--vscode-descriptionForeground, #666); overflow-wrap: anywhere; }
 .build-settings h2 { margin: 0 0 12px; font-size: 13px; font-weight: 600; }
 #build-settings-source { margin: 8px 0 16px; color: var(--vscode-descriptionForeground, #666); overflow-wrap: anywhere; }

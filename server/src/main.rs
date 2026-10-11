@@ -314,13 +314,46 @@ fn handle_notification(
 }
 
 fn mdx_diagnostics(source: &str) -> Vec<Diagnostic> {
-    let result = mmlx::mdx::frontend::parse(source)
-        .and_then(|parsed| mmlx::mdx::frontend::compile(&parsed))
-        .and_then(|compiled| check_compiled_playback(compiled, MdxPlaybackCheckLimits::default()));
-    match result {
-        Ok(()) => vec![],
-        Err(error) => vec![to_lsp_diagnostic(source, error)],
+    let parsed = match mmlx::mdx::frontend::parse(source) {
+        Ok(parsed) => parsed,
+        Err(error) => return vec![to_lsp_diagnostic(source, error)],
+    };
+    let mut diagnostics = parsed
+        .syntax()
+        .voices()
+        .iter()
+        .flat_map(|voice| crate::voice::invalid_parameters(source, voice))
+        .map(|issue| {
+            let parameter = issue.operator.map_or_else(
+                || issue.name.to_owned(),
+                |operator| format!("OP{operator} {}", issue.name),
+            );
+            to_lsp_diagnostic(
+                source,
+                mmlx::diagnostic::Diagnostic {
+                    code: "mmlx.mdx.voice-value-out-of-range",
+                    severity: Severity::Warning,
+                    message: format!(
+                        "FM voice parameter {parameter} value {} is outside the supported range 0-{}.",
+                        issue.value, issue.max
+                    ),
+                    span: Some(issue.span),
+                },
+            )
+        })
+        .collect::<Vec<_>>();
+
+    let compiled = match mmlx::mdx::frontend::compile(&parsed) {
+        Ok(compiled) => compiled,
+        Err(error) => {
+            diagnostics.push(to_lsp_diagnostic(source, error));
+            return diagnostics;
+        }
+    };
+    if let Err(error) = check_compiled_playback(compiled, MdxPlaybackCheckLimits::default()) {
+        diagnostics.push(to_lsp_diagnostic(source, error));
     }
+    diagnostics
 }
 
 fn check_compiled_playback(
@@ -690,6 +723,53 @@ mod tests {
         assert!(diagnostics(&source).is_empty());
         assert!(diagnostics("A c4 d4 e4").is_empty());
         assert!(diagnostics("A r4").is_empty());
+    }
+
+    #[test]
+    fn voice_parameter_range_violations_are_warnings_without_rejecting_compile() {
+        let mut parameters = [0; 47];
+        parameters[0] = 32;
+        parameters[5] = 128;
+        parameters[44] = 8;
+        parameters[45] = 9;
+        parameters[46] = 16;
+        let source = format!(
+            "@7 = {{ {} }}",
+            parameters
+                .iter()
+                .map(u8::to_string)
+                .collect::<Vec<_>>()
+                .join(",")
+        );
+
+        let parsed = mmlx::mdx::frontend::parse(&source).unwrap();
+        assert!(mmlx::mdx::frontend::compile(&parsed).is_ok());
+
+        let warnings = diagnostics(&source);
+        assert_eq!(warnings.len(), 5);
+        let expected = [
+            ("OP1 AR", "32"),
+            ("OP1 TL", "128"),
+            ("CON", "8"),
+            ("FL", "9"),
+            ("OP", "16"),
+        ];
+        for (warning, (parameter, value)) in warnings.iter().zip(expected) {
+            assert_eq!(warning.severity, Some(DiagnosticSeverity::WARNING));
+            assert_eq!(
+                warning.code,
+                Some(NumberOrString::String(
+                    "mmlx.mdx.voice-value-out-of-range".into()
+                ))
+            );
+            assert!(warning.message.contains(parameter), "{}", warning.message);
+            assert!(warning.message.contains(value), "{}", warning.message);
+        }
+        for (warning, (_, value)) in warnings.iter().zip(expected) {
+            let start = warning.range.start.character as usize;
+            let end = warning.range.end.character as usize;
+            assert_eq!(&source[start..end], value);
+        }
     }
 
     #[test]

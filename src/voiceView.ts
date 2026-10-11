@@ -30,6 +30,12 @@ interface VoiceAtPosition extends VoiceDefinition {
 	name?: string | null;
 }
 
+interface InvalidVoiceAtPosition {
+	invalidParameters: string[];
+	number?: number;
+	name?: string | null;
+}
+
 interface SerialPortInfo {
 	path: string;
 	manufacturer?: string;
@@ -127,7 +133,7 @@ export class VoiceViewProvider implements WebviewViewProvider {
 	private pendingBends = new Map<string, Extract<NanoDriveInput, { type: 'pitchBend' }>>();
 	private midiFolder = '';
 	private editTarget: { document: TextDocument; version: number; token: number; voice: VoiceDefinition } | undefined;
-	private snapshot: { voice: VoiceDefinition | null; name?: string | null; source: string; retained: boolean; error: boolean } = {
+	private snapshot: { voice: VoiceDefinition | null; name?: string | null; invalidNumber?: number | null; source: string; retained: boolean; error: boolean; warning?: string[] } = {
 		voice: null, name: null, source: '', retained: false, error: false
 	};
 
@@ -912,17 +918,26 @@ export class VoiceViewProvider implements WebviewViewProvider {
 		const document = editor.document;
 		const version = document.version;
 		try {
-			const response = await client.sendRequest<VoiceAtPosition | null>('mmlx/voiceAtPosition',
+			const response = await client.sendRequest<VoiceAtPosition | InvalidVoiceAtPosition | null>('mmlx/voiceAtPosition',
 				client.code2ProtocolConverter.asTextDocumentPositionParams(document, position ?? editor.selection.active));
 			if (sequence !== this.sequence || document.version !== version || document.isClosed) { return; }
+			if (response && 'invalidParameters' in response) {
+				this.editTarget = undefined;
+				this.snapshot = { voice: null, name: response.name, invalidNumber: response.number,
+					source: basename(document.uri.path),
+					retained: false, error: false, warning: response.invalidParameters };
+				this.send();
+				return;
+			}
 			let voice: VoiceDefinition | null = response;
 			if (response) {
 				const { name, ...definition } = response;
 				voice = definition;
-				this.snapshot = { voice, name: typeof name === 'string' ? name : null,
-					source: basename(document.uri.path), retained: false, error: false };
+				this.snapshot = { voice, name: typeof name === 'string' ? name : null, invalidNumber: undefined,
+					source: basename(document.uri.path), retained: false, error: false, warning: undefined };
 			} else {
-				this.snapshot = { ...this.snapshot, retained: this.snapshot.voice !== null, error: false };
+				this.snapshot = { ...this.snapshot, invalidNumber: undefined,
+					retained: this.snapshot.voice !== null, error: false, warning: undefined };
 			}
 			this.editTarget = voice?.parameterRanges?.length === 47
 				? { document, version, token: ++this.editToken, voice } : undefined;
@@ -930,7 +945,8 @@ export class VoiceViewProvider implements WebviewViewProvider {
 		} catch {
 			if (sequence === this.sequence) {
 				this.editTarget = undefined;
-				this.snapshot = { ...this.snapshot, retained: this.snapshot.voice !== null, error: true };
+				this.snapshot = { ...this.snapshot, invalidNumber: undefined,
+					retained: this.snapshot.voice !== null, error: true, warning: undefined };
 				this.send();
 			}
 		}

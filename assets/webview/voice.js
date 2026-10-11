@@ -123,7 +123,7 @@ document.getElementById('open-starter').addEventListener('click', () => vscode.p
 const tabs = ['start', 'voice', 'playback', 'settings'];
 const saved = vscode.getState();
 let snapshot = saved?.type === 'voice' ? { ...saved, editable: false, editToken: null, editing: false }
-	: { type: 'voice', voice: null, source: '', retained: false, error: false };
+	: { type: 'voice', voice: null, source: '', retained: false, error: false, warning: undefined };
 let activeTab = tabs.includes(saved?.activeTab) ? saved.activeTab : 'start';
 let playbackMode = saved?.playbackMode === 'nanodrive8' ? 'nanodrive8' : 'emulation';
 let keyboardMode = saved?.keyboardMode === 'nanodrive8' ? 'nanodrive8' : 'emulation';

@@ -1,7 +1,32 @@
 use lsp_types::{CodeLens, Command, Location, Position, Range, Uri};
+use mmlx::source::Span;
 use serde_json::{Value, json};
 
 use crate::i18n::Language;
+
+const OPERATOR_PARAMETERS: [(&str, u8); 11] = [
+    ("AR", 31),
+    ("D1R", 31),
+    ("D2R", 31),
+    ("RR", 15),
+    ("D1L", 15),
+    ("TL", 127),
+    ("KS", 3),
+    ("MUL", 15),
+    ("DT1", 7),
+    ("DT2", 3),
+    ("AME", 1),
+];
+
+const GLOBAL_PARAMETERS: [(&str, u8); 3] = [("CON", 7), ("FL", 7), ("OP", 15)];
+
+pub struct InvalidVoiceParameter {
+    pub span: Span,
+    pub operator: Option<usize>,
+    pub name: &'static str,
+    pub value: u8,
+    pub max: u8,
+}
 
 fn position_at(source: &str, offset: usize) -> Position {
     let before = &source[..offset];
@@ -14,6 +39,46 @@ fn position_at(source: &str, offset: usize) -> Position {
             .encode_utf16()
             .count() as u32,
     )
+}
+
+pub fn invalid_parameters(
+    source: &str,
+    voice: &mmlx::mdx::frontend::VoiceSource,
+) -> Vec<InvalidVoiceParameter> {
+    let Some(parameters) = voice
+        .parameters
+        .iter()
+        .map(|span| span.text(source)?.parse::<u8>().ok())
+        .collect::<Option<Vec<_>>>()
+    else {
+        return Vec::new();
+    };
+    if parameters.len() != 47 {
+        return Vec::new();
+    }
+
+    voice
+        .parameters
+        .iter()
+        .zip(parameters)
+        .enumerate()
+        .filter_map(|(index, (span, value))| {
+            let (operator, name, max) = if index < 44 {
+                let (name, max) = OPERATOR_PARAMETERS[index % OPERATOR_PARAMETERS.len()];
+                (Some(index / OPERATOR_PARAMETERS.len() + 1), name, max)
+            } else {
+                let (name, max) = GLOBAL_PARAMETERS[index - 44];
+                (None, name, max)
+            };
+            (value > max).then_some(InvalidVoiceParameter {
+                span: *span,
+                operator,
+                name,
+                value,
+                max,
+            })
+        })
+        .collect()
 }
 
 pub fn at_position(source: &str, position: Position) -> Option<Value> {
@@ -32,17 +97,23 @@ pub fn at_position(source: &str, position: Position) -> Option<Value> {
     if parameters.len() != 47 {
         return None;
     }
-
-    let limits = [31, 31, 31, 15, 15, 127, 3, 15, 7, 3, 1];
-    if parameters[..44]
-        .iter()
-        .zip(limits.iter().cycle())
-        .any(|(value, limit)| value > limit)
-        || parameters[44] > 7
-        || parameters[45] > 7
-        || parameters[46] > 15
-    {
-        return None;
+    let invalid = invalid_parameters(source, voice);
+    if !invalid.is_empty() {
+        let invalid_parameters = invalid
+            .iter()
+            .map(|issue| {
+                let parameter = issue.operator.map_or_else(
+                    || issue.name.to_owned(),
+                    |operator| format!("OP{operator} {}", issue.name),
+                );
+                format!("{parameter}: {} (0-{})", issue.value, issue.max)
+            })
+            .collect::<Vec<_>>();
+        return Some(json!({
+            "invalidParameters": invalid_parameters,
+            "name": crate::completion::voice_name_before(source, voice.span.start()),
+            "number": number,
+        }));
     }
     let operators: Vec<Value> = parameters[..44]
         .chunks_exact(11)
@@ -280,8 +351,22 @@ mod tests {
                 at_position(&source, position(&source, source.find(marker).unwrap())).unwrap();
             assert_eq!(voice["number"], number);
         }
-        let invalid = source.replace("31,12", "32,12");
-        assert!(at_position(&invalid, position(&invalid, invalid.find("@7").unwrap())).is_none());
+        let invalid = source
+            .replace("/* 音色 🎵 */ @7", "/* 音色 🎵 */\n; Grand Piano\n@7")
+            .replace("31,12", "32,12");
+        let response =
+            at_position(&invalid, position(&invalid, invalid.find("@7").unwrap())).unwrap();
+        assert_eq!(
+            response["invalidParameters"],
+            json!([
+                "OP1 AR: 32 (0-31)",
+                "OP2 AR: 32 (0-31)",
+                "OP3 AR: 32 (0-31)",
+                "OP4 AR: 32 (0-31)"
+            ])
+        );
+        assert_eq!(response["number"], 7);
+        assert_eq!(response["name"], "Grand Piano");
     }
 
     #[test]

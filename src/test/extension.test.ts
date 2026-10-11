@@ -1683,6 +1683,18 @@ suite('mmlx extension', () => {
 				renderVoice();
 				const voiceLabel = document.getElementById('voice-label');
 				check(voiceLabel.hidden && voiceLabel.textContent === '', 'Unnamed voices do not show a label');
+				send({ type: 'voice', voice: null, invalidNumber: 7, name: 'Grand Piano',
+					warning: ['OP1 TL: 128 (0-127)'], editable: false, retained: false });
+				const status = document.getElementById('status');
+				const warning = document.getElementById('voice-warning');
+				check(status.textContent === 'Invalid voice values' && !status.title
+					&& !warning.hidden && warning.textContent === 'Out-of-range parameters: OP1 TL: 128 (0-127)',
+				'Invalid voice details must appear in the panel instead of a hover tooltip');
+				check(document.getElementById('voice-name').textContent === '@7'
+					&& !voiceLabel.hidden && voiceLabel.textContent === 'Grand Piano'
+					&& !document.getElementById('voice-name').classList.contains('empty')
+					&& document.getElementById('summary').hidden && document.getElementById('operators').hidden,
+				'Invalid voice values must style the voice identity normally and clear its previous parameters');
 				renderVoice(15, {}, {}, 'Grand Piano');
 				check(!voiceLabel.hidden && voiceLabel.textContent === 'Grand Piano', 'Adjacent voice comment is shown beside the voice number');
 				check(document.getElementById('source').textContent === '(test.mml)', 'Source filename is shown in parentheses');
@@ -3771,7 +3783,7 @@ finally:
 		const events = new vscode.EventEmitter<void>();
 		const messages = new vscode.EventEmitter<unknown>();
 		type PanelMessage = { type: string; editable: boolean; editToken: number | null; retained: boolean;
-			voice: { algorithm: number; operators: Record<string, number>[] } };
+			warning?: string[]; name?: string | null; voice: { algorithm: number; operators: Record<string, number>[] } };
 		const updates = new vscode.EventEmitter<PanelMessage>();
 		let latest: PanelMessage | undefined;
 		function waitFor(predicate: (message: PanelMessage) => boolean): Promise<PanelMessage> {
@@ -3797,6 +3809,11 @@ finally:
 				const matches = [...text.slice(start, text.indexOf('}')).matchAll(/\d+/g)];
 				const values = matches.map(match => Number(match[0]));
 				const fields = ['ar', 'd1r', 'd2r', 'rr', 'd1l', 'tl', 'ks', 'mul', 'dt1', 'dt2', 'ame'];
+				const limits = [...Array.from({ length: 4 }, () => [31, 31, 31, 15, 15, 127, 3, 15, 7, 3, 1]).flat(), 7, 7, 15];
+				const invalidParameters = values.flatMap((value, index) => value > limits[index]
+					? [`${index < 44 ? `OP${Math.floor(index / 11) + 1} ${fields[index % 11].toUpperCase()}` : ['CON', 'FL', 'OP'][index - 44]}: ${value} (0-${limits[index]})`]
+					: []);
+				if (invalidParameters.length) { return { invalidParameters, number: 7, name: 'Grand Piano' }; }
 				return { number: 7, algorithm: values[44], feedback: values[45], operatorMask: values[46],
 					position: document.positionAt(text.indexOf('@7')),
 					range: { start: document.positionAt(text.indexOf('@7')), end: document.positionAt(text.indexOf('}') + 1) },
@@ -3913,6 +3930,14 @@ finally:
 			await vscode.commands.executeCommand('undo');
 			await waitFor(message => message.editable && message.voice.operators[0].tl === 20);
 			assert.strictEqual(document.getText(), compact);
+			const invalidVoice = new vscode.WorkspaceEdit();
+			const firstAr = document.positionAt(document.getText().indexOf('31,'));
+			invalidVoice.replace(document.uri, new vscode.Range(firstAr, firstAr.translate(0, 2)), '32');
+			assert.ok(await vscode.workspace.applyEdit(invalidVoice));
+			const warning = await waitFor(message => !!message.warning?.length);
+			assert.ok(!warning.retained && !warning.editable && warning.voice === null,
+				'Invalid voice values should clear the previous voice instead of appearing merely retained');
+			assert.strictEqual(warning.name, 'Grand Piano', 'Invalid voice state should preserve the adjacent voice name');
 		} finally {
 			provider.dispose();
 			for (const subscription of context.subscriptions) { subscription.dispose(); }
