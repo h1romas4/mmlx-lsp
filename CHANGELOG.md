@@ -4,8 +4,9 @@ All notable changes to the "mmlx-lsp" extension will be documented in this file.
 
 ## [Unreleased]
 
-- Prepare and mute-filter NanoDrive8 PCM ahead of supply, and isolate STATUS protocol processing from audio generation. Preserve ordered MUTE/SOLO changes without adding a native executable.
+- Prepare and mute-filter NanoDrive8 PCM ahead of supply, and isolate STATUS protocol processing from audio generation. Preserve ordered MUTE/SOLO changes.
 - Add NanoDrive8 preparation/ready-queue diagnostics and per-operation WASM queue, execution and round-trip timings, logged periodically during playback and on completion or Stop.
+- Add an optional Windows native NanoDrive8 engine in Settings > Connection, disabled by default. Bundle the Windows x64 executable built in CI; both backends use the same prepared supply queue and protocol worker. Switching takes effect on the next connection.
 
 ## [0.15.2] - 2026-10-11
 

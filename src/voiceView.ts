@@ -151,8 +151,14 @@ export class VoiceViewProvider implements WebviewViewProvider {
 			this.nanodriveLog.appendLine(`${new Date().toISOString()} ${message}`);
 		}, (playing, error) => { if (this.keyboardOutputMode === 'nanodrive8') { this.setVoiceTesting(playing, error); } },
 		keys => { if (this.playbackMode === 'nanodrive8') { void this.view?.webview.postMessage({ type: 'playbackKeys', id: this.playbackId, mode: 'nanodrive8', keys }); } }];
-		const [, , onState, ...outputCallbacks] = callbacks;
-		this.nanodrive = threaded ? new NanoDriveThreadClient(...callbacks) : new NanoDriveConnection(async params => {
+		const [entry, enginePath, onState, onOutput, onPlayback, onDiagnostic, onVoiceTest, onKeys] = callbacks;
+		const outputCallbacks = [onOutput, onPlayback, onDiagnostic, onVoiceTest, onKeys] as const;
+		this.nanodrive = threaded ? new NanoDriveThreadClient(entry, enginePath, onState, onOutput, onPlayback, onDiagnostic, onVoiceTest, onKeys, () => {
+			const folder = this.buildSettingsFolder();
+			return process.platform === 'win32' && process.arch === 'x64'
+				&& workspace.getConfiguration('mmlx', folder?.uri).get<boolean>('serial.windowsNative', false)
+				? Uri.joinPath(context.extensionUri, 'dist', 'native', 'mmlx-nanodrive.exe').fsPath : undefined;
+		}) : new NanoDriveConnection(async params => {
 			if (codec) { return codec(params); }
 			if (!this.nanodriveWorker) { throw new Error('NanoDrive8 engine is not available.'); }
 			return this.nanodriveWorker.request(params);
@@ -251,6 +257,7 @@ export class VoiceViewProvider implements WebviewViewProvider {
 				else if (message?.type === 'getBuildSettings') { this.sendBuildSettings(); }
 				else if (message?.type === 'getSerialPorts') { void this.refreshSerialPorts(); }
 				else if (message?.type === 'updateSerialConnection') { void this.updateSerialConnection(message); }
+				else if (message?.type === 'updateSerialNative') { void this.updateSerialConnection(message, true); }
 				else if (message?.type === 'setSerialConnection') { void this.setSerialConnection(message); }
 				else if (message?.type === 'getMidiInputPorts') { void this.refreshMidiInputPorts(); }
 				else if (message?.type === 'updateMidiInput') { void this.updateMidiInput(message); }
@@ -584,6 +591,8 @@ export class VoiceViewProvider implements WebviewViewProvider {
 			void this.nanodrive.disconnect(); return;
 		}
 		void this.view?.webview.postMessage({ type: 'serialSettings', connection, ports: this.serialPorts,
+			windowsNative: workspace.getConfiguration('mmlx', folder?.uri).get<boolean>('serial.windowsNative', false),
+			nativeAvailable: process.platform === 'win32' && process.arch === 'x64',
 			folder: folder?.uri.toString() ?? '', editable: !!folder && !this.savingSettings && !this.serialLoading
 				&& !state.connected && !state.connecting && !state.closing,
 			connected: state.connected, connecting: state.connecting, closing: state.closing, phase: state.phase,
@@ -633,22 +642,23 @@ export class VoiceViewProvider implements WebviewViewProvider {
 		}
 	}
 
-	private async updateSerialConnection(message: { folder?: unknown; value?: unknown }): Promise<void> {
+	private async updateSerialConnection(message: { folder?: unknown; value?: unknown }, native = false): Promise<void> {
 		const folder = this.buildSettingsFolder();
 		const state = this.nanodrive.state;
 		if (!folder || message.folder !== folder.uri.toString() || this.savingSettings || this.serialLoading
 			|| state.connected || state.connecting || state.closing) {
 			this.sendSerialSettings(); return;
 		}
-		if (typeof message.value !== 'string' || (message.value !== '' && !this.serialPorts.some(port => port.path === message.value))) {
-			this.sendSerialSettings('Invalid serial port.'); return;
+		if (native ? typeof message.value !== 'boolean' || (message.value && (process.platform !== 'win32' || process.arch !== 'x64'))
+			: typeof message.value !== 'string' || (message.value !== '' && !this.serialPorts.some(port => port.path === message.value))) {
+			this.sendSerialSettings(native ? 'Windows native requires Windows x64 and a boolean setting.' : 'Invalid serial port.'); return;
 		}
 		this.savingSettings = true;
 		this.sendBuildSettings();
 		this.sendConnectionSettings();
 		let error = '';
 		try {
-			await workspace.getConfiguration('mmlx', folder.uri).update('serial.connection', message.value, ConfigurationTarget.WorkspaceFolder);
+			await workspace.getConfiguration('mmlx', folder.uri).update(native ? 'serial.windowsNative' : 'serial.connection', message.value, ConfigurationTarget.WorkspaceFolder);
 		} catch (failure) {
 			error = failure instanceof Error ? failure.message : 'Could not save connection settings.';
 		} finally {

@@ -1,6 +1,7 @@
 .vscode/**
 .vscode-test/**
 out/**
+dist/nanodriveProcessHost.js
 node_modules/**
 !node_modules/@julusian/midi/**
 !node_modules/pkg-prebuilds/**
@@ -34,3 +35,5 @@ native/tree-sitter/**
 .github/**
 release/**
 package-lock.json
+
+tools/**

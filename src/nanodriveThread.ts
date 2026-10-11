@@ -1,11 +1,17 @@
 import { parentPort, workerData } from 'node:worker_threads';
 import { NanoDriveRuntime, runNanoDriveEngine } from './nanodriveRuntime';
+import { NanoDriveNativeCodec } from './nanodriveNativeCodec';
 import { NanoDriveConnection } from './nanodrive';
 import type { NanoDriveThreadEvent, NanoDriveThreadRequest } from './nanodriveThreadClient';
 
 export function runNanoDriveService(connection: NanoDriveConnection, send: (event: NanoDriveThreadEvent) => void): void {
 	const port = parentPort ?? process;
 	const assets = new Map<number, { resolve: (bytes: Uint8Array) => void; reject: (error: Error) => void }>();
+	const cancelAssets = () => {
+		for (const asset of assets.values()) { asset.reject(new Error('NanoDrive8 playback canceled.')); }
+		assets.clear();
+	};
+	port.once('disconnect', cancelAssets);
 	port.on('message', (message: NanoDriveThreadRequest | { asset: number; bytes?: Uint8Array; error?: string }) => {
 		if ('asset' in message) {
 			const pending = assets.get(message.asset);
@@ -17,6 +23,7 @@ export function runNanoDriveService(connection: NanoDriveConnection, send: (even
 		}
 		void (async () => {
 			try {
+				if (message.method === 'stopPlayback' || message.method === 'disconnect') { cancelAssets(); }
 				if (message.method === 'startPlayback') {
 					const [source, looped, options] = message.args as [string, boolean, Parameters<NanoDriveConnection['startPlayback']>[3]];
 					await connection.startPlayback(source, looped, name => new Promise((resolve, reject) => {
@@ -41,9 +48,13 @@ if (workerData?.engine && parentPort) {
 	const send = (event: NanoDriveThreadEvent) => {
 		if (process.connected) { process.send!(event, error => { if (error) { process.exit(1); } }); }
 	};
-	const runtime = new NanoDriveRuntime(__filename, process.argv[3], error => { void connection.disconnect(error.message); });
+	const native = process.argv[4] === '--native' ? process.argv[5] : undefined;
+	const runtime = native
+		? new NanoDriveNativeCodec(native, error => { void connection.disconnect(error); }, message => send({ type: 'diagnostic', message }))
+		: new NanoDriveRuntime(__filename, process.argv[3], error => { void connection.disconnect(error.message); });
 	const transport = new NanoDriveRuntime(__filename, process.argv[3], error => { void connection.disconnect(error.message); });
-	const diagnostics = () => ({ generation: runtime.diagnostics, transport: transport.diagnostics });
+	const diagnostics = () => ({ backend: native ? 'windows-native' : 'wasm', generation: runtime.diagnostics, transport: transport.diagnostics });
+	send({ type: 'diagnostic', message: `NanoDrive8 backend: ${native ? 'windows-native' : 'wasm'}` });
 	let playing = false;
 	const logTiming = () => send({ type: 'diagnostic', message: `NanoDrive8 engine timing: ${JSON.stringify(diagnostics())}` });
 	const connection = new NanoDriveConnection(params =>

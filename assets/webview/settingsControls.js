@@ -13,11 +13,16 @@ export function createSettingsControls(root, onChange = () => {}) {
 		const connection = root.querySelector(`#${prefix}-connection`);
 		const refresh = root.querySelector(`#refresh-${prefix}-ports`);
 		const connect = root.querySelector(`#connect-${prefix}`);
+		const native = prefix === 'serial' ? root.querySelector('#serial-windows-native') : undefined;
 		const status = root.querySelector(`#${prefix}-settings-status`);
 		let current;
 		function renderPorts(message) {
 			current = message;
 			connection.disabled = !message.editable || !!message.connected || !!message.connecting || !!message.closing;
+			if (native) {
+				native.checked = message.windowsNative === true;
+				native.disabled = connection.disabled || !message.nativeAvailable;
+			}
 			refresh.disabled = !message.folder || message.saving || message.loading || !!message.connecting || !!message.closing;
 			if (connect) {
 				connect.disabled = !!message.connecting || !!message.closing || (!message.connected && !message.canConnect);
@@ -53,6 +58,12 @@ export function createSettingsControls(root, onChange = () => {}) {
 			const folder = current.folder;
 			renderPorts({ ...current, connection: value, editable: false, saving: true });
 			onChange({ type: updateType, folder, value });
+		});
+		native?.addEventListener('change', () => {
+			if (native.disabled || !current?.editable || !current.folder) { return; }
+			const value = native.checked; const folder = current.folder;
+			renderPorts({ ...current, windowsNative: value, editable: false, saving: true });
+			onChange({ type: 'updateSerialNative', folder, value });
 		});
 		return renderPorts;
 	}
