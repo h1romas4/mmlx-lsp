@@ -6,6 +6,7 @@ All notable changes to the "mmlx-lsp" extension will be documented in this file.
 
 - Play selected MML passages and add editor support for formatting, commenting, and selection navigation.
 - Improve FM Voice editing with voice-name and reference completions, track-length status, and clearer voice testing controls.
+- Warn about out-of-range FM Voice parameters without blocking compilation, and show affected values in the FM Voice panel.
 - Refine playback and Settings panel controls, and update the user guide.
 - Add an experimental MCP server for MML, MDX, and VGM analysis, with bounded range-based results.
 
