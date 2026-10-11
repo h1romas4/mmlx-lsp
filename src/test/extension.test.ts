@@ -1418,6 +1418,46 @@ suite('mmlx extension', () => {
 		assert.ok((await vscode.languages.getLanguages()).includes('mmlx'));
 	});
 
+	test('smart selection groups only adjacent MML lines from the same channel', async function () {
+		this.timeout(30000);
+		const extension = vscode.extensions.all.find(extension => extension.packageJSON.name === 'mmlx-lsp');
+		assert.ok(extension);
+		await extension.activate();
+		const voiceData = Array(47).fill('0').join(',');
+		const source = `@1 = {\n${voiceData}\n}\nA c4\nB d4\nA e4\n`;
+		const document = await vscode.workspace.openTextDocument({ language: 'mmlx', content: source });
+		await waitForDiagnostics(document.uri, 0);
+		const selections = await vscode.commands.executeCommand<vscode.SelectionRange[]>(
+			'vscode.executeSelectionRangeProvider', document.uri, [new vscode.Position(3, 0), new vscode.Position(5, 0)]);
+		assert.ok(selections && selections.length === 2);
+		const chain = (selection: vscode.SelectionRange): vscode.Range[] => {
+			const ranges: vscode.Range[] = [];
+			for (let current: vscode.SelectionRange | undefined = selection; current; current = current.parent) {
+				ranges.push(current.range);
+			}
+			return ranges;
+		};
+		assert.deepStrictEqual(chain(selections[0]), [
+			new vscode.Range(3, 0, 3, 1),
+			new vscode.Range(3, 0, 3, 4),
+			new vscode.Range(0, 0, 6, 0),
+		]);
+		assert.deepStrictEqual(chain(selections[1]), [
+			new vscode.Range(5, 0, 5, 1),
+			new vscode.Range(5, 0, 5, 4),
+			new vscode.Range(0, 0, 6, 0),
+		]);
+		const voiceSelection = await vscode.commands.executeCommand<vscode.SelectionRange[]>(
+			'vscode.executeSelectionRangeProvider', document.uri, [new vscode.Position(1, 0)]);
+		assert.ok(voiceSelection && voiceSelection.length === 1);
+		assert.deepStrictEqual(chain(voiceSelection[0]), [
+			new vscode.Range(1, 0, 1, 1),
+			new vscode.Range(1, 0, 1, voiceData.length),
+			new vscode.Range(0, 0, 2, 1),
+			new vscode.Range(0, 0, 6, 0),
+		]);
+	});
+
 	test('toggles MML line comments and block comments based on selection', async () => {
 		const extension = vscode.extensions.all.find(extension => extension.packageJSON.name === 'mmlx-lsp');
 		assert.ok(extension);

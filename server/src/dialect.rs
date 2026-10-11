@@ -1,9 +1,9 @@
 use crate::i18n::Language;
 use lsp_types::{
     CompletionItem, CompletionOptions, Diagnostic, InitializeParams, Position,
-    PositionEncodingKind, SemanticTokens, SemanticTokensFullOptions, SemanticTokensOptions,
-    ServerCapabilities, SignatureHelp, SignatureHelpOptions, TextDocumentSyncCapability,
-    TextDocumentSyncKind,
+    PositionEncodingKind, SelectionRange, SemanticTokens, SemanticTokensFullOptions,
+    SemanticTokensOptions, ServerCapabilities, SignatureHelp, SignatureHelpOptions,
+    TextDocumentSyncCapability, TextDocumentSyncKind,
 };
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -75,6 +75,7 @@ impl Dialect {
                     }
                     .into(),
                 ),
+                selection_range_provider: Some(true.into()),
                 ..ServerCapabilities::default()
             },
         }
@@ -112,6 +113,16 @@ impl Dialect {
     pub fn semantic_tokens(self, source: &str) -> SemanticTokens {
         match self {
             Self::Mdx => crate::semantic::tokens(source),
+        }
+    }
+
+    pub fn selection_ranges(
+        self,
+        source: &str,
+        positions: &[Position],
+    ) -> Option<Vec<SelectionRange>> {
+        match self {
+            Self::Mdx => crate::selection_range::ranges(source, positions),
         }
     }
 }

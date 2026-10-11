@@ -1,6 +1,7 @@
 mod completion;
 mod dialect;
 mod i18n;
+mod selection_range;
 mod semantic;
 mod voice;
 
@@ -14,8 +15,8 @@ use lsp_server::{Connection, ErrorCode, Message, Notification, Request, Response
 use lsp_types::{
     CompletionParams, Diagnostic, DiagnosticSeverity, DidChangeTextDocumentParams,
     DidCloseTextDocumentParams, DidOpenTextDocumentParams, InitializeParams, NumberOrString,
-    Position, PublishDiagnosticsParams, Range, SemanticTokensParams, SignatureHelpParams,
-    TextDocumentPositionParams, Uri,
+    Position, PublishDiagnosticsParams, Range, SelectionRangeParams, SemanticTokensParams,
+    SignatureHelpParams, TextDocumentPositionParams, Uri,
 };
 use mmlx::diagnostic::Severity;
 use mmlx::frontend::SourceFile;
@@ -180,6 +181,21 @@ fn handle_request(
                     .map(String::as_str)
                     .unwrap_or("");
                 Response::new_ok(request.id, dialect.semantic_tokens(source))
+            }
+            Err(error) => Response::new_err(
+                request.id,
+                ErrorCode::InvalidParams as i32,
+                error.to_string(),
+            ),
+        };
+    }
+    if request.method == "textDocument/selectionRange" {
+        return match serde_json::from_value::<SelectionRangeParams>(request.params) {
+            Ok(params) => {
+                let selections = documents
+                    .get(&params.text_document.uri)
+                    .and_then(|source| dialect.selection_ranges(source, &params.positions));
+                Response::new_ok(request.id, selections)
             }
             Err(error) => Response::new_err(
                 request.id,
