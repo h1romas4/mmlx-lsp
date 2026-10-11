@@ -3207,7 +3207,13 @@ finally:
 						const select = document.getElementById('serial-connection');
 						const status = document.getElementById('serial-settings-status');
 						const native = document.getElementById('serial-windows-native');
+						const nativeLabelElement = native.closest('label');
+						const platform = document.getElementById('serial-native-platform');
 						const assert = (condition, message) => { if (!condition) throw new Error(message); };
+						assert(nativeLabelElement.querySelector('span').textContent === 'NanoDrive8 native engine', 'Native engine label must identify NanoDrive8');
+						assert(nativeLabelElement.previousElementSibling.contains(select), 'Native engine must follow NanoDrive8 serial controls');
+						assert(nativeLabelElement.nextElementSibling.contains(document.getElementById('midi-connection')), 'Native engine must precede MIDI-IN');
+						assert(platform.textContent === 'Windows: try if buffer underruns occur' && native.getAttribute('aria-describedby') === platform.id, 'Native engine must describe when to try it');
 						const base = { type: 'serialSettings', folder: 'test', connection: '/dev/test', ports: [{ path: '/dev/test' }], editable: true, canConnect: true };
 						controls.render(base);
 						assert(native.disabled && !native.checked, 'Native must default off and require Windows x64');
@@ -3233,8 +3239,10 @@ finally:
 							const root = document.getElementById('settings-controls');
 							root.style.width = width + 'px';
 							const nativeBounds = native.getBoundingClientRect();
-							const nativeLabel = native.parentElement.getBoundingClientRect();
+							const nativeLabel = nativeLabelElement.getBoundingClientRect();
 							assert(nativeBounds.left >= nativeLabel.left && nativeBounds.right <= nativeLabel.right, 'Native control must fit at ' + width);
+							const platformBounds = platform.getBoundingClientRect();
+							assert(platformBounds.left >= nativeBounds.right && platformBounds.right <= nativeLabel.right, 'Platform annotation must fit to the right of the checkbox at ' + width);
 							for (const [prefix, settings, refreshType] of [
 								['serial', base, 'getSerialPorts'],
 								['midi', { ...base, type: 'midiSettings', connection: 'test', ports: ['test'] }, 'getMidiInputPorts'],

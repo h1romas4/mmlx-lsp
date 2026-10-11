@@ -145,6 +145,9 @@ input:disabled, select:disabled { opacity: .6; }
 .build-field { display: grid; grid-template-columns: 160px minmax(0, 1fr); align-items: center; gap: 12px; margin-bottom: 12px; }
 .build-field input, .build-field select { width: 100%; }
 .build-field.checkbox input { width: 16px; height: 16px; margin: 0; accent-color: var(--vscode-panelTitle-activeBorder, #39a9c7); }
+.native-engine-option { display: flex; align-items: center; gap: 6px; min-width: 0; }
+.native-engine-option input { flex: 0 0 16px; }
+#serial-native-platform { color: var(--vscode-descriptionForeground, #666); font-size: 11px; overflow-wrap: anywhere; }
 .connection-settings { margin-top: 20px; }
 .connection-settings fieldset { container-type: inline-size; }
 .connection-port-controls { display: flex; align-items: center; gap: 6px; min-width: 0; }
