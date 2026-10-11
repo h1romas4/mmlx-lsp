@@ -711,16 +711,20 @@ suite('mmlx extension', () => {
 				const context = spectrum.getContext('2d');
 				context.setLineDash = () => { throw new Error('Playback must not display a reference frequency'); };
 				playback.setConnected(true);
-				for (const width of [1200, 800, 320]) {
+				for (const width of [1200, 800, 560, 500, 320]) {
 					playbackSection.style.width = width + 'px'; await wait();
 					const transport = document.querySelector('.playback-transport').getBoundingClientRect();
 					const chart = playbackRoot.getBoundingClientRect();
 					const dashboard = document.querySelector('.playback-dashboard').getBoundingClientRect();
 					const channels = document.getElementById('playback-channels').getBoundingClientRect();
+					const isWrapped = chart.top >= transport.bottom + 10;
 					check(Math.abs(dashboard.left - channels.left) < 1 && Math.abs(dashboard.right - channels.right) < 1, 'Playback dashboard must align with both edges of the channel keyboards');
 					check(dashboard.width <= 870, 'Playback dashboard must share the keyboard maximum width');
-					check(width >= 800 ? chart.left >= transport.right + 10 : chart.top >= transport.bottom + 10, 'Playback spectrum must sit to the right or wrap below on narrow panels');
-					check(transport.width <= 430 && chart.width <= width, 'Playback controls and spectrum must fit their panel');
+					check(width >= 560 ? chart.left >= transport.right + 10 : isWrapped, 'Playback spectrum must sit to the right or wrap below on narrow panels');
+					if (isWrapped) {
+						check(Math.abs(transport.left - dashboard.left) < 1 && Math.abs(transport.right - dashboard.right) < 1, 'Wrapped playback controls must expand to the dashboard width');
+					}
+					check((isWrapped || transport.width <= 430) && chart.width <= width, 'Playback controls and spectrum must fit their panel');
 					const pixels = context.getImageData(0, 0, spectrum.width, spectrum.height).data;
 					let signal = 0;
 					for (let index = 0; index < pixels.length; index += 4) { if (pixels[index] > 180 && pixels[index + 1] > 100 && pixels[index + 2] < 150) { signal++; } }
@@ -2962,8 +2966,8 @@ finally:
 							const channels = document.getElementById('playback-channels');
 							const rows = channels.querySelectorAll('.playback-channel');
 							check(rows.length === 9 && rows[8].getAttribute('aria-label') === 'ADPCM', 'Eight FM channels and one mixed ADPCM channel');
-							check([...rows].slice(0, 8).map(row => row.querySelector('.playback-channel-name').textContent).join('') === 'ABCDEFGH'
-								&& [...rows].slice(0, 8).map(row => row.getAttribute('aria-label')).join('') === 'ABCDEFGH',
+							check([...rows].slice(0, 8).map(row => row.querySelector('.playback-channel-name').textContent).join(', ') === 'FM A, FM B, FM C, FM D, FM E, FM F, FM G, FM H'
+								&& [...rows].slice(0, 8).map(row => row.getAttribute('aria-label')).join(', ') === 'FM A, FM B, FM C, FM D, FM E, FM F, FM G, FM H',
 							'Playback FM channels use MML track labels A-H');
 							check(channels.querySelectorAll('button:disabled').length === 18, 'Unavailable playback disables channel controls');
 							const frame = getComputedStyle(channels);
