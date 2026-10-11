@@ -12,6 +12,15 @@
   "categories": [
     "Programming Languages"
   ],
+  "keywords": [
+    "MML",
+    "Music",
+    "Chiptune",
+    "MDX",
+    "MXDRV",
+    "YM2151",
+    "FM synthesis"
+  ],
   "activationEvents": [
     "onLanguage:mmlx",
     "onTaskType:mmlx"
