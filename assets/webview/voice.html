@@ -12,11 +12,13 @@
 		<button id="start-tab" role="tab" aria-selected="true" aria-controls="start-controls" type="button">Get Started</button>
 		<button id="voice-tab" role="tab" aria-selected="false" aria-controls="voice-controls" tabindex="-1" type="button">FM Voice</button>
 		<button id="playback-tab" role="tab" aria-selected="false" aria-controls="playback-controls" tabindex="-1" type="button">Playback</button>
+		<button id="utils-tab" role="tab" aria-selected="false" aria-controls="utils-controls" tabindex="-1" type="button">Utilities</button>
 		<button id="settings-tab" role="tab" aria-selected="false" aria-controls="settings-controls" tabindex="-1" type="button">Settings</button>
 	</div>
 	<main>
 		<section id="start-controls" role="tabpanel" aria-labelledby="start-tab">
 			<header class="start-identity"><img src="{{iconUri}}" alt="" width="64" height="64"><h1>mmlx-lsp</h1></header>
+			<p id="start-tagline">Write MML. Hear it come alive—instantly.</p>
 			<p id="workspace-trust-note">This extension needs a trusted workspace to work. If VS Code is in Restricted Mode, select "Manage Workspace Trust" and trust this folder. <a href="https://code.visualstudio.com/docs/editing/workspaces/workspace-trust" target="_blank" rel="noopener noreferrer">Learn more about Workspace Trust</a>.</p>
 			<button id="open-starter" class="start-action" type="button">Open Example MML</button>
 		</section>
@@ -104,42 +106,34 @@
 			</div>
 			<div id="playback-channels" class="playback-channels" role="group" aria-label="Playback channels"></div>
 		</section>
-		<section id="settings-controls" role="tabpanel" aria-labelledby="settings-tab" hidden>
-			<header><h1>Settings</h1><span id="build-settings-status" role="status"></span></header>
-			<p id="build-settings-source"></p>
-			<section class="build-settings connection-settings" aria-labelledby="connection-settings-heading">
-				<h2 id="connection-settings-heading">Connection</h2>
-				<fieldset id="connection-settings-fields">
-					<div class="build-field">
-						<label for="serial-connection">NanoDrive8</label>
-						<div class="connection-port-controls">
-							<select id="serial-connection" disabled><option value="">Not selected</option></select>
-							<button id="refresh-serial-ports" class="refresh-ports" type="button" title="Refresh serial ports" aria-label="Refresh serial ports" disabled></button>
-							<button id="connect-serial" class="output-connection" type="button" title="Connect NanoDrive8" aria-label="Connect NanoDrive8" aria-pressed="false" disabled></button>
-							<span id="serial-settings-status" role="status"></span>
-						</div>
-					</div>
-					<label class="build-field checkbox"><span>NanoDrive8 native engine</span><span class="native-engine-option"><input id="serial-windows-native" type="checkbox" title="NanoDrive8 native engine (Windows x64)" aria-describedby="serial-native-platform" disabled><span id="serial-native-platform">Windows: try if buffer underruns occur</span></span></label>
-					<div class="build-field">
-						<label for="midi-connection">MIDI-IN</label>
-						<div class="connection-port-controls">
-							<select id="midi-connection" disabled><option value="">Not selected</option></select>
-							<button id="refresh-midi-ports" class="refresh-ports" type="button" title="Refresh MIDI input ports" aria-label="Refresh MIDI input ports" disabled></button>
-							<button id="connect-midi" class="output-connection" type="button" title="Connect MIDI input" aria-label="Connect MIDI input" aria-pressed="false" disabled></button>
-							<span id="midi-settings-status" role="status"></span>
-						</div>
-					</div>
-					<div class="build-field">
-						<label for="mcp-connection">MCP Server</label>
-						<div class="connection-port-controls mcp-port-controls">
-							<select id="mcp-connection" disabled><option value="mmlx">mmlx MCP (experimental)</option></select>
-							<button id="connect-mcp" class="output-connection" type="button" title="Connect mmlx MCP" aria-label="Connect mmlx MCP" aria-pressed="false" disabled></button>
-						</div>
-					</div>
-				</fieldset>
+		<section id="utils-controls" role="tabpanel" aria-labelledby="utils-tab" hidden>
+			<header><h1>Utilities</h1></header>
+			<section class="build-settings" aria-labelledby="pdx-utils-heading">
+				<h2 id="pdx-utils-heading">Create PDX</h2>
+				<ol class="pdx-steps">
+					<li>
+						<p>Create a PDX sample manifest that maps WAV files to PCM voice slots.</p>
+						<button id="open-pdx-starter" class="start-action" type="button">Create PDX JSON</button>
+					</li>
+					<li>
+						<p>Save the <code>.pdx.json</code> manifest, then build it to create a PDX file beside it.</p>
+						<button id="build-pdx" class="start-action" type="button">Build PDX</button>
+					</li>
+					<li>
+						<p>Play the sample from an MML PCM track:</p>
+						<pre class="pdx-example" aria-label="MML example for playing a PDX sample"><code>#pcmfile "example.pdx"
+; P-W: ADPCM channels
+; F4: 15 kHz | @0: Bank 0 | n0: Voice 0
+P F4 @0 n0 n0 n0 n0</code></pre>
+					</li>
+				</ol>
 			</section>
+			<hr class="build-divider">
 			<section class="build-settings" aria-labelledby="build-settings-heading">
-				<h2 id="build-settings-heading">Build</h2>
+				<header class="build-settings-header">
+					<h2 id="build-settings-heading">Build MDX</h2>
+					<span id="build-settings-status" role="status"></span>
+				</header>
 				<fieldset id="build-settings-fields" disabled>
 					<label class="build-field"><span>Output format</span><select data-build-setting="format">
 						<option value="both">MDX + VGM</option><option value="mdx">MDX</option><option value="vgm">VGM</option>
@@ -152,6 +146,39 @@
 					</select></label>
 					<label class="build-field"><span>Loop count</span><input data-build-setting="loopCount" type="number" min="0" max="4294967295" step="1" required title="0 preserves native loop points"></label>
 					<label class="build-field"><span>Maximum ticks</span><input data-build-setting="maxTicks" type="number" min="1" max="4294967295" step="1" required></label>
+				</fieldset>
+				<button id="build-mdx" class="start-action build-mdx-action" type="button">Build MDX</button>
+			</section>
+		</section>
+		<section id="settings-controls" role="tabpanel" aria-labelledby="settings-tab" hidden>
+			<header><h1>Settings</h1></header>
+			<section class="build-settings connection-settings" aria-labelledby="connection-settings-heading">
+				<h2 id="connection-settings-heading">Connection</h2>
+				<fieldset id="connection-settings-fields">
+					<div class="build-field">
+						<label for="serial-connection">NanoDrive8</label>
+						<div class="connection-port-controls">
+							<select id="serial-connection" disabled><option value="">Not selected</option></select>
+							<button id="refresh-serial-ports" class="refresh-ports" type="button" title="Refresh serial ports" aria-label="Refresh serial ports" disabled></button>
+							<button id="connect-serial" class="output-connection" type="button" title="Connect NanoDrive8" aria-label="Connect NanoDrive8" aria-pressed="false" disabled></button>
+						</div>
+					</div>
+					<label class="build-field checkbox"><span>NanoDrive8 native engine</span><span class="native-engine-option"><input id="serial-windows-native" type="checkbox" title="NanoDrive8 native engine (Windows x64)" aria-describedby="serial-native-platform" disabled><span id="serial-native-platform">Windows: try if buffer underruns occur</span></span></label>
+					<div class="build-field">
+						<label for="midi-connection">MIDI-IN</label>
+						<div class="connection-port-controls">
+							<select id="midi-connection" disabled><option value="">Not selected</option></select>
+							<button id="refresh-midi-ports" class="refresh-ports" type="button" title="Refresh MIDI input ports" aria-label="Refresh MIDI input ports" disabled></button>
+							<button id="connect-midi" class="output-connection" type="button" title="Connect MIDI input" aria-label="Connect MIDI input" aria-pressed="false" disabled></button>
+						</div>
+					</div>
+					<div class="build-field">
+						<label for="mcp-connection">MCP Server</label>
+						<div class="connection-port-controls mcp-port-controls">
+							<select id="mcp-connection" disabled><option value="mmlx">mmlx MCP (experimental)</option></select>
+							<button id="connect-mcp" class="output-connection" type="button" title="Connect mmlx MCP" aria-label="Connect mmlx MCP" aria-pressed="false" disabled></button>
+						</div>
+					</div>
 				</fieldset>
 			</section>
 		</section>

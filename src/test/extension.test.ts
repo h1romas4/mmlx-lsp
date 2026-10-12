@@ -28,6 +28,7 @@ function observeBuilds(uri: vscode.Uri) {
 	const active = new Set<vscode.TaskExecution>();
 	const changed = new vscode.EventEmitter<void>();
 	const exits: (number | undefined)[] = [];
+	const definitions: vscode.TaskDefinition[] = [];
 	let started = 0;
 	let maxActive = 0;
 	const matches = (execution: vscode.TaskExecution) => execution.task.definition.type === 'mmlx'
@@ -36,6 +37,7 @@ function observeBuilds(uri: vscode.Uri) {
 		vscode.tasks.onDidStartTask(event => {
 			if (matches(event.execution)) {
 				started++;
+				definitions.push(event.execution.task.definition);
 				active.add(event.execution);
 				maxActive = Math.max(maxActive, active.size);
 				changed.fire();
@@ -52,6 +54,7 @@ function observeBuilds(uri: vscode.Uri) {
 		get started() { return started; },
 		get maxActive() { return maxActive; },
 		exits,
+		definitions,
 		waitFor(count: number, milliseconds = 30000): Promise<void> {
 			if (exits.length >= count && active.size === 0) { return Promise.resolve(); }
 			return new Promise((resolve, reject) => {
@@ -1626,18 +1629,32 @@ suite('mmlx extension', () => {
 					if (!document.querySelector('#start-controls img').complete) { requestAnimationFrame(runProbe); return; }
 					const startTab = document.getElementById('start-tab');
 					check(document.querySelector('[role="tab"]').id === 'start-tab', 'Get Started must be the leftmost tab');
+					check([...document.querySelectorAll('[role="tab"]')].map(tab => tab.id).join(',')
+						=== 'start-tab,voice-tab,playback-tab,utils-tab,settings-tab',
+					'Utilities must appear immediately to the left of Settings');
+					check(document.getElementById('utils-tab').textContent === 'Utilities',
+					'Utilities tab must use the correctly spelled full label');
 					check(startTab.getAttribute('aria-selected') === 'true' && !document.getElementById('start-controls').hidden, 'Get Started must be selected initially');
 					check(document.querySelector('#start-controls h1').textContent === 'mmlx-lsp', 'Extension title must appear');
+					check(document.getElementById('start-tagline').textContent === 'Write MML. Hear it come alive—instantly.',
+						'Get Started must show the MML tagline');
 					const trustNote = document.getElementById('workspace-trust-note');
 					check(trustNote.textContent.includes('trusted workspace') && trustNote.textContent.includes('Restricted Mode')
 						&& trustNote.textContent.includes('Manage Workspace Trust'), 'Get Started must explain the workspace trust requirement');
 					const trustLink = trustNote.querySelector('a');
 					check(trustLink.href === 'https://code.visualstudio.com/docs/editing/workspaces/workspace-trust'
 						&& trustLink.target === '_blank', 'Workspace Trust guidance must link to the VS Code documentation');
+					check(document.getElementById('pdx-utils-heading').textContent === 'Create PDX'
+						&& !!document.getElementById('open-pdx-starter') && !!document.getElementById('build-pdx'),
+					'Utils must provide the Create PDX steps and build actions');
 					const icon = document.querySelector('#start-controls img');
 					check(icon.complete && icon.naturalWidth > 0, 'Extension icon must load');
 					document.getElementById('open-starter').click();
 					check(messages.filter(message => message.type === 'openStarter').length === 1, 'Example button must request a new MML document');
+					document.getElementById('build-pdx').click();
+					check(messages.filter(message => message.type === 'buildPdx').length === 1, 'Build PDX must request the PDX build command');
+					document.getElementById('build-mdx').click();
+					check(messages.filter(message => message.type === 'build').length === 1, 'Build MDX must request the configured build command');
 					startTab.dispatchEvent(new KeyboardEvent('keydown', { key: 'ArrowRight' }));
 					check(document.getElementById('voice-tab').getAttribute('aria-selected') === 'true' && document.getElementById('start-controls').hidden, 'ArrowRight must switch to FM Voice');
 					startProbed = true;
@@ -1656,7 +1673,7 @@ suite('mmlx extension', () => {
 				send(midi);
 				check(!badge.hidden && badge.textContent === 'MIDI-IN' && badge.title.includes(midi.connection), 'MIDI indicator and port tooltip must appear');
 				check(getComputedStyle(badge).display !== 'none', 'Connected MIDI indicator must be visible');
-				check(document.getElementById('midi-settings-status').textContent === '', 'Settings must not show connected port text');
+				check(!document.getElementById('midi-settings-status'), 'Settings must not retain the connection message area');
 				send({ type: 'outputConnection', target: 'keyboard', id: 0, connected: true, connecting: false });
 				check(!keyboard.classList.contains('is-disconnected') && key.getAttribute('aria-disabled') === 'false', 'Output must enable keys');
 				check(getComputedStyle(keyboard.querySelector('.p-keyboard__body')).opacity === '1', 'Connected keyboard must restore full contrast');
@@ -1668,7 +1685,7 @@ suite('mmlx extension', () => {
 				send({ type: 'midiNotes', notes: [64] });
 				check(document.querySelector('#keyboard [data-midi-note="64"]').classList.contains('is-active'), 'MIDI feedback must remain independent of output');
 				send({ ...midi, connected: false, error: 'MIDI test error' });
-				check(badge.hidden && document.getElementById('midi-settings-status').textContent === '', 'Disconnect must hide badge without showing the error in Settings');
+				check(badge.hidden, 'Disconnect must hide MIDI badge');
 				send({ type: 'outputConnection', target: 'keyboard', id: 0, connected: true, connecting: false });
 				const body = keyboard.querySelector('.p-keyboard__body');
 				for (const [width, note, label] of [[800, 36, 'C2'], [320, 48, 'C3'], [800, 36, 'C2']]) {
@@ -1891,6 +1908,15 @@ suite('mmlx extension', () => {
 				messages.fire({ type: 'openStarter' });
 			});
 			const document = await openExample();
+			const panelHtml = new TextDecoder().decode(await vscode.workspace.fs.readFile(
+				vscode.Uri.joinPath(extension.extensionUri, 'assets', 'webview', 'voice.html')));
+			assert.match(panelHtml, /<section id="utils-controls"[^>]*>\s*<header><h1>Utilities<\/h1><\/header>\s*<section class="build-settings"[^>]*>\s*<h2 id="pdx-utils-heading">Create PDX<\/h2>/);
+			assert.match(panelHtml, /<section id="utils-controls"[\s\S]*<h2 id="pdx-utils-heading">Create PDX<\/h2>[\s\S]*<hr class="build-divider">[\s\S]*<h2 id="build-settings-heading">Build MDX<\/h2>[\s\S]*<fieldset id="build-settings-fields"[\s\S]*<\/fieldset>\s*<button id="build-mdx"[^>]*>Build MDX<\/button>/);
+			assert.doesNotMatch(panelHtml, /id="build-settings-source"/);
+			assert.doesNotMatch(panelHtml, /<section id="settings-controls"[\s\S]*id="build-settings-fields"/);
+			assert.match(panelHtml, /<pre class="pdx-example"[^>]*><code>#pcmfile "example\.pdx"\s+; P-W: ADPCM channels\s+; F4: 15 kHz \| @0: Bank 0 \| n0: Voice 0\s+P F4 @0 n0 n0 n0 n0<\/code><\/pre>/);
+			assert.ok(panelHtml.indexOf('id="open-pdx-starter"') < panelHtml.indexOf('id="build-pdx"'));
+			assert.ok(panelHtml.indexOf('id="build-pdx"') < panelHtml.indexOf('class="pdx-example"'));
 			assert.strictEqual(document.uri.scheme, 'untitled');
 			assert.match(document.uri.path, /^Untitled-\d+$/);
 			assert.strictEqual(document.languageId, 'mmlx');
@@ -3385,10 +3411,9 @@ finally:
 					try {
 						for (const section of document.querySelectorAll('[role="tabpanel"]')) section.hidden = section.id !== 'settings-controls';
 						const messages = [];
-						const controls = createSettingsControls(document.getElementById('settings-controls'), message => messages.push(message));
+						const controls = createSettingsControls(document.querySelector('main'), message => messages.push(message));
 						const button = document.getElementById('connect-serial');
 						const select = document.getElementById('serial-connection');
-						const status = document.getElementById('serial-settings-status');
 						const native = document.getElementById('serial-windows-native');
 						const nativeLabelElement = native.closest('label');
 						const platform = document.getElementById('serial-native-platform');
@@ -3410,15 +3435,15 @@ finally:
 						button.click();
 						assert(messages[0].type === 'setSerialConnection' && messages[0].connected === true, 'Connect click');
 						controls.render({ ...base, connecting: true, phase: 'Checking connection' });
-						assert(button.disabled && select.disabled && status.textContent === 'Checking connection', 'Probe state');
+						assert(button.disabled && select.disabled && button.title === 'Connecting NanoDrive8', 'Probe state');
 						controls.render({ ...base, connected: true, model: 'NanoDrive 8', firmware: '1.0b8' });
 						assert(!button.disabled && select.disabled && button.getAttribute('aria-pressed') === 'true', 'Connected state');
-						assert(status.textContent === 'NanoDrive 8 / FW 1.0b8' && button.title === 'Disconnect NanoDrive8', 'Device identity');
+						assert(button.title === 'Disconnect NanoDrive8', 'Device identity');
 						button.click(); assert(messages[1].connected === false, 'Disconnect click');
 						controls.render({ ...base, closing: true, phase: 'Disconnecting' });
 						assert(button.disabled && select.disabled, 'Closing state');
 						controls.render({ ...base, canConnect: false, error: 'Unsupported firmware' });
-						assert(button.disabled && status.textContent === '', 'Errors must not appear in Settings');
+						assert(button.disabled, 'Errors must not alter connection controls');
 						controls.render({ ...base, nativeAvailable: true });
 						native.click();
 						assert(messages.at(-1).type === 'updateSerialNative' && messages.at(-1).value === true && native.disabled, 'Native selection saves and locks while saving');
@@ -3436,9 +3461,13 @@ finally:
 							const mcpConnectLeft = mcpConnect.getBoundingClientRect().left;
 							assert(mcpWidth > serialWidth && Math.abs(mcpConnection.getBoundingClientRect().right
 								- mcpConnectLeft + gap) < 0.5,
-								'MCP dropdown must extend into the refresh slot while keeping a gap before the button at ' + width);
+							'MCP dropdown must extend into the refresh slot while keeping a gap before the button at ' + width);
 							assert(Math.abs(mcpConnectLeft - serialConnectLeft) < 0.5,
 								'MCP connect button position must match serial at ' + width);
+							const labels = ['serial-connection', 'midi-connection', 'mcp-connection']
+								.map(id => document.querySelector('label[for="' + id + '"]').getBoundingClientRect().left);
+							assert(labels.every(left => Math.abs(left - labels[0]) < 0.5),
+								'Connection labels must stay aligned at ' + width);
 							const nativeBounds = native.getBoundingClientRect();
 							const nativeLabel = nativeLabelElement.getBoundingClientRect();
 							assert(nativeBounds.left >= nativeLabel.left && nativeBounds.right <= nativeLabel.right, 'Native control must fit at ' + width);
@@ -3449,30 +3478,25 @@ finally:
 								['midi', { ...base, type: 'midiSettings', connection: 'test', ports: ['test'] }, 'getMidiInputPorts'],
 							]) {
 								controls.render(settings);
-								const message = document.getElementById(prefix + '-settings-status');
-								const height = message.getBoundingClientRect().height;
 								const connect = document.getElementById('connect-' + prefix);
 								const select = document.getElementById(prefix + '-connection');
-								const bounds = message.getBoundingClientRect();
 								const buttonBounds = connect.getBoundingClientRect();
 								const selectBounds = select.getBoundingClientRect();
-								assert(message.parentElement === connect.parentElement && bounds.left >= buttonBounds.right, prefix + ' message must be right of its controls');
-								assert(bounds.top >= buttonBounds.top && bounds.bottom <= buttonBounds.bottom, prefix + ' message must stay on the control row');
-								const build = document.querySelector('[aria-labelledby="build-settings-heading"]');
-								const top = build.getBoundingClientRect().top;
+								assert(Math.abs(selectBounds.top + selectBounds.height / 2
+									- buttonBounds.top - buttonBounds.height / 2) < 0.5,
+									prefix + ' dropdown and action icons must stay on the same row at ' + width);
+								const connection = document.querySelector('[aria-labelledby="connection-settings-heading"]');
+								const top = connection.getBoundingClientRect().top;
 								document.getElementById('refresh-' + prefix + '-ports').click();
-								assert(messages.at(-1).type === refreshType && message.textContent === '', prefix + ' refresh must not show a loading message');
-								assert(Math.abs(message.getBoundingClientRect().height - height) < 0.5, prefix + ' message height changed while refreshing at ' + width);
-								assert(Math.abs(build.getBoundingClientRect().top - top) < 0.5, prefix + ' refresh moved Build at ' + width);
-								assert(Math.abs(message.getBoundingClientRect().left - bounds.left) < 0.5 && Math.abs(select.getBoundingClientRect().width - selectBounds.width) < 0.5, prefix + ' refresh moved controls at ' + width);
+								assert(messages.at(-1).type === refreshType, prefix + ' refresh must request updated ports');
+								assert(Math.abs(connection.getBoundingClientRect().top - top) < 0.5, prefix + ' refresh moved Connection at ' + width);
+								assert(Math.abs(select.getBoundingClientRect().width - selectBounds.width) < 0.5, prefix + ' refresh moved controls at ' + width);
 								controls.render(settings);
-								assert(Math.abs(build.getBoundingClientRect().top - top) < 0.5, prefix + ' completed refresh moved Build at ' + width);
+								assert(Math.abs(connection.getBoundingClientRect().top - top) < 0.5, prefix + ' completed refresh moved Connection at ' + width);
 								const error = 'Connection error '.repeat(20);
 								controls.render({ ...settings, error });
-								assert(message.textContent === '' && message.title === '', prefix + ' must not show errors in Settings');
-								assert(Math.abs(message.getBoundingClientRect().height - height) < 0.5, prefix + ' long error resized the message at ' + width);
-								assert(Math.abs(build.getBoundingClientRect().top - top) < 0.5, prefix + ' long error moved Build at ' + width);
-								assert(Math.abs(message.getBoundingClientRect().left - bounds.left) < 0.5 && Math.abs(select.getBoundingClientRect().width - selectBounds.width) < 0.5, prefix + ' long error moved controls at ' + width);
+								assert(Math.abs(connection.getBoundingClientRect().top - top) < 0.5, prefix + ' long error moved Connection at ' + width);
+								assert(Math.abs(select.getBoundingClientRect().width - selectBounds.width) < 0.5, prefix + ' error moved controls at ' + width);
 							}
 						}
 						controls.render({ type: 'buildSettings', folder: 'test', editable: true, saving: false,
@@ -3779,6 +3803,59 @@ finally:
 		} finally {
 			await bridge.disposeAsync();
 			output.dispose();
+		}
+	});
+
+	test('PDX Utils opens a valid untitled manifest template', async function () {
+		this.timeout(15000);
+		const extension = vscode.extensions.all.find(extension => extension.packageJSON.name === 'mmlx-lsp');
+		assert.ok(extension);
+		const context = { extensionUri: extension.extensionUri, subscriptions: [] as vscode.Disposable[] };
+		const events = new vscode.EventEmitter<void>();
+		const messages = new vscode.EventEmitter<unknown>();
+		const provider = new VoiceViewProvider(context as unknown as vscode.ExtensionContext, () => undefined);
+		const view = { visible: true, onDidChangeVisibility: events.event, onDidDispose: events.event,
+			webview: { cspSource: 'https://test.invalid', asWebviewUri: (uri: vscode.Uri) => uri,
+				onDidReceiveMessage: messages.event, postMessage: async () => true, options: {}, html: '' } } as unknown as vscode.WebviewView;
+		let subscription: vscode.Disposable | undefined;
+		let timer: ReturnType<typeof setTimeout> | undefined;
+		try {
+			await provider.resolveWebviewView(view);
+			const openExample = () => new Promise<vscode.TextDocument>((resolve, reject) => {
+				clearTimeout(timer);
+				subscription?.dispose();
+				subscription = vscode.window.onDidChangeActiveTextEditor(editor => {
+					if (editor?.document.isUntitled && editor.document.languageId === 'json') { resolve(editor.document); }
+				});
+				timer = setTimeout(() => reject(new Error('PDX JSON example did not open')), 8000);
+				messages.fire({ type: 'openPdxStarter' });
+			});
+			const document = await openExample();
+			assert.strictEqual(document.uri.scheme, 'untitled');
+			assert.strictEqual(document.languageId, 'json');
+			const templatePath = vscode.Uri.joinPath(extension.extensionUri, 'assets', 'webview', 'example.pdx.json');
+			const expected = new TextDecoder().decode(await vscode.workspace.fs.readFile(templatePath));
+			assert.strictEqual(document.getText(), expected);
+			const manifest = JSON.parse(document.getText()) as { version: number; samples: { bank: number; voiceNo: number; wav: string }[] };
+			assert.strictEqual(manifest.version, 1);
+			assert.deepStrictEqual(manifest.samples[0], { bank: 0, voiceNo: 0, wav: 'samples/kick.wav' });
+			const packageJson = extension.packageJSON as { contributes: { jsonValidation: { fileMatch: string; url: string }[] } };
+			assert.deepStrictEqual(packageJson.contributes.jsonValidation, [{ fileMatch: '*.pdx.json', url: './assets/schemas/pdx.schema.json' }]);
+			const schema = JSON.parse(new TextDecoder().decode(await vscode.workspace.fs.readFile(
+				vscode.Uri.joinPath(extension.extensionUri, 'assets', 'schemas', 'pdx.schema.json')))) as {
+				properties: { samples: { items: { properties: { bank: { maximum: number }; voiceNo: { maximum: number }; wav: { type: string } } } } };
+			};
+			assert.strictEqual(schema.properties.samples.items.properties.bank.maximum, 31);
+			assert.strictEqual(schema.properties.samples.items.properties.voiceNo.maximum, 95);
+			assert.strictEqual(schema.properties.samples.items.properties.wav.type, 'string');
+		} finally {
+			clearTimeout(timer);
+			subscription?.dispose();
+			provider.dispose();
+			for (const item of context.subscriptions) { item.dispose(); }
+			events.dispose();
+			messages.dispose();
+			await vscode.commands.executeCommand('workbench.action.revertAndCloseActiveEditor');
 		}
 	});
 
@@ -4345,6 +4422,50 @@ finally:
 			assert.ok(commands.includes('mmlx.build'));
 			assert.ok(commands.includes('mmlx.buildMdx'));
 			assert.ok(commands.includes('mmlx.buildVgm'));
+			assert.ok(commands.includes('mmlx.buildPdx'));
+		});
+
+		test('builds a PDX from a saved manifest and relative mono WAV', async function () {
+			this.timeout(60000);
+			const manifest = vscode.Uri.joinPath(directory, 'drums.pdx.json');
+			const wav = vscode.Uri.joinPath(directory, 'kick.wav');
+			const output = vscode.Uri.joinPath(directory, 'drums.pdx');
+			const samples = [-32768, -12000, 0, 12000, 32767];
+			const dataSize = samples.length * 2;
+			const wavBytes = Buffer.alloc(44 + dataSize);
+			wavBytes.write('RIFF', 0);
+			wavBytes.writeUInt32LE(36 + dataSize, 4);
+			wavBytes.write('WAVEfmt ', 8);
+			wavBytes.writeUInt32LE(16, 16);
+			wavBytes.writeUInt16LE(1, 20);
+			wavBytes.writeUInt16LE(1, 22);
+			wavBytes.writeUInt32LE(15625, 24);
+			wavBytes.writeUInt32LE(31250, 28);
+			wavBytes.writeUInt16LE(2, 32);
+			wavBytes.writeUInt16LE(16, 34);
+			wavBytes.write('data', 36);
+			wavBytes.writeUInt32LE(dataSize, 40);
+			samples.forEach((sample, index) => wavBytes.writeInt16LE(sample, 44 + index * 2));
+			await vscode.workspace.fs.writeFile(wav, wavBytes);
+			await vscode.workspace.fs.writeFile(manifest, new TextEncoder().encode(JSON.stringify({
+				version: 1, lzCompressed: true,
+				samples: [{ bank: 1, voiceNo: 3, wav: 'kick.wav' }]
+			})));
+
+			const document = await vscode.workspace.openTextDocument(manifest);
+			await vscode.window.showTextDocument(document);
+			const observer = observeBuilds(manifest);
+			try {
+				await vscode.commands.executeCommand('mmlx.buildPdx');
+				await observer.waitFor(1);
+				assert.deepStrictEqual(observer.exits, [0], JSON.stringify({
+					definitions: observer.definitions,
+					diagnostics: vscode.languages.getDiagnostics(manifest).map(diagnostic => diagnostic.message)
+				}));
+			} finally { observer.dispose(); }
+			const pdx = await vscode.workspace.fs.readFile(output);
+			assert.ok(pdx.length > 0);
+			assert.notDeepStrictEqual(Array.from(pdx), Array(pdx.length).fill(0));
 		});
 
 		suite('build on save', () => {
@@ -4565,6 +4686,33 @@ finally:
 			const bytes = Buffer.from(await vscode.workspace.fs.readFile(vgm));
 			assert.strictEqual(bytes.subarray(0, 4).toString(), 'Vgm ');
 			assert.ok(bytes.readUInt32LE(0x1c) > 0);
+		});
+
+		test('uses the configured output format from the Build MDX command', async function () {
+			this.timeout(60000);
+			const input = vscode.Uri.joinPath(directory, 'panel-build.mml');
+			const output = vscode.Uri.joinPath(directory, 'panel-build-output');
+			await vscode.workspace.fs.writeFile(input, new TextEncoder().encode('A r4'));
+			const configuration = vscode.workspace.getConfiguration('mmlx', input);
+			const previousFormat = configuration.inspect<string>('build.format')?.workspaceValue;
+			const previousDirectory = configuration.inspect<string>('build.outputDirectory')?.workspaceValue;
+			const document = await vscode.workspace.openTextDocument(input);
+			await vscode.window.showTextDocument(document);
+			const observer = observeBuilds(input);
+			try {
+				await configuration.update('build.format', 'vgm', vscode.ConfigurationTarget.Workspace);
+				await configuration.update('build.outputDirectory', output.fsPath, vscode.ConfigurationTarget.Workspace);
+				await vscode.commands.executeCommand('mmlx.build');
+				await observer.waitFor(1);
+				assert.deepStrictEqual(observer.exits, [0]);
+				assert.strictEqual((await vscode.workspace.fs.readFile(vscode.Uri.joinPath(output, 'panel-build.vgm')))
+					.subarray(0, 4).toString(), 'Vgm ');
+				await assert.rejects(async () => vscode.workspace.fs.stat(vscode.Uri.joinPath(output, 'panel-build.mdx')));
+			} finally {
+				observer.dispose();
+				await configuration.update('build.format', previousFormat, vscode.ConfigurationTarget.Workspace);
+				await configuration.update('build.outputDirectory', previousDirectory, vscode.ConfigurationTarget.Workspace);
+			}
 		});
 
 		test('configures default formats and allows an explicit both-formats task', async function () {

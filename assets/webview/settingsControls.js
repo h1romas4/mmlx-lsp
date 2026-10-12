@@ -3,20 +3,18 @@ export function createSettingsControls(root, onChange = () => {}) {
 	const fieldset = root.querySelector('#build-settings-fields');
 	const mcpConnection = root.querySelector('#mcp-connection');
 	const mcpConnect = root.querySelector('#connect-mcp');
-	const source = root.querySelector('#build-settings-source');
 	const status = root.querySelector('#build-settings-status');
 	let snapshot;
-	const renderSerial = createPortControls('serial', 'serial', 'getSerialPorts', 'updateSerialConnection',
+	const renderSerial = createPortControls('serial', 'getSerialPorts', 'updateSerialConnection',
 		port => ({ value: port.path, label: port.manufacturer ? `${port.path} (${port.manufacturer})` : port.path }));
-	const renderMidi = createPortControls('midi', 'MIDI input', 'getMidiInputPorts', 'updateMidiInput',
+	const renderMidi = createPortControls('midi', 'getMidiInputPorts', 'updateMidiInput',
 		port => ({ value: port, label: port }));
 
-	function createPortControls(prefix, label, refreshType, updateType, option) {
+	function createPortControls(prefix, refreshType, updateType, option) {
 		const connection = root.querySelector(`#${prefix}-connection`);
 		const refresh = root.querySelector(`#refresh-${prefix}-ports`);
 		const connect = root.querySelector(`#connect-${prefix}`);
 		const native = prefix === 'serial' ? root.querySelector('#serial-windows-native') : undefined;
-		const status = root.querySelector(`#${prefix}-settings-status`);
 		let current;
 		function renderPorts(message) {
 			current = message;
@@ -33,10 +31,6 @@ export function createSettingsControls(root, onChange = () => {}) {
 				connect.setAttribute('aria-label', connect.title);
 				connect.setAttribute('aria-pressed', String(!!message.connected));
 			}
-			status.textContent = message.phase || (message.saving ? 'Saving'
-				: message.connected ? (prefix === 'midi' ? '' : `${message.model} / FW ${message.firmware}`)
-				: message.ports.length === 0 ? `No ${label} ports found` : '');
-			status.title = status.textContent;
 			const ports = message.ports.map(option);
 			const options = [new Option('Not selected', ''), ...ports.map(port => new Option(port.label, port.value))];
 			if (message.connection && !ports.some(port => port.value === message.connection)) {
@@ -83,7 +77,6 @@ export function createSettingsControls(root, onChange = () => {}) {
 		mcpConnect.title = `${message.mcpEnabled ? 'Disconnect' : 'Connect'} mmlx MCP`;
 		mcpConnect.setAttribute('aria-label', mcpConnect.title);
 		mcpConnect.setAttribute('aria-pressed', String(message.mcpEnabled === true));
-		source.textContent = message.source ?? '';
 		status.textContent = message.error || (message.saving ? 'Saving' : '');
 		for (const control of controls) {
 			const value = message.values?.[control.dataset.buildSetting];

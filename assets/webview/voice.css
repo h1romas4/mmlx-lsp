@@ -37,6 +37,7 @@ main > section { min-width: 0; }
 #start-controls { padding: 12px 0; }
 .start-identity img { flex: 0 0 64px; object-fit: contain; }
 .start-identity h1 { overflow-wrap: anywhere; }
+#start-tagline { margin: 0 0 16px; color: var(--vscode-descriptionForeground, #666); font-size: 16px; line-height: 1.5; }
 #workspace-trust-note { max-width: 560px; margin: 0 0 12px; color: var(--vscode-descriptionForeground, #666); line-height: 1.5; }
 .start-action { max-width: 100%; padding: 8px 12px; border: 1px solid var(--vscode-button-border, transparent); border-radius: 2px; background: var(--vscode-button-background, #0078d4); color: var(--vscode-button-foreground, #fff); font: inherit; cursor: pointer; }
 .start-action:hover { background: var(--vscode-button-hoverBackground, #006cbe); }
@@ -149,9 +150,16 @@ input:disabled, select:disabled { opacity: .6; }
 .output-controls label { display: inline-flex; align-items: center; gap: 6px; min-width: 0; }
 #status { margin-left: auto; color: var(--vscode-descriptionForeground, #666); }
 #status.is-warning { color: var(--vscode-editorWarning-foreground, #cca700); }
-#build-settings-status { margin-left: auto; color: var(--vscode-descriptionForeground, #666); overflow-wrap: anywhere; }
 .build-settings h2 { margin: 0 0 12px; font-size: 13px; font-weight: 600; }
-#build-settings-source { margin: 8px 0 16px; color: var(--vscode-descriptionForeground, #666); overflow-wrap: anywhere; }
+.build-settings-header { min-height: 0; align-items: baseline; justify-content: flex-start; padding-bottom: 12px; }
+.build-settings-header h2 { margin-bottom: 0; }
+#build-settings-status { margin-left: 12px; color: var(--vscode-descriptionForeground, #666); overflow-wrap: anywhere; }
+.build-mdx-action { margin-top: 4px; }
+.build-divider { margin: 24px 0 16px; border: 0; border-top: 1px solid var(--vscode-panel-border, #ddd); }
+.pdx-steps { max-width: 680px; margin: 0; padding-left: 24px; }
+.pdx-steps > li { margin-bottom: 16px; padding-left: 4px; }
+.pdx-steps > li > p { margin: 0 0 8px; }
+.pdx-example { max-width: 640px; margin: 12px 0; padding: 10px 12px; overflow-x: auto; border: 1px solid var(--vscode-widget-border, var(--vscode-panel-border, #d7dce1)); border-radius: 4px; background: var(--vscode-textCodeBlock-background, var(--vscode-editor-background, #fafafa)); color: var(--vscode-editor-foreground, #292929); font: 12px/1.5 var(--vscode-editor-font-family, monospace); }
 .build-settings fieldset { border: 0; padding: 0; margin: 0; width: min(100%, 640px); }
 .build-field { display: grid; grid-template-columns: 160px minmax(0, 1fr); align-items: center; gap: 12px; margin-bottom: 12px; }
 .build-field input, .build-field select { width: 100%; }
@@ -159,11 +167,11 @@ input:disabled, select:disabled { opacity: .6; }
 .native-engine-option { display: flex; align-items: center; gap: 6px; min-width: 0; }
 .native-engine-option input { flex: 0 0 16px; }
 #serial-native-platform { color: var(--vscode-descriptionForeground, #666); font-size: 11px; overflow-wrap: anywhere; }
-.connection-settings { margin-top: 20px; }
+.connection-settings { margin-top: 0; }
 .connection-settings fieldset { container-type: inline-size; }
 .connection-port-controls { display: flex; align-items: center; gap: 6px; min-width: 0; }
 .connection-port-controls select { flex: 1; width: 0; }
-.mcp-port-controls { display: grid; grid-template-columns: minmax(10px, 1fr) 26px 26px 38%; }
+.mcp-port-controls { display: grid; grid-template-columns: minmax(0, 1fr) 26px 26px; }
 #mcp-connection { grid-column: 1 / 3; width: 100%; }
 #connect-mcp { grid-column: 3; }
 .refresh-ports, .output-connection { width: 26px; height: 26px; flex: 0 0 26px; display: grid; place-items: center; border: 1px solid var(--vscode-input-border, #ccc); border-radius: 2px; background: var(--vscode-input-background, #fff); color: var(--vscode-input-foreground, #292929); cursor: pointer; }
@@ -175,7 +183,6 @@ input:disabled, select:disabled { opacity: .6; }
 .refresh-ports:disabled, .output-connection:disabled { opacity: .6; cursor: default; }
 #keyboard.is-voice-test-pending-reset #keyboard-reset { border-color: transparent; background: var(--accent-teal); color: var(--vscode-button-foreground, #fff); }
 #keyboard.is-voice-test-pending-reset #keyboard-reset:hover { background: var(--accent-teal); filter: brightness(.9); }
-#serial-settings-status, #midi-settings-status { flex: 0 0 38%; min-width: 0; height: 1.5em; line-height: 1.5; margin: 0; color: var(--vscode-descriptionForeground, #666); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 @container (max-width: 460px) {
 	.connection-settings .build-field { grid-template-columns: minmax(0, 1fr); gap: 4px; }
 }

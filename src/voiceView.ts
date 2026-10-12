@@ -286,6 +286,15 @@ export class VoiceViewProvider implements WebviewViewProvider {
 					void this.refreshSerialPorts(); void this.refreshMidiInputPorts();
 				}
 				else if (message?.type === 'openStarter') { void this.openStarter(); }
+				else if (message?.type === 'openPdxStarter') { void this.openPdxStarter(); }
+				else if (message?.type === 'buildPdx') {
+					void commands.executeCommand('mmlx.buildPdx').then(undefined, error =>
+						window.showErrorMessage(`Could not start PDX build: ${error instanceof Error ? error.message : String(error)}`));
+				}
+				else if (message?.type === 'build') {
+					void commands.executeCommand('mmlx.build').then(undefined, error =>
+						window.showErrorMessage(`Could not start build: ${error instanceof Error ? error.message : String(error)}`));
+				}
 				else if (message?.type === 'editVoice') { void this.edit(message); }
 				else if (message?.type === 'updateBuildSetting') { void this.updateBuildSetting(message); }
 				else if (message?.type === 'setMcpEnabled') { this.setMcpEnabled(message); }
@@ -384,6 +393,17 @@ export class VoiceViewProvider implements WebviewViewProvider {
 			await window.showTextDocument(document, { preview: false });
 		} catch (error) {
 			void window.showErrorMessage(`Could not open example MML: ${error instanceof Error ? error.message : String(error)}`);
+		}
+	}
+
+	private async openPdxStarter(): Promise<void> {
+		try {
+			const content = new TextDecoder().decode(await workspace.fs.readFile(
+				Uri.joinPath(this.context.extensionUri, 'assets', 'webview', 'example.pdx.json')));
+			const document = await workspace.openTextDocument({ language: 'json', content });
+			await window.showTextDocument(document, { preview: false });
+		} catch (error) {
+			void window.showErrorMessage(`Could not open PDX JSON example: ${error instanceof Error ? error.message : String(error)}`);
 		}
 	}
 
@@ -613,7 +633,6 @@ export class VoiceViewProvider implements WebviewViewProvider {
 			.map(([key, fallback]) => [key, configuration.get(`build.${key}`, fallback)]));
 		void this.view?.webview.postMessage({ type: 'buildSettings', values, mcpEnabled: this.mcpServer?.enabled ?? false,
 			mcpSupported: !!this.mcpServer, mcpEditable: !this.savingSettings, folder: folder?.uri.toString() ?? '',
-			source: folder ? `${folder.name}/.vscode/settings.json` : '',
 			editable: !!folder && !this.savingSettings, saving: this.savingSettings,
 			error: error || (folder ? '' : 'Open a workspace folder to edit build settings.') });
 	}

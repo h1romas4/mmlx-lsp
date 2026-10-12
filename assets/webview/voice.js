@@ -53,7 +53,7 @@ const playbackControls = createPlaybackControls(document.getElementById('playbac
 	if (playbackMode === 'emulation') { playbackAudio.setMuted(muted); }
 	saveState(); vscode.postMessage({ type: 'playbackMute', id: playbackId, mode: playbackMode, muted });
 });
-const settingsControls = createSettingsControls(document.getElementById('settings-controls'), message => vscode.postMessage(message));
+const settingsControls = createSettingsControls(document.querySelector('main'), message => vscode.postMessage(message));
 const keyboardControls = createKeyboardControls(document.getElementById('keyboard'), mode => {
 	keyboardMode = mode;
 	saveState();
@@ -120,7 +120,10 @@ for (const id of ['keyboard-reset', 'voice-test-play']) {
 	}, { capture: true });
 }
 document.getElementById('open-starter').addEventListener('click', () => vscode.postMessage({ type: 'openStarter' }));
-const tabs = ['start', 'voice', 'playback', 'settings'];
+document.getElementById('open-pdx-starter').addEventListener('click', () => vscode.postMessage({ type: 'openPdxStarter' }));
+document.getElementById('build-pdx').addEventListener('click', () => vscode.postMessage({ type: 'buildPdx' }));
+document.getElementById('build-mdx').addEventListener('click', () => vscode.postMessage({ type: 'build' }));
+const tabs = ['start', 'voice', 'playback', 'utils', 'settings'];
 const saved = vscode.getState();
 let snapshot = saved?.type === 'voice' ? { ...saved, editable: false, editToken: null, editing: false }
 	: { type: 'voice', voice: null, source: '', retained: false, error: false, warning: undefined };

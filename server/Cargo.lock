@@ -569,6 +569,12 @@ dependencies = [
 ]
 
 [[package]]
+name = "hound"
+version = "3.5.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "62adaabb884c94955b19907d60019f4e145d091c75345379e70d1ee696f7854f"
+
+[[package]]
 name = "iana-time-zone"
 version = "0.1.65"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -721,6 +727,7 @@ name = "mmlx-lsp-server"
 version = "0.17.1"
 dependencies = [
  "base64 0.22.1",
+ "hound",
  "lsp-server",
  "lsp-types",
  "mmlx",

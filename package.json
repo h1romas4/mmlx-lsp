@@ -34,6 +34,12 @@
   ],
   "main": "./dist/extension.js",
   "contributes": {
+    "jsonValidation": [
+      {
+        "fileMatch": "*.pdx.json",
+        "url": "./assets/schemas/pdx.schema.json"
+      }
+    ],
     "commands": [
       {
         "command": "mmlx.build",
@@ -50,6 +56,10 @@
       {
         "command": "mmlx.buildVgm",
         "title": "mmlx: Build VGM"
+      },
+      {
+        "command": "mmlx.buildPdx",
+        "title": "mmlx: Build PDX"
       },
       {
         "command": "mmlx.showVoicePanel",

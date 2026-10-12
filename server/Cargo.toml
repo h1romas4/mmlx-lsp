@@ -31,6 +31,7 @@ required-features = ["emulation"]
 
 [dependencies]
 base64 = "0.22"
+hound = "3.5"
 lsp-server = "0.10"
 lsp-types = "0.97"
 mmlx = { version = "0.2.0", features = ["source-map"] }

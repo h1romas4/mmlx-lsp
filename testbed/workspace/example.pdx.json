@@ -1,0 +1,11 @@
+{
+  "version": 1,
+  "lzCompressed": false,
+  "samples": [
+    {
+      "bank": 0,
+      "voiceNo": 0,
+      "wav": "samples/kick.wav"
+    }
+  ]
+}

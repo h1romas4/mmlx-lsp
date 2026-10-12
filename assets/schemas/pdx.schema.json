@@ -1,0 +1,48 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "mmlx PDX sample manifest",
+  "description": "Maps mono WAV files to PDX bank and voice slots.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["version", "samples"],
+  "properties": {
+    "version": {
+      "const": 1,
+      "description": "Manifest format version."
+    },
+    "lzCompressed": {
+      "type": "boolean",
+      "default": false,
+      "description": "Write the PDX body using the NanoDrive8-compatible LZ stream format."
+    },
+    "samples": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["bank", "voiceNo", "wav"],
+        "properties": {
+          "bank": {
+            "type": "integer",
+            "minimum": 0,
+            "maximum": 31,
+            "default": 0,
+            "description": "Zero-based PDX bank selected in MML with the PCM bank command."
+          },
+          "voiceNo": {
+            "type": "integer",
+            "minimum": 0,
+            "maximum": 95,
+            "description": "Zero-based PCM note slot selected by the MML PCM note."
+          },
+          "wav": {
+            "type": "string",
+            "minLength": 1,
+            "description": "Path to a mono PCM WAV file, relative to this manifest."
+          }
+        }
+      }
+    }
+  }
+}

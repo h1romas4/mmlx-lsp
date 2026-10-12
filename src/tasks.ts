@@ -13,6 +13,7 @@ import { BuildResponseDecoder, type BuildResponse } from './buildProtocol';
 interface BuildDefinition extends TaskDefinition {
 	type: 'mmlx';
 	input: string;
+	inputKind?: 'pdx';
 	format?: 'both' | 'mdx' | 'vgm';
 	output?: string;
 	pdx?: string;
@@ -148,13 +149,31 @@ export class BuildTerminal implements Pseudoterminal {
 		}
 	}
 
-	private async execute(module: WebAssembly.Module, request: object, output: Uri): Promise<BuildResponse> {
+	private async execute(module: WebAssembly.Module, request: object, output: Uri, input?: Uri): Promise<BuildResponse> {
 		this.checkCanceled();
-		const rootFileSystem = await this.wasm.createRootFileSystem([
-			{ kind: 'vscodeFileSystem', uri: Uri.joinPath(output, '..'), mountPoint: '/output' }
-		]);
+		const outputDirectory = Uri.joinPath(output, '..');
+		const inputDirectory = input
+			? workspace.getWorkspaceFolder(input)?.uri ?? Uri.joinPath(input, '..')
+			: undefined;
+		const outputIsInInput = inputDirectory
+			&& inputDirectory.scheme === outputDirectory.scheme
+			&& inputDirectory.authority === outputDirectory.authority
+			&& !path.isAbsolute(path.relative(inputDirectory.fsPath, output.fsPath))
+			&& path.relative(inputDirectory.fsPath, output.fsPath) !== '..'
+			&& !path.relative(inputDirectory.fsPath, output.fsPath).startsWith(`..${path.sep}`);
+		const mounts = inputDirectory && outputIsInInput
+			? [{ kind: 'vscodeFileSystem' as const, uri: inputDirectory, mountPoint: '/workspace' }]
+			: inputDirectory
+				? [
+					{ kind: 'vscodeFileSystem' as const, uri: inputDirectory, mountPoint: '/input' },
+					{ kind: 'vscodeFileSystem' as const, uri: outputDirectory, mountPoint: '/output' }
+				]
+				: [{ kind: 'vscodeFileSystem' as const, uri: outputDirectory, mountPoint: '/output' }];
+		const rootFileSystem = await this.wasm.createRootFileSystem(mounts);
 		const outputPath = await rootFileSystem.toWasm(output);
 		if (!outputPath) { throw new Error('Output path could not be mapped into WASI.'); }
+		const inputPath = input ? await rootFileSystem.toWasm(input) : undefined;
+		if (input && !inputPath) { throw new Error('Input path could not be mapped into WASI.'); }
 		this.checkCanceled();
 		const process = await this.wasm.createProcess('mmlx-build', module,
 			{ initial: 160, maximum: 16384, shared: true }, {
@@ -183,7 +202,9 @@ export class BuildTerminal implements Pseudoterminal {
 			this.checkCanceled();
 			const [code] = await Promise.all([
 				process.run(),
-				process.stdin!.write(`${JSON.stringify({ ...request, outputPath })}\n`)
+				process.stdin!.write(`${JSON.stringify({
+					...request, outputPath, ...(inputPath ? { manifestPath: inputPath } : {})
+				})}\n`)
 			]);
 			this.checkCanceled();
 			if (outputError) { throw outputError; }
@@ -210,6 +231,11 @@ export class BuildTerminal implements Pseudoterminal {
 			const definition = this.definition;
 			input = resolveUri(definition.input, this.folder);
 			this.diagnostics.delete(input);
+			if (definition.inputKind === 'pdx') {
+				await this.buildPdx(input, definition, temporaryOutputs);
+				exitCode = 0;
+				return;
+			}
 			const configuration = workspace.getConfiguration('mmlx', input);
 			const format = definition.format ?? configuration.get<'both' | 'mdx' | 'vgm'>('build.format', 'both');
 			const pdxPath = definition.pdx ?? configuration.get<string>('build.pdx', '');
@@ -341,6 +367,51 @@ export class BuildTerminal implements Pseudoterminal {
 			if (!this.canceled) { this.finish(exitCode); }
 		}
 	}
+
+	private async buildPdx(input: Uri, definition: BuildDefinition, temporaryOutputs: Set<Uri>): Promise<void> {
+		if (!input.path.toLowerCase().endsWith('.pdx.json')) {
+			throw new Error('Input must be a .pdx.json manifest.');
+		}
+		const output = definition.output
+			? resolveUri(definition.output, this.folder)
+			: input.with({ path: `${input.path.slice(0, -'.pdx.json'.length)}.pdx` });
+		const sameFile = process.platform === 'win32'
+			? output.toString().toLowerCase() === input.toString().toLowerCase()
+			: output.toString() === input.toString();
+		if (sameFile) { throw new Error('Output must not overwrite the input manifest.'); }
+
+		this.status('Building', `${this.displayPath(input)} [PDX]`);
+		const directory = Uri.joinPath(output, '..');
+		await workspace.fs.createDirectory(directory);
+		const temporary = Uri.joinPath(directory, `.mmlx-${randomUUID()}.tmp`);
+		temporaryOutputs.add(temporary);
+		this.checkCanceled();
+		const wasmUri = Uri.joinPath(this.extensionUri,
+			'server', 'target', 'wasm32-wasip1-threads', 'release', 'mmlx-build.wasm');
+		const bytes = await workspace.fs.readFile(wasmUri);
+		const module = await WebAssembly.compile(new Uint8Array(bytes).buffer);
+		this.checkCanceled();
+		const response = await this.execute(module, { inputKind: 'pdx' }, temporary, input);
+		if (!response.ok) { throw new BuildFailure(response); }
+		const stat = await workspace.fs.stat(temporary);
+		if ((stat.type & FileType.File) === 0 || stat.size !== response.byteLength) {
+			throw new Error('Compiler output file does not match the declared byte length.');
+		}
+		this.checkCanceled();
+		await workspace.fs.rename(temporary, output, { overwrite: true });
+		temporaryOutputs.delete(temporary);
+		const size = response.byteLength < 1024 ? `${response.byteLength} B`
+			: response.byteLength < 1024 * 1024 ? `${(response.byteLength / 1024).toFixed(1)} KiB`
+				: `${(response.byteLength / (1024 * 1024)).toFixed(1)} MiB`;
+		this.status('Writing', `${this.displayPath(output)} (${size})`);
+		try {
+			await commands.executeCommand('workbench.files.action.refreshFilesExplorer');
+		} catch {
+			this.status('Warning', 'PDX saved, but Explorer could not be refreshed.', '33');
+		}
+		this.checkCanceled();
+		this.status('Finished', `1 output file in ${this.elapsed()}s`);
+	}
 }
 
 export const buildErrorLinkProvider: TerminalLinkProvider<BuildErrorLink> = {
@@ -397,14 +468,18 @@ export function registerBuildTasks(context: ExtensionContext, wasm: Wasm): void 
 	}
 	function createTask(definition: BuildDefinition, folder?: WorkspaceFolder): Task {
 		const task = new Task(definition, folder ?? TaskScope.Global,
-			definition.format ? `Build ${String(definition.format).toUpperCase()}` : 'Build', 'mmlx', new CustomExecution(async resolvedDefinition => {
-				const terminal = new BuildTerminal(context.extensionUri, wasm, resolvedDefinition as BuildDefinition,
+			definition.inputKind === 'pdx' ? 'Build PDX'
+				: definition.format ? `Build ${String(definition.format).toUpperCase()}` : 'Build', 'mmlx', new CustomExecution(async resolvedDefinition => {
+				const resolvedBuildDefinition = { ...definition, ...resolvedDefinition };
+				if (definition.inputKind === 'pdx') { resolvedBuildDefinition.inputKind = 'pdx'; }
+				const terminal = new BuildTerminal(context.extensionUri, wasm, resolvedBuildDefinition as BuildDefinition,
 					folder, diagnostics, () => running.delete(terminal));
 				running.add(terminal);
 				return terminal;
 			}));
 		task.group = TaskGroup.Build;
-		task.detail = definition.format === 'mdx' ? 'MML to MDX'
+		task.detail = definition.inputKind === 'pdx' ? 'PDX manifest and WAV files to PDX'
+			: definition.format === 'mdx' ? 'MML to MDX'
 			: definition.format === 'vgm' ? 'MML or MDX to VGM' : 'Build using mmlx.build.format (default: MDX and VGM)';
 		task.presentationOptions = { reveal: TaskRevealKind.Always, panel: TaskPanelKind.Dedicated, clear: true };
 		return task;
@@ -476,4 +551,40 @@ export function registerBuildTasks(context: ExtensionContext, wasm: Wasm): void 
 				workspace.getWorkspaceFolder(document.uri)));
 		}));
 	}
+	context.subscriptions.push(commands.registerCommand('mmlx.buildPdx', async () => {
+		const document = window.activeTextEditor?.document;
+		if (!document || document.isUntitled || !document.uri.path.toLowerCase().endsWith('.pdx.json')) {
+			await window.showErrorMessage('Open a saved .pdx.json manifest to build a PDX file.');
+			return;
+		}
+		if (document.isDirty) {
+			await window.showErrorMessage('Save the PDX manifest before building.');
+			return;
+		}
+		const output = document.uri.with({
+			path: `${document.uri.path.slice(0, -'.pdx.json'.length)}.pdx`
+		});
+		let exists = false;
+		try {
+			await workspace.fs.stat(output);
+			exists = true;
+		} catch (error) {
+			if (!(error instanceof FileSystemError && error.code === 'FileNotFound')) {
+				await window.showErrorMessage(`Could not check PDX output: ${error instanceof Error ? error.message : String(error)}`);
+				return;
+			}
+		}
+		if (exists && await window.showWarningMessage(
+			`${path.posix.basename(output.path)} already exists. Overwrite it?`,
+			{ modal: true }, 'Overwrite') !== 'Overwrite') {
+			return;
+		}
+		try {
+			await tasks.executeTask(createTask(
+				{ type: 'mmlx', input: document.uri.toString(), inputKind: 'pdx' },
+				workspace.getWorkspaceFolder(document.uri)));
+		} catch (error) {
+			await window.showErrorMessage(`Could not start PDX build: ${error instanceof Error ? error.message : String(error)}`);
+		}
+	}));
 }

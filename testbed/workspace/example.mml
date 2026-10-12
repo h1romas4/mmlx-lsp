@@ -1,4 +1,5 @@
 #title "mmlx LSP test"
+#pcmfile "example.pdx"
 
 ; Synth Brass
 @1 = {
@@ -13,4 +14,8 @@
 
 A @1 t120 cdef grgr af>c<a g1
 A af>c<a g1 gfff feee eded cegr
-A gfff feee edde c1
+A gfff feee edde c1 
+; P-W: ADPCM channels
+; F4: 15 kHz | @0: Bank 0 | n0: Voice 0
+P F4 @0 n0 r n0 r
+Q F4 @0 r n0 r n0
