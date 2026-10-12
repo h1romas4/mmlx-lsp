@@ -245,7 +245,6 @@ export class VoiceViewProvider implements WebviewViewProvider {
 				if (event.affectsConfiguration('mmlx.serial') || event.affectsConfiguration('mmlx.midi')) { this.sendConnectionSettings(); }
 			}),
 			workspace.onDidChangeTextDocument(event => {
-				if (event.document === this.playbackDocument) { this.stopPlayback(); }
 				if (event.document.uri.toString() === this.editor?.document.uri.toString()) {
 					this.sendEditorSelection(window.activeTextEditor);
 					this.schedule();

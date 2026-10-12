@@ -1226,7 +1226,7 @@ suite('mmlx extension', () => {
 		} finally { session.dispose(); changed.dispose(); }
 	});
 
-	test('Playback panel follows MML, pauses, resumes, stops and cancels on editor changes', async function () {
+	test('Playback panel follows MML, pauses, resumes, stops and continues through edits', async function () {
 		this.timeout(20000);
 		const extension = vscode.extensions.all.find(extension => extension.packageJSON.name === 'mmlx-lsp');
 		assert.ok(extension);
@@ -1367,10 +1367,16 @@ suite('mmlx extension', () => {
 			await vscode.window.showTextDocument(plain);
 			assert.strictEqual(state.paused, true); assert.strictEqual(state.document, document.uri.toString());
 			messages.fire({ type: 'playbackAction', action: 'resume', id: 6 }); assert.strictEqual(state.playing, true);
+			await vscode.window.showTextDocument(document);
 			const edit = new vscode.WorkspaceEdit(); edit.insert(document.uri, new vscode.Position(0, 0), ' ');
 			await vscode.workspace.applyEdit(edit);
-			await until(() => state.playing === false);
-			assert.strictEqual(state.available, false); assert.strictEqual(sources.ranges.length, 0);
+			assert.strictEqual(state.playing, true, 'Editing the visible playback source must not stop audio');
+			assert.strictEqual(state.available, true);
+			assert.strictEqual(sources.ranges.length, 0, 'Editing clears playback highlights');
+			messages.fire({ type: 'browserPlaybackState', id: 6, ready: true, position: 1, finished: false });
+			assert.strictEqual(state.playing, true, 'Playback continues after editing the source');
+			messages.fire({ type: 'playbackAction', action: 'stop', id: 6 });
+			assert.strictEqual(state.playing, false);
 			messages.fire({ type: 'browserPlaybackState', id: 6, ready: true, position: 1, finished: false });
 			assert.strictEqual(state.playing, false, 'Stopped browser sessions cannot be revived by stale messages');
 			const reopened = await vscode.window.showTextDocument(document);
