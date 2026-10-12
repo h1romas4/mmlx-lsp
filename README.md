@@ -168,6 +168,12 @@ Dedicated bottom panel opened with **mmlx: Show mmlx Panel**.
 - **Windows native engine:** If buffer underruns occur on Windows x64, try **Settings > Connection > NanoDrive8 native engine** (`mmlx.serial.windowsNative`, default `false`). Disconnect before changing it, then reconnect. This uses the bundled Rust audio engine instead of WASM; other platforms stay on WASM. A missing or blocked executable reports an error without silently falling back.
 - **Playback isolation:** Emulation audio runs in Webview workers. NanoDrive8 uses a dedicated process, prepares up to 24 PCM chunks ahead and handles protocol messages separately. Editor or panel stalls do not block audio supply; NanoDrive8 mute/solo changes take effect after already buffered audio.
 
+### Utilities
+
+- **Create PDX JSON:** Open an example manifest for mapping WAV samples to PDX banks and voice slots.
+- **Build PDX:** Convert the saved manifest and its WAV files into a PDX sample bank.
+- **Build MDX:** Build the active MML file using the selected output format: MDX, VGM, or both.
+
 ### Settings
 
 - **Connections:** `[Connected]` and the badge show active connections. Hiding the panel stops on-screen notes, not connections. Disconnect manually; connections are not restored after a reload.
