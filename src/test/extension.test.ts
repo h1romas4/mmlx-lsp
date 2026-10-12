@@ -24,6 +24,25 @@ import { Port as NanoDriveTestPort, codec as nanoDriveTestCodec } from './nanodr
 
 const playbackSource = '@1 = {\n' + '31,0,0,15,0,32,0,1,0,0,0,\n'.repeat(4) + '7,0,15\n}\nA t120 @1 o4 l8 cdef\n';
 
+function pcm16MonoWav(samples: number[]): Uint8Array {
+	const dataLength = samples.length * 2;
+	const bytes = Buffer.alloc(44 + dataLength);
+	bytes.write('RIFF', 0, 'ascii');
+	bytes.writeUInt32LE(bytes.length - 8, 4);
+	bytes.write('WAVEfmt ', 8, 'ascii');
+	bytes.writeUInt32LE(16, 16);
+	bytes.writeUInt16LE(1, 20);
+	bytes.writeUInt16LE(1, 22);
+	bytes.writeUInt32LE(15625, 24);
+	bytes.writeUInt32LE(31250, 28);
+	bytes.writeUInt16LE(2, 32);
+	bytes.writeUInt16LE(16, 34);
+	bytes.write('data', 36, 'ascii');
+	bytes.writeUInt32LE(dataLength, 40);
+	samples.forEach((sample, index) => bytes.writeInt16LE(sample, 44 + index * 2));
+	return bytes;
+}
+
 function observeBuilds(uri: vscode.Uri) {
 	const active = new Set<vscode.TaskExecution>();
 	const changed = new vscode.EventEmitter<void>();
@@ -3732,12 +3751,21 @@ finally:
 		const module = await wasm.compile(vscode.Uri.joinPath(extension.extensionUri, 'server', 'target', 'wasm32-wasip1-threads',
 			'release', 'mmlx-mcp-server.wasm'));
 		const bridge = await WasiMcpHttpBridge.start(wasm, module, output);
+		const folder = vscode.workspace.workspaceFolders?.[0]; assert.ok(folder);
+		const workspaceIndex = vscode.workspace.workspaceFolders!.indexOf(folder);
+		const workspaceSlug = folder.name.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '') || 'workspace';
+		const workspaceId = `${workspaceIndex}-${workspaceSlug}`;
+		const buildRelativeDirectory = `.mmlx-mcp-${randomUUID()}`;
+		const buildDirectory = vscode.Uri.joinPath(folder.uri, buildRelativeDirectory);
+		let buildDirectoryCreated = false;
 		const request = async (message: Record<string, unknown>) => fetch(bridge.uri.toString(), {
 			method: 'POST',
 			headers: { 'content-type': 'application/json', ...bridge.headers },
 			body: JSON.stringify(message)
 		});
 		try {
+			await vscode.workspace.fs.createDirectory(buildDirectory);
+			buildDirectoryCreated = true;
 			const initialized = await request({ jsonrpc: '2.0', id: 1, method: 'initialize',
 				params: { protocolVersion: '2025-11-25', capabilities: {}, clientInfo: { name: 'test', version: '1' } } });
 			assert.strictEqual(initialized.status, 200);
@@ -3751,8 +3779,12 @@ finally:
 			}>;
 			const toolNames = listedTools.map((tool) => tool.name).sort();
 			assert.deepStrictEqual(toolNames, ['mdx_parse', 'mml_check', 'mml_command_reference', 'mml_grammar',
-				'mml_parse', 'mml_vgm_trace', 'mmlx_help', 'vgm_parse'].sort());
+				'mml_parse', 'mml_vgm_trace', 'mmlx_build_mdx', 'mmlx_build_pdx', 'mmlx_build_vgm', 'mmlx_help',
+				'mmlx_workspaces', 'vgm_parse'].sort());
 			for (const [toolName, required] of Object.entries({
+				mmlx_build_mdx: ['workspace', 'input_path', 'output_path'],
+				mmlx_build_pdx: ['workspace', 'manifest_path', 'output_path'],
+				mmlx_build_vgm: ['workspace', 'input_path', 'output_path'],
 				vgm_parse: ['data_base64', 'start_command', 'max_commands'],
 				mdx_parse: ['data_base64', 'start_command', 'max_commands'],
 				mml_parse: ['source', 'start_command', 'max_commands'],
@@ -3763,6 +3795,79 @@ finally:
 			for (const toolName of ['vgm_parse', 'mdx_parse', 'mml_parse', 'mml_vgm_trace']) {
 				assert.match(listedTools.find((tool) => tool.name === toolName)?.description ?? '', /smallest useful/);
 			}
+			const workspaces = await request({ jsonrpc: '2.0', id: 11, method: 'tools/call',
+				params: { name: 'mmlx_workspaces', arguments: {} } });
+			const workspaceList = JSON.parse((await workspaces.json()).result.content[0].text);
+			assert.ok(workspaceList.workspaces.some((item: { id: string }) => item.id === workspaceId));
+			const mmlPath = vscode.Uri.joinPath(buildDirectory, 'song.mml');
+			const mdxPath = vscode.Uri.joinPath(buildDirectory, 'song.mdx');
+			await vscode.workspace.fs.writeFile(mmlPath, Buffer.from('A r4'));
+			const builtMdx = await request({ jsonrpc: '2.0', id: 12, method: 'tools/call',
+				params: { name: 'mmlx_build_mdx', arguments: {
+					workspace: workspaceId,
+					input_path: `${buildRelativeDirectory}/song.mml`,
+					output_path: `${buildRelativeDirectory}/song.mdx`
+				} } });
+			const builtMdxResponse = await builtMdx.json();
+			assert.ok(builtMdxResponse.result?.content, JSON.stringify(builtMdxResponse));
+			const mdxResult = JSON.parse(builtMdxResponse.result.content[0].text);
+			assert.strictEqual(mdxResult.format, 'MDX');
+			assert.strictEqual((await vscode.workspace.fs.readFile(mdxPath)).byteLength, mdxResult.byte_length);
+			const vgmPath = vscode.Uri.joinPath(buildDirectory, 'song.vgm');
+			const builtVgm = await request({ jsonrpc: '2.0', id: 15, method: 'tools/call',
+				params: { name: 'mmlx_build_vgm', arguments: {
+					workspace: workspaceId,
+					input_path: `${buildRelativeDirectory}/song.mml`,
+					output_path: `${buildRelativeDirectory}/song.vgm`
+				} } });
+			const vgmResponse = await builtVgm.json();
+			assert.ok(vgmResponse.result?.content, JSON.stringify(vgmResponse));
+			const vgmResult = JSON.parse(vgmResponse.result.content[0].text);
+			assert.strictEqual(vgmResult.format, 'VGM');
+			assert.strictEqual((await vscode.workspace.fs.readFile(vgmPath)).byteLength, vgmResult.byte_length);
+			const vgmFromMdxPath = vscode.Uri.joinPath(buildDirectory, 'song-from-mdx.vgm');
+			const builtVgmFromMdx = await request({ jsonrpc: '2.0', id: 16, method: 'tools/call',
+				params: { name: 'mmlx_build_vgm', arguments: {
+					workspace: workspaceId,
+					input_path: `${buildRelativeDirectory}/song.mdx`,
+					output_path: `${buildRelativeDirectory}/song-from-mdx.vgm`,
+					adpcm_mode: 'resample',
+					loop_count: 2,
+					max_ticks: 1000
+				} } });
+			const vgmFromMdxResponse = await builtVgmFromMdx.json();
+			assert.ok(vgmFromMdxResponse.result?.content, JSON.stringify(vgmFromMdxResponse));
+			const vgmFromMdxResult = JSON.parse(vgmFromMdxResponse.result.content[0].text);
+			assert.strictEqual(vgmFromMdxResult.format, 'VGM');
+			assert.strictEqual(vgmFromMdxResult.loop_count, 2);
+			assert.strictEqual((await vscode.workspace.fs.readFile(vgmFromMdxPath)).byteLength, vgmFromMdxResult.byte_length);
+			const duplicateMdx = await request({ jsonrpc: '2.0', id: 13, method: 'tools/call',
+				params: { name: 'mmlx_build_mdx', arguments: {
+					workspace: workspaceId,
+					input_path: `${buildRelativeDirectory}/song.mml`,
+					output_path: `${buildRelativeDirectory}/song.mdx`
+				} } });
+			const duplicateMdxResponse = await duplicateMdx.json();
+			assert.ok(duplicateMdxResponse.error);
+			assert.strictEqual((await vscode.workspace.fs.readFile(mdxPath)).byteLength, mdxResult.byte_length);
+			const wavPath = vscode.Uri.joinPath(buildDirectory, 'tone.wav');
+			const manifestPath = vscode.Uri.joinPath(buildDirectory, 'bank.pdx.json');
+			const pdxPath = vscode.Uri.joinPath(buildDirectory, 'bank.pdx');
+			await vscode.workspace.fs.writeFile(wavPath, pcm16MonoWav([-32768, 0, 32767]));
+			await vscode.workspace.fs.writeFile(manifestPath, Buffer.from(JSON.stringify({
+				version: 1, samples: [{ bank: 0, voiceNo: 0, wav: 'tone.wav' }]
+			})));
+			const builtPdx = await request({ jsonrpc: '2.0', id: 14, method: 'tools/call',
+				params: { name: 'mmlx_build_pdx', arguments: {
+					workspace: workspaceId,
+					manifest_path: `${buildRelativeDirectory}/bank.pdx.json`,
+					output_path: `${buildRelativeDirectory}/bank.pdx`
+				} } });
+			const builtPdxResponse = await builtPdx.json();
+			assert.ok(builtPdxResponse.result?.content, JSON.stringify(builtPdxResponse));
+			const pdxResult = JSON.parse(builtPdxResponse.result.content[0].text);
+			assert.strictEqual(pdxResult.format, 'PDX');
+			assert.strictEqual((await vscode.workspace.fs.readFile(pdxPath)).byteLength, pdxResult.byte_length);
 			const help = await request({ jsonrpc: '2.0', id: 8, method: 'tools/call',
 				params: { name: 'mmlx_help', arguments: {} } });
 			const helpText = JSON.parse((await help.json()).result.content[0].text);
@@ -3807,8 +3912,14 @@ finally:
 			assert.strictEqual(largeVgm.file_bytes, vgm.length);
 			assert.strictEqual(largeVgm.commands[0].command, 'DataBlock(type=0x00, size=11534336)');
 		} finally {
-			await bridge.disposeAsync();
-			output.dispose();
+			try {
+				if (buildDirectoryCreated) {
+					await vscode.workspace.fs.delete(buildDirectory, { recursive: true, useTrash: false });
+				}
+			} finally {
+				await bridge.disposeAsync();
+				output.dispose();
+			}
 		}
 	});
 

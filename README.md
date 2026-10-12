@@ -170,7 +170,6 @@ Dedicated bottom panel opened with **mmlx: Show mmlx Panel**.
 
 ### Settings
 
-- **Settings:** Configure MDX/VGM builds, NanoDrive8 port selection and experimental connection, and MIDI-IN selection. Choices are saved to `.vscode/settings.json`.
 - **Connections:** `[Connected]` and the badge show active connections. Hiding the panel stops on-screen notes, not connections. Disconnect manually; connections are not restored after a reload.
 
 ## Current Limitations

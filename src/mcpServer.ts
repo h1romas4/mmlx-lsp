@@ -2,7 +2,8 @@ import { randomBytes } from 'node:crypto';
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from 'node:http';
 import {
 	EventEmitter, McpHttpServerDefinition, Uri, lm,
-	type CancellationToken, type Disposable, type ExtensionContext, type McpServerDefinitionProvider, type OutputChannel
+	type CancellationToken, type Disposable, type ExtensionContext, type McpServerDefinitionProvider, type OutputChannel,
+	type WorkspaceFolder, workspace
 } from 'vscode';
 import type { Readable, Wasm, WasmProcess, Writable } from '@vscode/wasm-wasi/v1';
 
@@ -41,6 +42,11 @@ export interface McpServerController {
 	setEnabled(enabled: boolean): void;
 }
 
+function workspaceMountPoint(folder: WorkspaceFolder, index: number): string {
+	const name = folder.name.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '') || 'workspace';
+	return `/workspaces/${index}-${name}`;
+}
+
 export function registerMcpServerProvider(
 	context: ExtensionContext,
 	wasm: Wasm,
@@ -54,6 +60,7 @@ export function registerMcpServerProvider(
 
 class MmlxMcpServerProvider implements McpServerDefinitionProvider<McpHttpServerDefinition>, Disposable, McpServerController {
 	private readonly definitionsChanged = new EventEmitter<void>();
+	private readonly workspaceFoldersChanged: Disposable;
 	private module: Promise<WebAssembly.Module> | undefined;
 	private bridge: Promise<WasiMcpHttpBridge> | undefined;
 	private enabledState = false;
@@ -63,7 +70,13 @@ class MmlxMcpServerProvider implements McpServerDefinitionProvider<McpHttpServer
 		private readonly context: ExtensionContext,
 		private readonly wasm: Wasm,
 		private readonly output: OutputChannel
-	) {}
+	) {
+		this.workspaceFoldersChanged = workspace.onDidChangeWorkspaceFolders(() => {
+			if (!this.enabledState) { return; }
+			this.definitionsChanged.fire();
+			void this.stopBridge();
+		});
+	}
 
 	get enabled(): boolean {
 		return this.enabledState;
@@ -94,6 +107,7 @@ class MmlxMcpServerProvider implements McpServerDefinitionProvider<McpHttpServer
 
 	dispose(): void {
 		this.enabledState = false;
+		this.workspaceFoldersChanged.dispose();
 		this.definitionsChanged.dispose();
 		void this.stopBridge();
 	}
@@ -102,7 +116,10 @@ class MmlxMcpServerProvider implements McpServerDefinitionProvider<McpHttpServer
 		if (!this.module) {
 			this.module = this.wasm.compile(Uri.joinPath(this.context.extensionUri, ...mcpWasmPath));
 		}
-		this.bridge ??= this.module.then(module => WasiMcpHttpBridge.start(this.wasm, module, this.output))
+		this.bridge ??= this.module.then(module => WasiMcpHttpBridge.start(
+			this.wasm, module, this.output,
+			workspace.isTrusted ? workspace.workspaceFolders ?? [] : []
+		))
 			.catch(error => { this.bridge = undefined; throw error; });
 		const pending = this.bridge;
 		const bridge = await pending;
@@ -174,12 +191,24 @@ export class WasiMcpHttpBridge implements Disposable {
 		stderr.resume();
 	}
 
-	static async start(wasm: Wasm, module: WebAssembly.Module, output: OutputChannel): Promise<WasiMcpHttpBridge> {
+	static async start(
+		wasm: Wasm,
+		module: WebAssembly.Module,
+		output: OutputChannel,
+		workspaceFolders: readonly WorkspaceFolder[] = workspace.workspaceFolders ?? []
+	): Promise<WasiMcpHttpBridge> {
+		const mounts = workspaceFolders.map((folder, index) => ({
+			kind: 'vscodeFileSystem' as const,
+			uri: folder.uri,
+			mountPoint: workspaceMountPoint(folder, index)
+		}));
+		const rootFileSystem = mounts.length > 0 ? await wasm.createRootFileSystem(mounts) : undefined;
 		const process = await wasm.createProcess('mmlx-mcp-server', module, {
 			initial: 160,
 			maximum: 2048,
 			shared: true
 		}, {
+			...(rootFileSystem ? { rootFileSystem } : {}),
 			stdio: {
 				in: { kind: 'pipeIn' },
 				out: { kind: 'pipeOut' },

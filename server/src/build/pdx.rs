@@ -1,7 +1,7 @@
 use std::{
     collections::HashSet,
     fs,
-    path::{Path, PathBuf},
+    path::{Component, Path, PathBuf},
 };
 
 use serde::Deserialize;
@@ -9,6 +9,9 @@ use soundlog::mdx::{
     pcm::encode_adpcm,
     pdx::{PdxBuilder, PdxDocument},
 };
+
+const MAX_WORKSPACE_MANIFEST_BYTES: u64 = 1024 * 1024;
+const MAX_WORKSPACE_WAV_BYTES: u64 = 32 * 1024 * 1024;
 
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
@@ -27,7 +30,29 @@ struct Sample {
     wav: String,
 }
 
+#[allow(dead_code)]
 pub(super) fn build_pdx(manifest_path: &Path) -> Result<Vec<u8>, String> {
+    build_pdx_inner(manifest_path, None)
+}
+
+pub(super) fn build_pdx_within(
+    manifest_path: &Path,
+    workspace_root: &Path,
+) -> Result<Vec<u8>, String> {
+    build_pdx_inner(manifest_path, Some(workspace_root))
+}
+
+fn build_pdx_inner(manifest_path: &Path, workspace_root: Option<&Path>) -> Result<Vec<u8>, String> {
+    if workspace_root.is_some()
+        && fs::metadata(manifest_path)
+            .map_err(|error| format!("could not inspect PDX manifest: {error}"))?
+            .len()
+            > MAX_WORKSPACE_MANIFEST_BYTES
+    {
+        return Err(format!(
+            "PDX manifest exceeds the {MAX_WORKSPACE_MANIFEST_BYTES}-byte limit"
+        ));
+    }
     let manifest_bytes =
         fs::read(manifest_path).map_err(|error| format!("could not read PDX manifest: {error}"))?;
     let manifest: Manifest = serde_json::from_slice(&manifest_bytes)
@@ -44,6 +69,7 @@ pub(super) fn build_pdx(manifest_path: &Path) -> Result<Vec<u8>, String> {
 
     let directory = manifest_path.parent().unwrap_or_else(|| Path::new("."));
     let mut used_slots = HashSet::new();
+    let mut total_wav_bytes = 0_u64;
     let mut builder = PdxBuilder::new();
     builder.set_lz_compressed(manifest.lz_compressed);
 
@@ -81,6 +107,25 @@ pub(super) fn build_pdx(manifest_path: &Path) -> Result<Vec<u8>, String> {
             return Err(format!("expected a WAV file: {}", sample.wav));
         }
         let wav_path = directory.join(wav_path);
+        let wav_path = if let Some(workspace_root) = workspace_root {
+            workspace_file(workspace_root, &wav_path, &sample.wav)?
+        } else {
+            wav_path
+        };
+        if workspace_root.is_some() {
+            total_wav_bytes = total_wav_bytes
+                .checked_add(
+                    fs::metadata(&wav_path)
+                        .map_err(|error| format!("could not inspect WAV {}: {error}", sample.wav))?
+                        .len(),
+                )
+                .filter(|size| *size <= MAX_WORKSPACE_WAV_BYTES)
+                .ok_or_else(|| {
+                    format!(
+                        "PDX WAV inputs exceed the {MAX_WORKSPACE_WAV_BYTES}-byte combined limit"
+                    )
+                })?;
+        }
         let pcm = read_wav_samples(&wav_path)?;
         builder
             .set_sample(sample.bank, sample.voice_no, encode_adpcm(&pcm))
@@ -90,6 +135,37 @@ pub(super) fn build_pdx(manifest_path: &Path) -> Result<Vec<u8>, String> {
     let bytes = builder.finalize().to_bytes();
     PdxDocument::parse(&bytes).map_err(|error| format!("built PDX is invalid: {error}"))?;
     Ok(bytes)
+}
+
+fn workspace_file(root: &Path, path: &Path, name: &str) -> Result<PathBuf, String> {
+    let relative = path
+        .strip_prefix(root)
+        .map_err(|_| format!("WAV paths must remain inside the workspace: {name}"))?;
+    let mut resolved = root.to_path_buf();
+    for component in relative.components() {
+        match component {
+            Component::Normal(part) => {
+                resolved.push(part);
+                let metadata = fs::symlink_metadata(&resolved)
+                    .map_err(|error| format!("could not resolve WAV {name}: {error}"))?;
+                if metadata.file_type().is_symlink() {
+                    return Err(format!(
+                        "WAV paths must not traverse symbolic links: {name}"
+                    ));
+                }
+            }
+            Component::CurDir => {}
+            Component::ParentDir if resolved != root => {
+                resolved.pop();
+            }
+            Component::ParentDir | Component::RootDir | Component::Prefix(_) => {
+                return Err(format!(
+                    "WAV paths must remain inside the workspace: {name}"
+                ));
+            }
+        }
+    }
+    Ok(resolved)
 }
 
 fn read_wav_samples(path: &Path) -> Result<Vec<i16>, String> {
@@ -229,6 +305,27 @@ mod tests {
             build_pdx(&manifest_path)
                 .unwrap_err()
                 .contains("only mono WAV")
+        );
+        fs::remove_dir_all(directory).unwrap();
+    }
+
+    #[test]
+    fn rejects_workspace_manifest_samples_outside_the_workspace() {
+        let directory = test_directory();
+        let workspace = directory.join("workspace");
+        fs::create_dir(&workspace).unwrap();
+        write_wav(&directory.join("tone.wav"), 1, &[1, 2]);
+        let manifest_path = workspace.join("bank.pdx.json");
+        fs::write(
+            &manifest_path,
+            r#"{"version":1,"samples":[{"bank":0,"voiceNo":0,"wav":"../tone.wav"}]}"#,
+        )
+        .unwrap();
+
+        assert!(
+            build_pdx_within(&manifest_path, &workspace)
+                .unwrap_err()
+                .contains("remain inside the workspace")
         );
         fs::remove_dir_all(directory).unwrap();
     }

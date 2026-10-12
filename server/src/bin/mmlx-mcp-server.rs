@@ -1,9 +1,16 @@
 use std::{
     collections::{BTreeMap, BTreeSet},
+    fs,
     io::{self, Read, Write},
+    path::{Component, Path, PathBuf},
     pin::Pin,
     task::{Context, Poll},
 };
+
+#[path = "../build/mdx.rs"]
+mod mdx_build;
+#[path = "../build/pdx.rs"]
+mod pdx_build;
 
 use base64::{Engine, engine::general_purpose::STANDARD};
 use rmcp::{
@@ -39,6 +46,12 @@ const MAX_BINARY_BYTES: usize = 32 * 1024 * 1024;
 const MAX_MML_BYTES: usize = 64 * 1024;
 const MAX_COMMANDS: usize = 500;
 const MAX_TRACE_TICK: u64 = 100_000;
+const MAX_VGM_OUTPUT_BYTES: usize = 64 * 1024 * 1024;
+const MAX_VGM_TICKS: u32 = 1_000_000;
+
+fn failure(message: impl ToString) -> serde_json::Value {
+    serde_json::json!({ "ok": false, "message": message.to_string() })
+}
 
 #[derive(Deserialize, JsonSchema)]
 struct VgmParseRequest {
@@ -100,6 +113,44 @@ struct MmlCheckRequest {
 struct MmlCommandReferenceRequest {
     /// Optional exact MML command label to look up; omit to list all commands.
     command: Option<String>,
+}
+
+#[derive(Deserialize, JsonSchema)]
+struct BuildMdxRequest {
+    /// Workspace identifier returned by mmlx_workspaces.
+    workspace: String,
+    /// Workspace-relative MML source path.
+    input_path: String,
+    /// Workspace-relative MDX output path. Existing files are not overwritten.
+    output_path: String,
+}
+
+#[derive(Deserialize, JsonSchema)]
+struct BuildPdxRequest {
+    /// Workspace identifier returned by mmlx_workspaces.
+    workspace: String,
+    /// Workspace-relative .pdx.json manifest path.
+    manifest_path: String,
+    /// Workspace-relative PDX output path. Existing files are not overwritten.
+    output_path: String,
+}
+
+#[derive(Deserialize, JsonSchema)]
+struct BuildVgmRequest {
+    /// Workspace identifier returned by mmlx_workspaces.
+    workspace: String,
+    /// Workspace-relative .mml or .mdx input path.
+    input_path: String,
+    /// Workspace-relative VGM output path. Existing files are not overwritten.
+    output_path: String,
+    /// Optional workspace-relative PDX file. If omitted, a referenced PDX is searched beside the input.
+    pdx_path: Option<String>,
+    /// ADPCM processing mode: through (default), resample, or lpf.
+    adpcm_mode: Option<String>,
+    /// Positive number of loop playthroughs. Omit to preserve native loop points.
+    loop_count: Option<u32>,
+    /// Maximum playback ticks (1-1000000; defaults to 100000).
+    max_ticks: Option<u32>,
 }
 
 #[derive(Deserialize)]
@@ -225,25 +276,124 @@ impl AsyncWrite for Stdout {
 #[tool_router]
 impl MmlxMcpServer {
     #[tool(
+        description = "List the trusted VS Code workspace folders available for file-based MDX and PDX builds."
+    )]
+    fn mmlx_workspaces(&self) -> Result<CallToolResult, McpError> {
+        let entries = match fs::read_dir("/workspaces") {
+            Ok(entries) => entries,
+            Err(error) if error.kind() == io::ErrorKind::NotFound => {
+                return json_result(&serde_json::json!({"workspaces": []}));
+            }
+            Err(error) => {
+                return Err(McpError::internal_error(
+                    format!("failed to list mounted workspaces: {error}"),
+                    None,
+                ));
+            }
+        };
+        let mut workspaces = Vec::new();
+        for entry in entries {
+            let entry = entry.map_err(|error| {
+                McpError::internal_error(
+                    format!("failed to read mounted workspace entry: {error}"),
+                    None,
+                )
+            })?;
+            if entry
+                .file_type()
+                .map_err(|error| {
+                    McpError::internal_error(
+                        format!("failed to inspect mounted workspace: {error}"),
+                        None,
+                    )
+                })?
+                .is_dir()
+            {
+                let id = entry.file_name().to_string_lossy().into_owned();
+                if valid_workspace_id(&id) {
+                    workspaces.push(serde_json::json!({
+                        "id": id,
+                        "name": id
+                    }));
+                }
+            }
+        }
+        workspaces.sort_by(|left, right| left["id"].as_str().cmp(&right["id"].as_str()));
+        json_result(&serde_json::json!({"workspaces": workspaces}))
+    }
+
+    #[tool(
+        description = "Build a workspace-relative .mml file (up to 64 KiB) into an MDX file. Call mmlx_workspaces first; output files are created without overwriting existing files."
+    )]
+    fn mmlx_build_mdx(
+        &self,
+        params: Parameters<BuildMdxRequest>,
+    ) -> Result<CallToolResult, McpError> {
+        let request = params.0;
+        let root = workspace_root(&request.workspace)?;
+        let result = build_mdx(&root, &request.input_path, &request.output_path)?;
+        json_result(&result)
+    }
+
+    #[tool(
+        description = "Build a workspace-relative .pdx.json manifest (up to 1 MiB) and its relative WAV files (32 MiB combined) into a PDX file. Call mmlx_workspaces first; all files must remain inside that workspace, and output files are created without overwriting existing files."
+    )]
+    fn mmlx_build_pdx(
+        &self,
+        params: Parameters<BuildPdxRequest>,
+    ) -> Result<CallToolResult, McpError> {
+        let request = params.0;
+        let root = workspace_root(&request.workspace)?;
+        let result = build_pdx(&root, &request.manifest_path, &request.output_path)?;
+        json_result(&result)
+    }
+
+    #[tool(
+        description = "Build a workspace-relative .mml or .mdx file into VGM. Call mmlx_workspaces first. An optional PDX path can be supplied; otherwise a referenced PDX is searched for beside the input. Existing output files are not overwritten."
+    )]
+    fn mmlx_build_vgm(
+        &self,
+        params: Parameters<BuildVgmRequest>,
+    ) -> Result<CallToolResult, McpError> {
+        let request = params.0;
+        let root = workspace_root(&request.workspace)?;
+        let result = build_vgm(
+            &root,
+            &request.input_path,
+            &request.output_path,
+            request.pdx_path.as_deref(),
+            request.adpcm_mode.as_deref(),
+            request.loop_count,
+            request.max_ticks,
+        )?;
+        json_result(&result)
+    }
+
+    #[tool(
         description = "Explain what the mmlx MCP server does, how MML, MDX/PDX, and VGM relate, and when to use each analysis tool."
     )]
     fn mmlx_help(&self) -> Result<CallToolResult, McpError> {
         json_result(&serde_json::json!({
             "server": "mmlx",
-            "purpose": "Analyze MML source and MDX/VGM music data. The server does not render audio.",
+            "purpose": "Build MDX, PDX, and VGM files from workspace sources, and analyze MML source and MDX/VGM music data. The server does not render audio.",
             "formats": {
-                "MML": "Human-readable music source. mml_parse compiles it into MDX track commands with source locations, mml_check performs a bounded playback check, and mml_vgm_trace generates VGM commands around a source playback tick.",
-                "MDX": "A binary music format. mmlx can compile MML into MDX track commands and mdx_parse inspects an existing MDX file. MDX files can reference PDX sample data.",
-                "PDX": "Sample data that can be used by MDX playback. mml_vgm_trace accepts optional PDX bytes; without them it uses synthetic silence for PCM samples.",
-                "VGM": "A record of chip commands and timing. vgm_parse inspects an existing VGM file; mml_vgm_trace generates a VGM command trace from MML and maps commands to MML ticks."
+                "MML": "Human-readable music source. mmlx_build_mdx compiles a workspace .mml file into MDX, mmlx_build_vgm compiles it into VGM, mml_parse compiles it into MDX track commands with source locations, mml_check performs a bounded playback check, and mml_vgm_trace generates VGM commands around a source playback tick.",
+                "MDX": "A binary music format. mmlx_build_mdx compiles MML into an MDX file, mmlx_build_vgm converts MDX into VGM, and mdx_parse inspects an existing MDX file. MDX files can reference PDX sample data.",
+                "PDX": "Sample data that can be used by MDX playback. mmlx_build_pdx builds a PDX file from a workspace .pdx.json manifest and relative WAV files. mml_vgm_trace accepts optional PDX bytes; without them it uses synthetic silence for PCM samples.",
+                "VGM": "A record of chip commands and timing. mmlx_build_vgm creates a VGM file from MML or MDX, vgm_parse inspects an existing VGM file, and mml_vgm_trace generates a VGM command trace from MML and maps commands to MML ticks."
             },
             "workflow": [
+                "Use mmlx_workspaces to find the trusted workspace id, then mmlx_build_mdx, mmlx_build_pdx, or mmlx_build_vgm to create an output file. Build paths are workspace-relative and existing output files are never overwritten.",
                 "Use mml_parse to inspect how MML compiles and where generated commands came from; request only the command window needed and advance start_command to fetch later commands.",
                 "Use mml_check for a bounded playback check; it does not validate real PDX contents or audio output.",
                 "Use mml_vgm_trace to inspect generated chip commands around a zero-based MML tick. Tick mapping requires a single tempo set at the start of playback.",
                 "Use mdx_parse or vgm_parse to inspect existing binary files; request only the command window needed and advance start_command to fetch later commands. Binary inputs are standard Base64."
             ],
             "tools": [
+                {"name": "mmlx_workspaces", "purpose": "List workspace roots available to file-based build tools."},
+                {"name": "mmlx_build_mdx", "purpose": "Build a workspace MML file into MDX."},
+                {"name": "mmlx_build_pdx", "purpose": "Build a PDX file from a workspace manifest and WAV samples."},
+                {"name": "mmlx_build_vgm", "purpose": "Build a VGM file from workspace MML or MDX, with optional PDX samples."},
                 {"name": "mmlx_help", "purpose": "Explain the server, formats, and tool selection."},
                 {"name": "mml_command_reference", "purpose": "List MML commands or look up one command's syntax and description."},
                 {"name": "mml_grammar", "purpose": "Return the copied Pest grammar for the supported MML dialect."},
@@ -256,7 +406,11 @@ impl MmlxMcpServer {
             "limits": {
                 "mml_source_bytes": MAX_MML_BYTES,
                 "binary_file_bytes": MAX_BINARY_BYTES,
-                "parser_max_commands": MAX_COMMANDS
+                "parser_max_commands": MAX_COMMANDS,
+                "pdx_manifest_bytes": 1024 * 1024,
+                "pdx_wav_bytes_total": 32 * 1024 * 1024,
+                "vgm_output_bytes": 64 * 1024 * 1024,
+                "vgm_max_ticks": 1_000_000
             },
             "range_requirements": {
                 "vgm_parse": "Requires start_command and max_commands.",
@@ -760,6 +914,438 @@ fn decode_binary(encoded: &str) -> Result<Vec<u8>, McpError> {
     Ok(bytes)
 }
 
+fn valid_workspace_id(workspace: &str) -> bool {
+    !workspace.is_empty()
+        && workspace
+            .bytes()
+            .all(|byte| byte.is_ascii_lowercase() || byte.is_ascii_digit() || byte == b'-')
+}
+
+fn workspace_root(workspace: &str) -> Result<PathBuf, McpError> {
+    if !valid_workspace_id(workspace) {
+        return Err(invalid_input(
+            "workspace must be an id returned by mmlx_workspaces",
+        ));
+    }
+    let root = Path::new("/workspaces").join(workspace);
+    let metadata = fs::metadata(&root).map_err(|error| {
+        invalid_input(format!("workspace {workspace:?} is unavailable: {error}"))
+    })?;
+    if !metadata.is_dir() {
+        return Err(invalid_input(format!(
+            "workspace {workspace:?} is not a directory"
+        )));
+    }
+    Ok(root)
+}
+
+fn workspace_relative_path(relative: &str) -> Result<PathBuf, McpError> {
+    let path = Path::new(relative);
+    if relative.is_empty()
+        || relative.contains('\\')
+        || relative.ends_with('/')
+        || path
+            .components()
+            .any(|component| !matches!(component, Component::Normal(_)))
+    {
+        return Err(invalid_input(
+            "file paths must be non-empty workspace-relative paths without traversal",
+        ));
+    }
+    Ok(path.to_path_buf())
+}
+
+fn workspace_input(root: &Path, relative: &str) -> Result<PathBuf, McpError> {
+    let relative = workspace_relative_path(relative)?;
+    let path = root.join(&relative);
+    let mut current = root.to_path_buf();
+    for component in relative.components() {
+        let Component::Normal(name) = component else {
+            return Err(invalid_input(
+                "input files must remain inside the selected workspace",
+            ));
+        };
+        current.push(name);
+        let metadata = fs::symlink_metadata(&current)
+            .map_err(|error| invalid_input(format!("could not read {relative:?}: {error}")))?;
+        if metadata.file_type().is_symlink() {
+            return Err(invalid_input(
+                "input files must not traverse symbolic links",
+            ));
+        }
+    }
+    if !path.is_file() {
+        return Err(invalid_input(format!("{relative:?} is not a file")));
+    }
+    Ok(path)
+}
+
+fn workspace_output(root: &Path, relative: &str) -> Result<PathBuf, McpError> {
+    let relative = workspace_relative_path(relative)?;
+    let mut components = relative.components().peekable();
+    let mut parent = root.to_path_buf();
+    while let Some(component) = components.next() {
+        let Component::Normal(name) = component else {
+            return Err(invalid_input(
+                "output paths must remain inside the selected workspace",
+            ));
+        };
+        if components.peek().is_none() {
+            return Ok(parent.join(name));
+        }
+        parent.push(name);
+        match fs::symlink_metadata(&parent) {
+            Ok(metadata) if metadata.file_type().is_symlink() || !metadata.is_dir() => {
+                return Err(invalid_input(
+                    "output directories must not traverse symbolic links or non-directories",
+                ));
+            }
+            Ok(_) => {}
+            Err(error) if error.kind() == io::ErrorKind::NotFound => {
+                fs::create_dir(&parent).map_err(|error| {
+                    McpError::internal_error(
+                        format!("could not create output directory: {error}"),
+                        None,
+                    )
+                })?;
+            }
+            Err(error) => {
+                return Err(McpError::internal_error(
+                    format!("could not inspect output directory: {error}"),
+                    None,
+                ));
+            }
+        }
+    }
+    Err(invalid_input("output path must include a file name"))
+}
+
+fn write_build_output(path: &Path, bytes: &[u8]) -> Result<(), McpError> {
+    let mut file = fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(path)
+        .map_err(|error| {
+            McpError::internal_error(
+                format!("could not create build output {}: {error}", path.display()),
+                None,
+            )
+        })?;
+    if let Err(error) = file.write_all(bytes).and_then(|()| file.flush()) {
+        drop(file);
+        return match fs::remove_file(path) {
+            Ok(()) => Err(McpError::internal_error(
+                format!("could not write build output {}: {error}", path.display()),
+                None,
+            )),
+            Err(cleanup_error) => Err(McpError::internal_error(
+                format!(
+                    "could not write build output {}: {error}; could not remove the partial file: {cleanup_error}",
+                    path.display()
+                ),
+                None,
+            )),
+        };
+    }
+    Ok(())
+}
+
+fn build_mdx(
+    root: &Path,
+    input_path: &str,
+    output_path: &str,
+) -> Result<serde_json::Value, McpError> {
+    let input = workspace_input(root, input_path)?;
+    if !input_path.to_ascii_lowercase().ends_with(".mml") {
+        return Err(invalid_input("MDX build input must be an .mml file"));
+    }
+    if !output_path.to_ascii_lowercase().ends_with(".mdx") {
+        return Err(invalid_input("MDX build output must end with .mdx"));
+    }
+    let size = fs::metadata(&input)
+        .map_err(|error| McpError::internal_error(error.to_string(), None))?
+        .len();
+    if size > MAX_MML_BYTES as u64 {
+        return Err(invalid_input(format!(
+            "MML input exceeds the {MAX_MML_BYTES}-byte limit"
+        )));
+    }
+    let source = fs::read_to_string(&input)
+        .map_err(|error| invalid_input(format!("could not read MML source: {error}")))?;
+    let bytes = mdx_build::build(&serde_json::json!({"source": source})).map_err(|error| {
+        invalid_input(
+            error["message"]
+                .as_str()
+                .unwrap_or("MML compilation failed")
+                .to_owned(),
+        )
+    })?;
+    let output = workspace_output(root, output_path)?;
+    write_build_output(&output, &bytes)?;
+    Ok(serde_json::json!({
+        "format": "MDX",
+        "input_path": input_path,
+        "output_path": output_path,
+        "byte_length": bytes.len()
+    }))
+}
+
+fn build_pdx(
+    root: &Path,
+    manifest_path: &str,
+    output_path: &str,
+) -> Result<serde_json::Value, McpError> {
+    let manifest = workspace_input(root, manifest_path)?;
+    if !manifest_path.to_ascii_lowercase().ends_with(".pdx.json") {
+        return Err(invalid_input(
+            "PDX build input must be a .pdx.json manifest",
+        ));
+    }
+    if !output_path.to_ascii_lowercase().ends_with(".pdx") {
+        return Err(invalid_input("PDX build output must end with .pdx"));
+    }
+    let bytes = pdx_build::build_pdx_within(&manifest, &root)
+        .map_err(|error| invalid_input(format!("PDX build failed: {error}")))?;
+    let output = workspace_output(&root, output_path)?;
+    write_build_output(&output, &bytes)?;
+    Ok(serde_json::json!({
+        "format": "PDX",
+        "manifest_path": manifest_path,
+        "output_path": output_path,
+        "byte_length": bytes.len()
+    }))
+}
+
+fn find_referenced_pdx(
+    root: &Path,
+    input_path: &str,
+    name: &str,
+) -> Result<Option<(String, PathBuf)>, McpError> {
+    let name = name.replace('\\', "/");
+    let Some(name) = Path::new(&name).file_name() else {
+        return Ok(None);
+    };
+    let name = name.to_string_lossy().into_owned();
+    let input_directory = Path::new(input_path)
+        .parent()
+        .unwrap_or_else(|| Path::new(""));
+    let Some(filename) = Path::new(&name).file_name() else {
+        return Ok(None);
+    };
+    let filename = filename.to_string_lossy().into_owned();
+    let candidates = if filename.to_ascii_lowercase().ends_with(".pdx") {
+        vec![filename.clone()]
+    } else {
+        vec![format!("{filename}.pdx"), filename.clone()]
+    };
+    let directory = root.join(input_directory);
+    let entries = match fs::read_dir(directory) {
+        Ok(entries) => entries,
+        Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(None),
+        Err(error) => {
+            return Err(McpError::internal_error(
+                format!("could not search for referenced PDX: {error}"),
+                None,
+            ));
+        }
+    };
+    let mut filenames = Vec::new();
+    for entry in entries {
+        let entry = entry.map_err(|error| {
+            McpError::internal_error(
+                format!("could not inspect PDX directory entry: {error}"),
+                None,
+            )
+        })?;
+        if entry
+            .file_type()
+            .map_err(|error| {
+                McpError::internal_error(format!("could not inspect PDX candidate: {error}"), None)
+            })?
+            .is_file()
+        {
+            filenames.push(entry.file_name().to_string_lossy().into_owned());
+        }
+    }
+    for candidate in candidates {
+        if let Some(found) = filenames
+            .iter()
+            .find(|entry| entry.eq_ignore_ascii_case(&candidate))
+        {
+            let relative = input_directory
+                .join(found)
+                .to_string_lossy()
+                .replace('\\', "/");
+            let path = workspace_input(root, &relative)?;
+            return Ok(Some((relative, path)));
+        }
+    }
+    Ok(None)
+}
+
+fn build_vgm(
+    root: &Path,
+    input_path: &str,
+    output_path: &str,
+    pdx_path: Option<&str>,
+    adpcm_mode: Option<&str>,
+    loop_count: Option<u32>,
+    max_ticks: Option<u32>,
+) -> Result<serde_json::Value, McpError> {
+    let input = workspace_input(root, input_path)?;
+    let input_kind = if input_path.to_ascii_lowercase().ends_with(".mml") {
+        "mml"
+    } else if input_path.to_ascii_lowercase().ends_with(".mdx") {
+        "mdx"
+    } else {
+        return Err(invalid_input(
+            "VGM build input must be an .mml or .mdx file",
+        ));
+    };
+    if !output_path.to_ascii_lowercase().ends_with(".vgm") {
+        return Err(invalid_input("VGM build output must end with .vgm"));
+    }
+    let max_ticks = max_ticks.unwrap_or(100_000);
+    if !(1..=MAX_VGM_TICKS).contains(&max_ticks) {
+        return Err(invalid_input(format!(
+            "max_ticks must be between 1 and {MAX_VGM_TICKS}"
+        )));
+    }
+    if loop_count == Some(0) {
+        return Err(invalid_input(
+            "loop_count must be positive; omit it to preserve native loop points",
+        ));
+    }
+    let adpcm_mode = adpcm_mode.unwrap_or("through");
+    if !matches!(adpcm_mode, "through" | "resample" | "lpf") {
+        return Err(invalid_input(
+            "adpcm_mode must be through, resample, or lpf",
+        ));
+    }
+
+    let input_bytes = fs::metadata(&input)
+        .map_err(|error| McpError::internal_error(error.to_string(), None))?
+        .len();
+    let (source, bytes) = if input_kind == "mml" {
+        if input_bytes > MAX_MML_BYTES as u64 {
+            return Err(invalid_input(format!(
+                "MML input exceeds the {MAX_MML_BYTES}-byte limit"
+            )));
+        }
+        (
+            Some(
+                fs::read_to_string(&input).map_err(|error| {
+                    invalid_input(format!("could not read MML source: {error}"))
+                })?,
+            ),
+            None,
+        )
+    } else {
+        if input_bytes > MAX_BINARY_BYTES as u64 {
+            return Err(invalid_input(format!(
+                "MDX input exceeds the {MAX_BINARY_BYTES}-byte limit"
+            )));
+        }
+        (
+            None,
+            Some(
+                fs::read(&input)
+                    .map_err(|error| invalid_input(format!("could not read MDX file: {error}")))?,
+            ),
+        )
+    };
+
+    let pdx = if let Some(pdx_path) = pdx_path {
+        if !pdx_path.to_ascii_lowercase().ends_with(".pdx") {
+            return Err(invalid_input("PDX input must end with .pdx"));
+        }
+        let path = workspace_input(root, pdx_path)?;
+        Some((pdx_path.to_owned(), path))
+    } else {
+        None
+    };
+    let pdx_bytes = if let Some((_, path)) = &pdx {
+        let size = fs::metadata(path)
+            .map_err(|error| McpError::internal_error(error.to_string(), None))?
+            .len();
+        if size > MAX_BINARY_BYTES as u64 {
+            return Err(invalid_input(format!(
+                "PDX input exceeds the {MAX_BINARY_BYTES}-byte limit"
+            )));
+        }
+        Some(
+            fs::read(path)
+                .map_err(|error| invalid_input(format!("could not read PDX file: {error}")))?,
+        )
+    } else {
+        None
+    };
+
+    let mut request = serde_json::json!({
+        "inputKind": input_kind,
+        "format": "vgm",
+        "adpcmMode": adpcm_mode,
+        "loopCount": loop_count,
+        "maxTicks": max_ticks,
+        "source": source,
+        "bytes": bytes,
+        "pdx": pdx_bytes,
+    });
+    let result = mdx_build::build(&request);
+    let (result, pdx_used) = match (result, pdx) {
+        (Err(error), None) if error["pdxName"].is_string() => {
+            let pdx_name = error["pdxName"].as_str().unwrap();
+            let Some((relative_path, path)) = find_referenced_pdx(root, input_path, pdx_name)?
+            else {
+                return Err(invalid_input(format!(
+                    "{}; provide pdx_path to the required sample file",
+                    error["message"].as_str().unwrap_or("PDX file required")
+                )));
+            };
+            let size = fs::metadata(&path)
+                .map_err(|error| McpError::internal_error(error.to_string(), None))?
+                .len();
+            if size > MAX_BINARY_BYTES as u64 {
+                return Err(invalid_input(format!(
+                    "PDX input exceeds the {MAX_BINARY_BYTES}-byte limit"
+                )));
+            }
+            let pdx_bytes = fs::read(path)
+                .map_err(|error| invalid_input(format!("could not read PDX file: {error}")))?;
+            request["pdx"] = serde_json::to_value(pdx_bytes).map_err(|error| {
+                McpError::internal_error(format!("could not encode PDX input: {error}"), None)
+            })?;
+            (mdx_build::build(&request), Some(relative_path))
+        }
+        (result, explicit_pdx) => (result, explicit_pdx.map(|(path, _)| path)),
+    };
+    let bytes = result.map_err(|error| {
+        invalid_input(
+            error["message"]
+                .as_str()
+                .unwrap_or("VGM conversion failed")
+                .to_owned(),
+        )
+    })?;
+    if bytes.len() > MAX_VGM_OUTPUT_BYTES {
+        return Err(invalid_input(format!(
+            "generated VGM exceeds the {MAX_VGM_OUTPUT_BYTES}-byte output limit"
+        )));
+    }
+    let output = workspace_output(root, output_path)?;
+    write_build_output(&output, &bytes)?;
+    Ok(serde_json::json!({
+        "format": "VGM",
+        "input_path": input_path,
+        "output_path": output_path,
+        "pdx_path": pdx_used,
+        "adpcm_mode": adpcm_mode,
+        "loop_count": loop_count,
+        "max_ticks": max_ticks,
+        "byte_length": bytes.len()
+    }))
+}
+
 fn next_tick_samples(tick_microseconds: u64, sample_remainder: &mut u64) -> u64 {
     let sample_accumulator = *sample_remainder + tick_microseconds * 44_100;
     *sample_remainder = sample_accumulator % 1_000_000;
@@ -837,10 +1423,39 @@ fn synthetic_pdx(mdx: &MdxDocument) -> Result<Option<PdxDocument>, soundlog::Par
 mod tests {
     use super::*;
     use soundlog::vgm::command::PcmRamWrite;
+    use std::sync::atomic::{AtomicUsize, Ordering};
 
     fn result_text(result: CallToolResult) -> serde_json::Value {
         let result = serde_json::to_value(result).unwrap();
         serde_json::from_str(result["content"][0]["text"].as_str().unwrap()).unwrap()
+    }
+
+    fn test_workspace() -> PathBuf {
+        static NEXT: AtomicUsize = AtomicUsize::new(0);
+        let path = std::env::temp_dir().join(format!(
+            "mmlx-mcp-build-{}-{}",
+            std::process::id(),
+            NEXT.fetch_add(1, Ordering::Relaxed)
+        ));
+        fs::create_dir_all(&path).unwrap();
+        path
+    }
+
+    fn write_wav(path: &Path) {
+        let mut writer = hound::WavWriter::create(
+            path,
+            hound::WavSpec {
+                channels: 1,
+                sample_rate: 15_625,
+                bits_per_sample: 16,
+                sample_format: hound::SampleFormat::Int,
+            },
+        )
+        .unwrap();
+        for sample in [-32768_i16, 0, 32767] {
+            writer.write_sample(sample).unwrap();
+        }
+        writer.finalize().unwrap();
     }
 
     #[test]
@@ -866,6 +1481,109 @@ mod tests {
                 .unwrap()
                 .contains("radius")
         );
+        assert!(
+            report["tools"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|tool| tool["name"] == "mmlx_build_vgm")
+        );
+    }
+
+    #[test]
+    fn workspace_mdx_build_writes_valid_output_without_overwriting() {
+        let root = test_workspace();
+        fs::write(root.join("song.mml"), "A r4").unwrap();
+
+        let report = build_mdx(&root, "song.mml", "generated/song.mdx").unwrap();
+        let bytes = fs::read(root.join("generated/song.mdx")).unwrap();
+        assert_eq!(report["format"], "MDX");
+        assert_eq!(report["byte_length"], bytes.len());
+        assert!(MdxDocument::parse(&bytes).is_ok());
+        assert!(build_mdx(&root, "song.mml", "generated/song.mdx").is_err());
+        assert!(build_mdx(&root, "../song.mml", "escape.mdx").is_err());
+        assert!(build_mdx(&root, "song.mml", "../escape.mdx").is_err());
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn workspace_pdx_build_reads_relative_wav_and_writes_output() {
+        let root = test_workspace();
+        fs::create_dir(root.join("samples")).unwrap();
+        write_wav(&root.join("samples/tone.wav"));
+        fs::write(
+            root.join("bank.pdx.json"),
+            r#"{"version":1,"samples":[{"bank":0,"voiceNo":0,"wav":"samples/tone.wav"}]}"#,
+        )
+        .unwrap();
+
+        let report = build_pdx(&root, "bank.pdx.json", "generated/bank.pdx").unwrap();
+        let bytes = fs::read(root.join("generated/bank.pdx")).unwrap();
+        assert_eq!(report["format"], "PDX");
+        assert_eq!(report["byte_length"], bytes.len());
+        assert!(PdxDocument::parse(&bytes).is_ok());
+        assert!(build_pdx(&root, "bank.pdx.json", "generated/bank.pdx").is_err());
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn workspace_vgm_builds_mml_and_mdx_and_discovers_referenced_pdx() {
+        let root = test_workspace();
+        fs::write(root.join("song.mml"), "A r4").unwrap();
+        let result = build_vgm(
+            &root,
+            "song.mml",
+            "generated/song.vgm",
+            None,
+            None,
+            None,
+            None,
+        )
+        .unwrap();
+        let vgm = fs::read(root.join("generated/song.vgm")).unwrap();
+        assert_eq!(result["format"], "VGM");
+        assert_eq!(result["pdx_path"], serde_json::Value::Null);
+        assert!(VgmDocument::try_from(vgm.as_slice()).is_ok());
+
+        let mdx = mdx_build::build(&serde_json::json!({"source": "A r4"})).unwrap();
+        fs::write(root.join("song.mdx"), mdx).unwrap();
+        let result = build_vgm(
+            &root,
+            "song.mdx",
+            "generated/song-from-mdx.vgm",
+            None,
+            Some("resample"),
+            Some(2),
+            Some(1000),
+        )
+        .unwrap();
+        assert_eq!(result["loop_count"], 2);
+        assert_eq!(result["max_ticks"], 1000);
+        assert!(
+            VgmDocument::try_from(
+                fs::read(root.join("generated/song-from-mdx.vgm"))
+                    .unwrap()
+                    .as_slice()
+            )
+            .is_ok()
+        );
+
+        fs::write(root.join("pcm.mml"), "#pcmfile \"drums\"\nA r4").unwrap();
+        let pdx = PdxBuilder::new().finalize().to_bytes();
+        fs::write(root.join("DRUMS.PDX"), pdx).unwrap();
+        let result = build_vgm(
+            &root,
+            "pcm.mml",
+            "generated/pcm.vgm",
+            None,
+            None,
+            None,
+            None,
+        )
+        .unwrap();
+        assert_eq!(result["pdx_path"], "DRUMS.PDX");
+
+        fs::remove_dir_all(root).unwrap();
     }
 
     #[test]
