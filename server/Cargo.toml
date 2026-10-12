@@ -16,6 +16,10 @@ path = "src/bin/mmlx-mcp-server.rs"
 required-features = ["mcp"]
 
 [[bin]]
+name = "mmlx-lsp-server"
+path = "src/bin/mmlx-lsp-server.rs"
+
+[[bin]]
 name = "mmlx-nanodrive"
 path = "src/bin/mmlx-nanodrive.rs"
 required-features = ["nanodrive"]

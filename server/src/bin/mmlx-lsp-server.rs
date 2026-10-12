@@ -1,10 +1,18 @@
+#[path = "../completion.rs"]
 mod completion;
+#[path = "../dialect.rs"]
 mod dialect;
+#[path = "../formatter.rs"]
 mod formatter;
+#[path = "../i18n.rs"]
 mod i18n;
+#[path = "../selection_range.rs"]
 mod selection_range;
+#[path = "../semantic.rs"]
 mod semantic;
+#[path = "../track_length.rs"]
 mod track_length;
+#[path = "../voice.rs"]
 mod voice;
 
 rust_i18n::i18n!("locales", fallback = "ja");
