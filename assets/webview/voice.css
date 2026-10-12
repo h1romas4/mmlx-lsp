@@ -37,6 +37,7 @@ main > section { min-width: 0; }
 #start-controls { padding: 12px 0; }
 .start-identity img { flex: 0 0 64px; object-fit: contain; }
 .start-identity h1 { overflow-wrap: anywhere; }
+#workspace-trust-note { max-width: 560px; margin: 0 0 12px; color: var(--vscode-descriptionForeground, #666); line-height: 1.5; }
 .start-action { max-width: 100%; padding: 8px 12px; border: 1px solid var(--vscode-button-border, transparent); border-radius: 2px; background: var(--vscode-button-background, #0078d4); color: var(--vscode-button-foreground, #fff); font: inherit; cursor: pointer; }
 .start-action:hover { background: var(--vscode-button-hoverBackground, #006cbe); }
 .start-action:focus-visible { outline: 1px solid var(--vscode-focusBorder, #39a9c7); outline-offset: 2px; }

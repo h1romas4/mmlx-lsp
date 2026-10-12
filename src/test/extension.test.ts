@@ -1628,6 +1628,12 @@ suite('mmlx extension', () => {
 					check(document.querySelector('[role="tab"]').id === 'start-tab', 'Get Started must be the leftmost tab');
 					check(startTab.getAttribute('aria-selected') === 'true' && !document.getElementById('start-controls').hidden, 'Get Started must be selected initially');
 					check(document.querySelector('#start-controls h1').textContent === 'mmlx-lsp', 'Extension title must appear');
+					const trustNote = document.getElementById('workspace-trust-note');
+					check(trustNote.textContent.includes('trusted workspace') && trustNote.textContent.includes('Restricted Mode')
+						&& trustNote.textContent.includes('Manage Workspace Trust'), 'Get Started must explain the workspace trust requirement');
+					const trustLink = trustNote.querySelector('a');
+					check(trustLink.href === 'https://code.visualstudio.com/docs/editing/workspaces/workspace-trust'
+						&& trustLink.target === '_blank', 'Workspace Trust guidance must link to the VS Code documentation');
 					const icon = document.querySelector('#start-controls img');
 					check(icon.complete && icon.naturalWidth > 0, 'Extension icon must load');
 					document.getElementById('open-starter').click();
