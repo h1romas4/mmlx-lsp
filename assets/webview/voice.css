@@ -159,8 +159,7 @@ input:disabled, select:disabled { opacity: .6; }
 .pdx-steps { max-width: 680px; margin: 0; padding-left: 24px; }
 .pdx-steps > li { margin-bottom: 16px; padding-left: 4px; }
 .pdx-steps > li > p { margin: 0 0 8px; }
-.pdx-example { max-width: 640px; margin: 12px 0; overflow-wrap: anywhere; color: var(--vscode-editor-foreground, #292929); font: 12px/1.5 var(--vscode-editor-font-family, monospace); }
-.pdx-example code { white-space: pre-wrap; }
+.pdx-example { max-width: 640px; margin: 12px 0; padding: 10px 12px; overflow-x: auto; border: 1px solid var(--vscode-widget-border, var(--vscode-panel-border, #d7dce1)); border-radius: 4px; background: var(--vscode-textCodeBlock-background, var(--vscode-editor-background, #fafafa)); color: var(--vscode-editor-foreground, #292929); font: 12px/1.5 var(--vscode-editor-font-family, monospace); }
 .build-settings fieldset { border: 0; padding: 0; margin: 0; width: min(100%, 640px); }
 .build-field { display: grid; grid-template-columns: 160px minmax(0, 1fr); align-items: center; gap: 12px; margin-bottom: 12px; }
 .build-field input, .build-field select { width: 100%; }

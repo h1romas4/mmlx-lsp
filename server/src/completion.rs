@@ -70,6 +70,25 @@ const COMMANDS: &[Command] = &[
     command!("!", "!", "!", 0),
 ];
 
+struct Attribute {
+    label: &'static str,
+    snippet: &'static str,
+    plain: &'static str,
+}
+
+const ATTRIBUTES: &[Attribute] = &[
+    Attribute {
+        label: "#title",
+        snippet: "#title \"${1:Title}\"",
+        plain: "#title \"Title\"",
+    },
+    Attribute {
+        label: "#pcmfile",
+        snippet: "#pcmfile \"${1:example.pdx}\"",
+        plain: "#pcmfile \"example.pdx\"",
+    },
+];
+
 const VOICE_DEFINITION_BODY: &str = r#" = {
     /* AR  D1R D2R RR D1L TL  KS MUL DT1 DT2 AME */
        28, 4,  0,  5, 1,  37, 2, 1,  7,  0,  0,
@@ -92,6 +111,9 @@ pub fn items(
     let before = &source[..offset];
     if !in_code(before) {
         return vec![];
+    }
+    if let Some(items) = attribute_items(source, offset, snippets) {
+        return items;
     }
     let line = before.rsplit('\n').next().unwrap_or("").trim_start();
     let header = line
@@ -213,6 +235,63 @@ pub fn items(
         ));
     }
     items
+}
+
+fn attribute_items(source: &str, offset: usize, snippets: bool) -> Option<Vec<CompletionItem>> {
+    let line_start = source[..offset].rfind('\n').map_or(0, |index| index + 1);
+    let line_prefix = &source[line_start..offset];
+    let start = line_start + line_prefix.len() - line_prefix.trim_start().len();
+    let prefix = &source[start..offset];
+    if !prefix.starts_with('#') || !prefix[1..].bytes().all(|byte| byte.is_ascii_alphabetic()) {
+        return None;
+    }
+
+    let end = offset
+        + source[offset..]
+            .bytes()
+            .take_while(u8::is_ascii_alphabetic)
+            .count();
+    let prefix = prefix.to_ascii_lowercase();
+    let Some(file) = SourceFile::new(source) else {
+        return Some(Vec::new());
+    };
+    let index = file.line_index();
+    let Some((start_line, start_column)) = index.utf16_position(start) else {
+        return Some(Vec::new());
+    };
+    let Some((end_line, end_column)) = index.utf16_position(end) else {
+        return Some(Vec::new());
+    };
+    let range = Range::new(
+        Position::new(start_line as u32, start_column as u32),
+        Position::new(end_line as u32, end_column as u32),
+    );
+
+    Some(
+        ATTRIBUTES
+            .iter()
+            .filter(|attribute| attribute.label.starts_with(&prefix))
+            .map(|attribute| CompletionItem {
+                label: attribute.label.into(),
+                kind: Some(CompletionItemKind::KEYWORD),
+                filter_text: Some(attribute.label.into()),
+                insert_text_format: Some(if snippets {
+                    InsertTextFormat::SNIPPET
+                } else {
+                    InsertTextFormat::PLAIN_TEXT
+                }),
+                text_edit: Some(CompletionTextEdit::Edit(TextEdit {
+                    range,
+                    new_text: if snippets {
+                        attribute.snippet.into()
+                    } else {
+                        attribute.plain.into()
+                    },
+                })),
+                ..CompletionItem::default()
+            })
+            .collect(),
+    )
 }
 
 fn voice_select_context(source: &str, offset: usize) -> Option<(usize, usize, String)> {
@@ -715,6 +794,35 @@ mod tests {
         let english = super::items("@", Position::new(0, 1), true, Language::English);
         assert_eq!(english[0].label, "@ Voice definition");
         assert_eq!(english[0].text_edit, japanese[0].text_edit);
+    }
+
+    #[test]
+    fn attribute_completion_suggests_mml_headers_with_valid_values() {
+        let title = items("#ti", Position::new(0, 3), true);
+        assert_eq!(title.len(), 1);
+        assert_eq!(title[0].label, "#title");
+        assert_eq!(title[0].kind, Some(CompletionItemKind::KEYWORD));
+        let Some(CompletionTextEdit::Edit(title_edit)) = &title[0].text_edit else {
+            panic!("expected title completion edit");
+        };
+        assert_eq!(
+            title_edit.range,
+            Range::new(Position::new(0, 0), Position::new(0, 3))
+        );
+        assert_eq!(title_edit.new_text, "#title \"${1:Title}\"");
+
+        let pcmfile = items("#p", Position::new(0, 2), false);
+        assert_eq!(pcmfile.len(), 1);
+        assert_eq!(pcmfile[0].label, "#pcmfile");
+        let Some(CompletionTextEdit::Edit(pcmfile_edit)) = &pcmfile[0].text_edit else {
+            panic!("expected PCM file completion edit");
+        };
+        assert_eq!(pcmfile_edit.new_text, "#pcmfile \"example.pdx\"");
+
+        assert_eq!(items("#", Position::new(0, 1), true).len(), 2);
+        assert!(items("#unknown", Position::new(0, 8), true).is_empty());
+        assert!(items("A #t", Position::new(0, 4), true).is_empty());
+        assert!(items("; #t", Position::new(0, 4), true).is_empty());
     }
 
     #[test]

@@ -59,7 +59,7 @@ impl Dialect {
                 )),
                 completion_provider: Some(CompletionOptions {
                     resolve_provider: Some(false),
-                    trigger_characters: Some(vec!["@".into(), "M".into()]),
+                    trigger_characters: Some(vec!["#".into(), "@".into(), "M".into()]),
                     ..CompletionOptions::default()
                 }),
                 signature_help_provider: Some(SignatureHelpOptions {
@@ -189,5 +189,16 @@ mod tests {
                 Err(UnsupportedDialect { value })
             );
         }
+    }
+
+    #[test]
+    fn hash_triggers_mml_attribute_completion() {
+        let capabilities = Dialect::Mdx.capabilities();
+        let triggers = capabilities
+            .completion_provider
+            .unwrap()
+            .trigger_characters
+            .unwrap();
+        assert!(triggers.contains(&"#".to_string()));
     }
 }

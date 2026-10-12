@@ -1939,7 +1939,7 @@ suite('mmlx extension', () => {
 			assert.match(panelHtml, /<section id="utils-controls"[\s\S]*<h2 id="pdx-utils-heading">Create PDX<\/h2>[\s\S]*<hr class="build-divider">[\s\S]*<h2 id="build-settings-heading">Build MDX<\/h2>[\s\S]*<fieldset id="build-settings-fields"[\s\S]*<\/fieldset>\s*<button id="build-mdx"[^>]*>Build MDX<\/button>/);
 			assert.doesNotMatch(panelHtml, /id="build-settings-source"/);
 			assert.doesNotMatch(panelHtml, /<section id="settings-controls"[\s\S]*id="build-settings-fields"/);
-			assert.match(panelHtml, /<p class="pdx-example"[^>]*><code>#pcmfile "example\.pdx"<br>; P-W: ADPCM channels<br>; F4: 15 kHz \| @0: Bank 0 \| n0: Voice 0<br>P F4 @0 n0 n0 n0 n0<\/code><\/p>/);
+			assert.match(panelHtml, /<pre class="pdx-example"[^>]*>#pcmfile "example\.pdx"\s+; P-W: ADPCM channels\s+; F4: 15 kHz \| @0: Bank 0 \| n0: Voice 0\s+P F4 @0 n0 n0 n0 n0<\/pre>/);
 			assert.ok(panelHtml.indexOf('id="open-pdx-starter"') < panelHtml.indexOf('id="build-pdx"'));
 			assert.ok(panelHtml.indexOf('id="build-pdx"') < panelHtml.indexOf('class="pdx-example"'));
 			assert.strictEqual(document.uri.scheme, 'untitled');

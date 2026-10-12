@@ -7,6 +7,8 @@ All notable changes to the "mmlx-lsp" extension will be documented in this file.
 - Build PDX sample banks from JSON manifests and WAV files in the Utilities panel.
 - Add MCP workspace access and tools to build MDX, PDX, and VGM files.
 - Play selected MML passages across their specified FM channels.
+- Complete `#title` and `#pcmfile` MML attributes in the language server.
+- Refine the PDX playback example formatting in Utilities.
 - Keep playback running when editing the source while clearing playback highlights.
 - Improve the Utilities panel and document its build workflows.
 

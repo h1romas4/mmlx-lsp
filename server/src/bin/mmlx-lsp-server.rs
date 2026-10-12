@@ -22,14 +22,14 @@ use std::error::Error;
 
 use dialect::Dialect;
 use lsp_server::{Connection, ErrorCode, Message, Notification, Request, Response};
+#[cfg(test)]
+use lsp_types::Uri;
 use lsp_types::{
     CodeLensParams, CompletionParams, Diagnostic, DiagnosticSeverity, DidChangeTextDocumentParams,
     DidCloseTextDocumentParams, DidOpenTextDocumentParams, DocumentFormattingParams,
     InitializeParams, NumberOrString, Position, PublishDiagnosticsParams, Range,
     SelectionRangeParams, SemanticTokensParams, SignatureHelpParams, TextDocumentPositionParams,
 };
-#[cfg(test)]
-use lsp_types::Uri;
 use mmlx::diagnostic::Severity;
 use mmlx::frontend::SourceFile;
 use mmlx::mdx::frontend::{CompiledMdx, MdxLocation};
@@ -1005,10 +1005,7 @@ mod tests {
                 Notification::new(method.into(), params),
             )
             .unwrap();
-            assert_eq!(
-                documents.contains_key(uri),
-                version.is_some()
-            );
+            assert_eq!(documents.contains_key(uri), version.is_some());
             let Message::Notification(notification) = client.receiver.try_recv().unwrap() else {
                 panic!("expected diagnostics notification");
             };
