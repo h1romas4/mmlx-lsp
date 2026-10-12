@@ -644,9 +644,10 @@ mod tests {
     fn voice_test_emits_only_timed_fm_and_preserves_keyboard_session() {
         let mut bridge = Bridge::default();
         audition(&mut bridge, json!({"type":"init", "voice":voice()}));
-        bridge.handle(json!({"operation":"voiceTestInit", "session":7, "mml":"MH0,200,64,0,5,0,1 p1 t240 o4 c16 y64,2", "voice":voice()})).unwrap();
+        bridge.handle(json!({"operation":"voiceTestInit", "session":7, "mml":"A MH0,200,64,0,5,0,1 p1 t130cdefg y64,2\nB t130gfedc\nC t130ggggg", "voice":voice()})).unwrap();
         let mut lfo = false;
         let mut registers = Vec::new();
+        let mut key_on_channels = [false; 8];
         let mut ended = false;
         for request_id in 0..100 {
             let Output::Audio(chunk) = bridge
@@ -664,8 +665,8 @@ mod tests {
                 let frame = Frame::decode(body).unwrap();
                 assert_eq!(frame.opcode(), 0x56);
                 for pair in frame.payload().chunks_exact(2) {
-                    if pair[0] == 0x08 {
-                        assert_eq!(pair[1] & 7, 0, "Only part A sends key events");
+                    if pair[0] == 0x08 && pair[1] & 0x78 != 0 {
+                        key_on_channels[usize::from(pair[1] & 7)] = true;
                     }
                     registers.push((pair[0], pair[1]));
                 }
@@ -680,6 +681,7 @@ mod tests {
             }
         }
         assert!(lfo && ended);
+        assert!(key_on_channels[..3].iter().all(|key_on| *key_on));
         for channel in 0..8 {
             assert!(registers.contains(&(0x38 + channel, 0x50)));
             assert!(registers.contains(&(0x20 + channel, 0x47)));

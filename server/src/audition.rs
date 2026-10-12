@@ -16,7 +16,10 @@ pub struct VoiceTestRegisters {
 
 impl VoiceTestRegisters {
     pub fn forward(&mut self, address: u8, value: u8, mut write: impl FnMut(u8, u8)) {
-        if address >= 0x20 {
+        if (0x28..=0x37).contains(&address) {
+            self.capture(address, value);
+            write(address, value);
+        } else if address >= 0x20 {
             if address & 7 != 0 {
                 return;
             }
@@ -34,7 +37,7 @@ impl VoiceTestRegisters {
         if address >= 0x20 {
             self.values.insert(address, value);
         }
-        address != 0x08 || value & 7 == 0
+        true
     }
 }
 
@@ -235,7 +238,7 @@ mod tests {
             registers.borrow_mut().capture(0x20 + channel, 0x47);
             registers.borrow_mut().capture(0x60 + channel, 20);
         }
-        assert!(!registers.borrow_mut().capture(0x08, 0x79));
+        assert!(registers.borrow_mut().capture(0x08, 0x79));
         let restored = audition.restore_voice();
         for channel in 0..8 {
             assert!(restored.contains(&(0x38 + channel, 0x52)));
@@ -255,6 +258,18 @@ mod tests {
         let writes = audition.set_voice(Some(voice)).unwrap();
         assert!(writes.contains(&(0x38, 0)));
         assert!(registers.borrow().values.is_empty());
+    }
+
+    #[test]
+    fn voice_test_forwards_channel_key_and_pitch_registers() {
+        let mut registers = VoiceTestRegisters::default();
+        let mut writes = Vec::new();
+        for (address, value) in [(0x08, 0x79), (0x29, 0x4b), (0x31, 0x20)] {
+            registers.forward(address, value, |address, value| {
+                writes.push((address, value));
+            });
+        }
+        assert_eq!(writes, [(0x08, 0x79), (0x29, 0x4b), (0x31, 0x20)]);
     }
 
     #[test]

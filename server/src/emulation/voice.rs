@@ -61,22 +61,50 @@ impl Voice {
         }
         let source = self.test_source(mml)?;
         let mut parsed = mmlx::mdx::parse(&source).map_err(|error| error.to_string())?;
-        let commands = parsed.tracks[0].commands.clone();
-        parsed.tracks[0].commands = settings(&commands, 0, true);
-        for channel in 'B'..='H' {
-            parsed.tracks.push(MmlTrack {
-                channel,
-                commands: settings(&commands, channel as u8 - b'A', false),
-            });
+        let commands = parsed
+            .tracks
+            .iter()
+            .find(|track| ('A'..='H').contains(&track.channel))
+            .map(|track| track.commands.clone())
+            .ok_or_else(|| "Voice test requires an FM channel (A-H)".to_string())?;
+        let mut channels = [false; 8];
+        for track in &mut parsed.tracks {
+            if ('A'..='H').contains(&track.channel) {
+                let channel = track.channel as u8 - b'A';
+                track.commands = settings(&track.commands, channel, true);
+                channels[channel as usize] = true;
+            }
+        }
+        for (channel, present) in channels.into_iter().enumerate() {
+            if !present {
+                parsed.tracks.push(MmlTrack {
+                    channel: char::from(b'A' + channel as u8),
+                    commands: settings(&commands, channel as u8, false),
+                });
+            }
         }
         mmlx::mdx::compile(&parsed).map_err(|error| error.to_string())
     }
 
     pub fn test_source(&self, mml: &str) -> Result<String, String> {
-        if !self.validate()
-            || mml.trim().is_empty()
-            || mml.len() > 8192
-            || mml.contains(['\r', '\n'])
+        if !self.validate() || mml.trim().is_empty() || mml.len() > 8192 {
+            return Err("Invalid voice test".into());
+        }
+        let channel_line = |line: &str| {
+            let line = line.trim_start();
+            line.chars()
+                .next()
+                .is_some_and(|channel| ('A'..='H').contains(&channel))
+                && line[1..].chars().next().is_none_or(char::is_whitespace)
+        };
+        let lines = mml.lines().collect::<Vec<_>>();
+        let explicit_channels = lines.iter().any(|line| channel_line(line));
+        if lines.iter().any(|line| line.contains('\r'))
+            || (explicit_channels
+                && lines
+                    .iter()
+                    .any(|line| !line.trim().is_empty() && !channel_line(line)))
+            || (!explicit_channels && lines.len() > 1)
         {
             return Err("Invalid voice test".into());
         }
@@ -101,10 +129,30 @@ impl Voice {
             })
             .collect::<Vec<_>>()
             .join("\n");
-        Ok(format!(
-            "@0 = {{\n{operators}\n{},{},{}\n}}\nA @0 {mml}",
+        let voice = format!(
+            "@0 = {{\n{operators}\n{},{},{}\n}}\n",
             self.algorithm, self.feedback, self.operator_mask
-        ))
+        );
+        let body = if explicit_channels {
+            mml.lines()
+                .map(|line| {
+                    let indent = line.len() - line.trim_start().len();
+                    let trimmed = &line[indent..];
+                    let Some(channel) = trimmed.chars().next() else {
+                        return line.to_string();
+                    };
+                    if channel_line(line) {
+                        format!("{}{} @0{}", &line[..indent], channel, &trimmed[1..])
+                    } else {
+                        line.to_string()
+                    }
+                })
+                .collect::<Vec<_>>()
+                .join("\n")
+        } else {
+            format!("A @0 {mml}")
+        };
+        Ok(format!("{voice}{body}"))
     }
 
     pub fn validate(&self) -> bool {
@@ -195,9 +243,22 @@ mod tests {
                 .all(|command| !matches!(command, MdxCommand::Note(_)))
         );
         assert!(document.tracks[0].iter().any(|command| matches!(command, MdxCommand::OpmRegisterWrite(write) if write.register == 24 && write.value == 128)));
-        for invalid in ["", "A c4\nB c4", "\rP c4", &"c".repeat(8193)] {
+        for invalid in ["", "\rP c4", "c4\ne4", &"c".repeat(8193)] {
             assert!(voice.test_source(invalid).is_err());
         }
+        let selected = voice.test_document("A c4\nB e4\nC g4").unwrap();
+        let note_tracks = selected
+            .tracks
+            .iter()
+            .enumerate()
+            .filter_map(|(channel, track)| {
+                track
+                    .iter()
+                    .any(|command| matches!(command, MdxCommand::Note(_)))
+                    .then_some(channel)
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(note_tracks, [0, 1, 2]);
         let document = voice
             .test_document("MH0,200,64,0,5,0,1 p1 [c8 / n60,16.]2 c%24")
             .unwrap();
