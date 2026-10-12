@@ -2,6 +2,14 @@
 
 All notable changes to the "mmlx-lsp" extension will be documented in this file.
 
+## [0.18.0] - 2026-10-12
+
+- Build PDX sample banks from JSON manifests and WAV files in the Utilities panel.
+- Add MCP workspace access and tools to build MDX, PDX, and VGM files.
+- Play selected MML passages across their specified FM channels.
+- Keep playback running when editing the source while clearing playback highlights.
+- Improve the Utilities panel and document its build workflows.
+
 ## [0.17.1] - 2026-10-12
 
 - Disable the MCP Server dropdown while connected.
