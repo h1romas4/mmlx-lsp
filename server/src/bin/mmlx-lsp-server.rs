@@ -27,8 +27,9 @@ use lsp_types::{
     DidCloseTextDocumentParams, DidOpenTextDocumentParams, DocumentFormattingParams,
     InitializeParams, NumberOrString, Position, PublishDiagnosticsParams, Range,
     SelectionRangeParams, SemanticTokensParams, SignatureHelpParams, TextDocumentPositionParams,
-    Uri,
 };
+#[cfg(test)]
+use lsp_types::Uri;
 use mmlx::diagnostic::Severity;
 use mmlx::frontend::SourceFile;
 use mmlx::mdx::frontend::{CompiledMdx, MdxLocation};
@@ -55,7 +56,7 @@ fn main() -> Result<(), Box<dyn Error>> {
         .and_then(|item| item.snippet_support)
         .unwrap_or(false);
 
-    let mut documents = HashMap::new();
+    let mut documents: HashMap<String, String> = HashMap::new();
     for message in &connection.receiver {
         match message {
             Message::Request(request) => {
@@ -116,7 +117,7 @@ fn initialize(connection: &Connection) -> Result<(InitializeParams, Dialect), Bo
 
 fn handle_request(
     request: Request,
-    documents: &HashMap<Uri, String>,
+    documents: &HashMap<String, String>,
     snippets: bool,
     language: i18n::Language,
     dialect: Dialect,
@@ -125,7 +126,7 @@ fn handle_request(
         return match serde_json::from_value::<TextDocumentPositionParams>(request.params) {
             Ok(params) => {
                 let source = documents
-                    .get(&params.text_document.uri)
+                    .get(params.text_document.uri.as_str())
                     .map(String::as_str)
                     .unwrap_or("");
                 Response::new_ok(request.id, voice::at_position(source, params.position))
@@ -141,7 +142,7 @@ fn handle_request(
         return match serde_json::from_value::<TextDocumentPositionParams>(request.params) {
             Ok(params) => {
                 let result = documents
-                    .get(&params.text_document.uri)
+                    .get(params.text_document.uri.as_str())
                     .and_then(|source| track_length::at_position(source, params.position));
                 Response::new_ok(request.id, result)
             }
@@ -156,7 +157,7 @@ fn handle_request(
         return match serde_json::from_value::<CodeLensParams>(request.params) {
             Ok(params) => {
                 let lenses = documents
-                    .get(&params.text_document.uri)
+                    .get(params.text_document.uri.as_str())
                     .map(|source| voice::code_lenses(source, params.text_document.uri, language))
                     .unwrap_or_default();
                 Response::new_ok(request.id, lenses)
@@ -172,7 +173,13 @@ fn handle_request(
         return match serde_json::from_value::<SignatureHelpParams>(request.params) {
             Ok(params) => {
                 let source = documents
-                    .get(&params.text_document_position_params.text_document.uri)
+                    .get(
+                        params
+                            .text_document_position_params
+                            .text_document
+                            .uri
+                            .as_str(),
+                    )
                     .map(String::as_str)
                     .unwrap_or("");
                 Response::new_ok(
@@ -195,7 +202,7 @@ fn handle_request(
         return match serde_json::from_value::<CompletionParams>(request.params) {
             Ok(params) => {
                 let source = documents
-                    .get(&params.text_document_position.text_document.uri)
+                    .get(params.text_document_position.text_document.uri.as_str())
                     .map(String::as_str)
                     .unwrap_or("");
                 Response::new_ok(
@@ -219,7 +226,7 @@ fn handle_request(
         return match serde_json::from_value::<SemanticTokensParams>(request.params) {
             Ok(params) => {
                 let source = documents
-                    .get(&params.text_document.uri)
+                    .get(params.text_document.uri.as_str())
                     .map(String::as_str)
                     .unwrap_or("");
                 Response::new_ok(request.id, dialect.semantic_tokens(source))
@@ -235,7 +242,7 @@ fn handle_request(
         return match serde_json::from_value::<SelectionRangeParams>(request.params) {
             Ok(params) => {
                 let selections = documents
-                    .get(&params.text_document.uri)
+                    .get(params.text_document.uri.as_str())
                     .and_then(|source| dialect.selection_ranges(source, &params.positions));
                 Response::new_ok(request.id, selections)
             }
@@ -250,7 +257,7 @@ fn handle_request(
         return match serde_json::from_value::<DocumentFormattingParams>(request.params) {
             Ok(params) => {
                 let edits = documents
-                    .get(&params.text_document.uri)
+                    .get(params.text_document.uri.as_str())
                     .map(|source| dialect.formatting_edits(source))
                     .unwrap_or_default();
                 Response::new_ok(request.id, edits)
@@ -271,7 +278,7 @@ fn handle_request(
 
 fn handle_notification(
     connection: &Connection,
-    documents: &mut HashMap<Uri, String>,
+    documents: &mut HashMap<String, String>,
     notification: Notification,
     dialect: Dialect,
 ) -> Result<(), Box<dyn Error>> {
@@ -280,7 +287,7 @@ fn handle_notification(
             let params: DidOpenTextDocumentParams = serde_json::from_value(notification.params)?;
             let document = params.text_document;
             let errors = dialect.diagnostics(&document.text);
-            documents.insert(document.uri.clone(), document.text);
+            documents.insert(document.uri.to_string(), document.text);
             Some(PublishDiagnosticsParams::new(
                 document.uri,
                 errors,
@@ -291,7 +298,7 @@ fn handle_notification(
             let params: DidChangeTextDocumentParams = serde_json::from_value(notification.params)?;
             params.content_changes.into_iter().last().map(|change| {
                 let errors = dialect.diagnostics(&change.text);
-                documents.insert(params.text_document.uri.clone(), change.text);
+                documents.insert(params.text_document.uri.to_string(), change.text);
                 PublishDiagnosticsParams::new(
                     params.text_document.uri,
                     errors,
@@ -301,7 +308,7 @@ fn handle_notification(
         }
         "textDocument/didClose" => {
             let params: DidCloseTextDocumentParams = serde_json::from_value(notification.params)?;
-            documents.remove(&params.text_document.uri);
+            documents.remove(params.text_document.uri.as_str());
             Some(PublishDiagnosticsParams::new(
                 params.text_document.uri,
                 vec![],
@@ -465,7 +472,7 @@ mod tests {
 
     fn handle_notification(
         connection: &Connection,
-        documents: &mut HashMap<Uri, String>,
+        documents: &mut HashMap<String, String>,
         notification: Notification,
     ) -> Result<(), Box<dyn Error>> {
         super::handle_notification(connection, documents, notification, Dialect::Mdx)
@@ -473,7 +480,7 @@ mod tests {
 
     fn handle_request(
         request: Request,
-        documents: &HashMap<Uri, String>,
+        documents: &HashMap<String, String>,
         snippets: bool,
     ) -> Response {
         super::handle_request(
@@ -521,7 +528,7 @@ mod tests {
             "@7 = {{\n/* labels */\n{}\n5, 3, 15\n}}\nA c4\n",
             "31, 12, 4, 8, 6, 20, 1, 2, 3, 1, 0,\n".repeat(4)
         );
-        let documents = HashMap::from([(uri.clone(), source.clone())]);
+        let documents = HashMap::from([(uri.to_string(), source.clone())]);
         let response = handle_request(
             Request::new(
                 1.into(),
@@ -554,7 +561,7 @@ mod tests {
     #[test]
     fn formatting_request_is_a_noop_for_documents_without_voice_definitions() {
         let uri = "file:///track.mml".parse::<Uri>().unwrap();
-        let documents = HashMap::from([(uri.clone(), "A c4\n".to_string())]);
+        let documents = HashMap::from([(uri.to_string(), "A c4\n".to_string())]);
         let response = handle_request(
             Request::new(
                 1.into(),
@@ -678,7 +685,7 @@ mod tests {
     #[test]
     fn requests_use_the_selected_session_language() {
         let uri = "file:///english.mml".parse::<Uri>().unwrap();
-        let documents = HashMap::from([(uri.clone(), "A MP0,".to_string())]);
+        let documents = HashMap::from([(uri.to_string(), "A MP0,".to_string())]);
         for (language, label) in [
             (i18n::Language::Japanese, "MP(波形, 周期, 深さ)"),
             (i18n::Language::English, "MP(waveform, period, depth)"),
@@ -705,7 +712,7 @@ mod tests {
     #[test]
     fn track_length_request_returns_cursor_ticks_and_loop_state() {
         let uri = "file:///length.mml".parse::<Uri>().unwrap();
-        let documents = HashMap::from([(uri.clone(), "A l8 c d [e r]2\n".to_string())]);
+        let documents = HashMap::from([(uri.to_string(), "A l8 c d [e r]2\n".to_string())]);
         let response = super::handle_request(
             Request::new(
                 1.into(),
@@ -914,7 +921,7 @@ mod tests {
         let uri = "file:///arguments.mml".parse::<Uri>().unwrap();
         let mut documents = HashMap::new();
         for (source, parameter) in [("A MP0,", 1), ("A MP0,16,", 2)] {
-            documents.insert(uri.clone(), source.to_string());
+            documents.insert(uri.to_string(), source.to_string());
             let response = handle_request(
                 Request::new(
                     1.into(),
@@ -999,7 +1006,7 @@ mod tests {
             )
             .unwrap();
             assert_eq!(
-                documents.contains_key(&uri.parse::<Uri>().unwrap()),
+                documents.contains_key(uri),
                 version.is_some()
             );
             let Message::Notification(notification) = client.receiver.try_recv().unwrap() else {

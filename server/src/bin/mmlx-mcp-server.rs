@@ -1104,9 +1104,9 @@ fn build_pdx(
     if !output_path.to_ascii_lowercase().ends_with(".pdx") {
         return Err(invalid_input("PDX build output must end with .pdx"));
     }
-    let bytes = pdx_build::build_pdx_within(&manifest, &root)
+    let bytes = pdx_build::build_pdx_within(&manifest, root)
         .map_err(|error| invalid_input(format!("PDX build failed: {error}")))?;
-    let output = workspace_output(&root, output_path)?;
+    let output = workspace_output(root, output_path)?;
     write_build_output(&output, &bytes)?;
     Ok(serde_json::json!({
         "format": "PDX",

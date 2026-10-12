@@ -155,7 +155,7 @@ pub fn items(
         .map(|command| CompletionItem {
             label: completion_label(command, language),
             kind: Some(completion_kind(command)),
-            detail: Some(command_text(command, language).0.into()),
+            detail: Some(command_text(command, language).0),
             documentation: Some(command_documentation(command, language)),
             command: (command.parameter_count > 0).then(|| lsp_types::Command {
                 title: i18n::translate(language, "ui.argument_hints"),
@@ -329,9 +329,9 @@ fn voice_definition_item(
     let description = i18n::translate(language, "mdx.voice_definition.description");
     let plain = format!("@{number}{VOICE_DEFINITION_BODY}");
     Some(CompletionItem {
-        label: label.into(),
+        label,
         kind: Some(CompletionItemKind::SNIPPET),
-        detail: Some(syntax.into()),
+        detail: Some(syntax),
         documentation: Some(Documentation::MarkupContent(MarkupContent {
             kind: MarkupKind::Markdown,
             value: format!("{description}\n\n```mmlx\n{plain}\n```"),
@@ -1005,7 +1005,7 @@ mod tests {
                 Some(command_documentation(command))
             );
             let source = "A ";
-            let completions = items(&source, Position::new(0, source.len() as u32), true);
+            let completions = items(source, Position::new(0, source.len() as u32), true);
             let item = completions
                 .iter()
                 .find(|item| item.filter_text.as_deref() == Some(command.label))

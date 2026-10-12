@@ -122,7 +122,7 @@ pub fn ranges(source: &str, positions: &[Position]) -> Option<Vec<SelectionRange
                 }
             }
             ranges.push((0, source.len()));
-            Some(build_chain(&line_index, ranges)?)
+            build_chain(&line_index, ranges)
         })
         .collect()
 }
