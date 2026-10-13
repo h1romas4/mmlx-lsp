@@ -4,6 +4,8 @@ All notable changes to the "mmlx-lsp" extension will be documented in this file.
 
 ## [Unreleased]
 
+## [0.19.0] - 2026-10-13
+
 - Ignore selected FM voice-number commands during FM Voice audition and inherit the previous MML tempo, default note length, and octave when the selection does not set them.
 - Show VS Code error notifications when FM Voice selection or Chip State MML playback fails.
 - Keep the FM Voice selection-play button in its normal color after an error.
