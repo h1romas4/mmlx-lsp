@@ -26,12 +26,43 @@ pub struct Operator {
 
 impl Voice {
     pub fn test_document(&self, mml: &str) -> Result<soundlog::mdx::document::MdxDocument, String> {
+        self.test_document_with_tempo(mml, None, false)
+    }
+
+    pub fn test_document_with_tempo(
+        &self,
+        mml: &str,
+        inherited_tempo: Option<&str>,
+        ignore_voice_select: bool,
+    ) -> Result<soundlog::mdx::document::MdxDocument, String> {
+        self.test_document_with_state(mml, inherited_tempo, None, None, ignore_voice_select)
+    }
+
+    pub fn test_document_with_state(
+        &self,
+        mml: &str,
+        inherited_tempo: Option<&str>,
+        inherited_length: Option<&str>,
+        inherited_octave: Option<u8>,
+        ignore_voice_select: bool,
+    ) -> Result<soundlog::mdx::document::MdxDocument, String> {
         use mmlx::mdx::{MmlCommand, MmlTrack};
-        fn settings(commands: &[MmlCommand], channel: u8, keep_notes: bool) -> Vec<MmlCommand> {
+        fn settings(
+            commands: &[MmlCommand],
+            channel: u8,
+            keep_notes: bool,
+            ignore_voice_select: bool,
+        ) -> Vec<MmlCommand> {
+            let mut first_command = true;
             commands
                 .iter()
                 .filter_map(|command| {
+                    let is_first = std::mem::replace(&mut first_command, false);
                     Some(match command {
+                        MmlCommand::VoiceSelect(0) if ignore_voice_select && is_first => {
+                            command.clone()
+                        }
+                        MmlCommand::VoiceSelect(_) if ignore_voice_select => return None,
                         MmlCommand::Note { length, .. } if !keep_notes => {
                             MmlCommand::Rest { length: *length }
                         }
@@ -43,7 +74,7 @@ impl Voice {
                             None => MmlCommand::Rest { length: None },
                         },
                         MmlCommand::Repeat { body, count } => MmlCommand::Repeat {
-                            body: settings(body, channel, keep_notes),
+                            body: settings(body, channel, keep_notes, ignore_voice_select),
                             count: *count,
                         },
                         MmlCommand::RegisterWrite { register, value } if *register >= 0x20 => {
@@ -59,8 +90,112 @@ impl Voice {
                 })
                 .collect()
         }
+        fn has_tempo(commands: &[MmlCommand]) -> bool {
+            commands.iter().any(|command| match command {
+                MmlCommand::Tempo(_) | MmlCommand::OpmTempo(_) => true,
+                MmlCommand::Repeat { body, .. } => has_tempo(body),
+                _ => false,
+            })
+        }
+        fn has_default_length(commands: &[MmlCommand]) -> bool {
+            commands.iter().any(|command| match command {
+                MmlCommand::DefaultLength(_) | MmlCommand::DefaultLengthReset => true,
+                MmlCommand::Repeat { body, .. } => has_default_length(body),
+                _ => false,
+            })
+        }
+        fn has_absolute_octave(commands: &[MmlCommand]) -> bool {
+            commands.iter().any(|command| match command {
+                MmlCommand::Octave(_) => true,
+                MmlCommand::Repeat { body, .. } => has_absolute_octave(body),
+                _ => false,
+            })
+        }
+        fn parse_tempo(value: &str) -> Result<MmlCommand, String> {
+            if let Some(value) = value.strip_prefix("@t") {
+                let value = value
+                    .parse::<u8>()
+                    .map_err(|error| format!("Invalid inherited tempo: {error}"))?;
+                return Ok(MmlCommand::OpmTempo(value));
+            }
+            if let Some(value) = value.strip_prefix('t') {
+                let value = value
+                    .parse::<u32>()
+                    .map_err(|error| format!("Invalid inherited tempo: {error}"))?;
+                if value == 0 {
+                    return Err("Invalid inherited tempo: t must be greater than zero".into());
+                }
+                return Ok(MmlCommand::Tempo(value));
+            }
+            Err("Invalid inherited tempo".into())
+        }
+        fn parse_default_length(value: &str) -> Result<MmlCommand, String> {
+            let parsed = mmlx::mdx::parse(&format!("A {value}"))
+                .map_err(|error| format!("Invalid inherited default length: {error}"))?;
+            match parsed
+                .tracks
+                .first()
+                .and_then(|track| track.commands.as_slice().first())
+            {
+                Some(command @ (MmlCommand::DefaultLength(_) | MmlCommand::DefaultLengthReset))
+                    if parsed.tracks[0].commands.len() == 1 =>
+                {
+                    Ok(command.clone())
+                }
+                _ => Err("Invalid inherited default length".into()),
+            }
+        }
         let source = self.test_source(mml)?;
         let mut parsed = mmlx::mdx::parse(&source).map_err(|error| error.to_string())?;
+        let inherited_tempo = if inherited_tempo.is_some()
+            && !parsed.tracks.iter().any(|track| has_tempo(&track.commands))
+        {
+            inherited_tempo.map(parse_tempo).transpose()?
+        } else {
+            None
+        };
+        let inherited_length = if inherited_length.is_some()
+            && !parsed
+                .tracks
+                .iter()
+                .any(|track| has_default_length(&track.commands))
+        {
+            inherited_length.map(parse_default_length).transpose()?
+        } else {
+            None
+        };
+        let inherited_octave = if inherited_octave.is_some()
+            && !parsed
+                .tracks
+                .iter()
+                .any(|track| has_absolute_octave(&track.commands))
+        {
+            inherited_octave.map(MmlCommand::Octave)
+        } else {
+            None
+        };
+        if inherited_tempo.is_some() || inherited_length.is_some() || inherited_octave.is_some() {
+            for track in &mut parsed.tracks {
+                if ('A'..='H').contains(&track.channel) {
+                    let index = usize::from(matches!(
+                        track.commands.first(),
+                        Some(MmlCommand::VoiceSelect(0))
+                    ));
+                    let mut index = index;
+                    for command in [
+                        inherited_tempo.clone(),
+                        inherited_length.clone(),
+                        inherited_octave.clone(),
+                    ]
+                    .into_iter()
+                    .flatten()
+                    {
+                        track.commands.insert(index, command);
+                        index += 1;
+                    }
+                }
+            }
+        }
         let commands = parsed
             .tracks
             .iter()
@@ -71,7 +206,7 @@ impl Voice {
         for track in &mut parsed.tracks {
             if ('A'..='H').contains(&track.channel) {
                 let channel = track.channel as u8 - b'A';
-                track.commands = settings(&track.commands, channel, true);
+                track.commands = settings(&track.commands, channel, true, ignore_voice_select);
                 channels[channel as usize] = true;
             }
         }
@@ -79,7 +214,7 @@ impl Voice {
             if !present {
                 parsed.tracks.push(MmlTrack {
                     channel: char::from(b'A' + channel as u8),
-                    commands: settings(&commands, channel as u8, false),
+                    commands: settings(&commands, channel as u8, false, ignore_voice_select),
                 });
             }
         }
@@ -279,5 +414,122 @@ mod tests {
                     .any(|command| matches!(command, MdxCommand::Rest(_)))
             );
         }
+    }
+
+    #[test]
+    fn selection_voice_numbers_are_ignored_and_inherited_tempo_is_used_only_as_fallback() {
+        use soundlog::mdx::command::MdxCommand;
+        let voice = Voice {
+            algorithm: 7,
+            feedback: 0,
+            operator_mask: 15,
+            operators: std::array::from_fn(|_| Operator {
+                ar: 31,
+                d1r: 0,
+                d2r: 0,
+                rr: 15,
+                d1l: 0,
+                tl: 32,
+                ks: 0,
+                mul: 1,
+                dt1: 0,
+                dt2: 0,
+                ame: 0,
+            }),
+        };
+
+        let inherited = voice
+            .test_document_with_tempo("A @1 o4 c4\nB @42 o5 d4", Some("t150"), true)
+            .unwrap();
+        for track in inherited.tracks.iter().take(2) {
+            assert!(matches!(
+                track.first(),
+                Some(MdxCommand::VoiceOrPcmBank(voice)) if voice.value == 0
+            ));
+            assert!(matches!(track.get(1), Some(MdxCommand::Tempo(_))));
+            assert!(
+                track
+                    .iter()
+                    .any(|command| matches!(command, MdxCommand::Note(_)))
+            );
+            assert_eq!(
+                track
+                    .iter()
+                    .filter(|command| matches!(command, MdxCommand::VoiceOrPcmBank(_)))
+                    .count(),
+                1
+            );
+        }
+        let expected_tempo = match mmlx::mdx::compile(&mmlx::mdx::parse("A t150").unwrap())
+            .unwrap()
+            .tracks[0]
+            .first()
+        {
+            Some(MdxCommand::Tempo(tempo)) => tempo.value,
+            _ => panic!("expected compiled tempo"),
+        };
+        assert!(inherited.tracks[..2].iter().all(|track| matches!(
+            track.get(1),
+            Some(MdxCommand::Tempo(tempo)) if tempo.value == expected_tempo
+        )));
+
+        let selected_tempo = voice
+            .test_document_with_tempo("A @1 t240 o4 c4\nB @42 o5 d4", Some("t150"), true)
+            .unwrap();
+        let selected_value = match mmlx::mdx::compile(&mmlx::mdx::parse("A t240").unwrap())
+            .unwrap()
+            .tracks[0]
+            .first()
+        {
+            Some(MdxCommand::Tempo(tempo)) => tempo.value,
+            _ => panic!("expected compiled tempo"),
+        };
+        assert!(selected_tempo.tracks[0].iter().any(
+            |command| matches!(command, MdxCommand::Tempo(tempo) if tempo.value == selected_value)
+        ));
+        assert!(
+            !selected_tempo.tracks[1]
+                .iter()
+                .any(|command| matches!(command, MdxCommand::Tempo(_)))
+        );
+        let example = voice
+            .test_document_with_tempo("A @1 t120 cdef grgr af>c<a g1", None, true)
+            .unwrap();
+        assert!(
+            example.tracks[0]
+                .iter()
+                .any(|command| matches!(command, MdxCommand::Note(_)))
+        );
+
+        let chip_state = voice
+            .test_document_with_tempo("A @42 o4 c4", None, false)
+            .unwrap();
+        assert!(chip_state.tracks[0].iter().any(
+            |command| matches!(command, MdxCommand::VoiceOrPcmBank(voice) if voice.value == 42)
+        ));
+
+        let inherited_state = voice
+            .test_document_with_state("A @1 c4", None, Some("l8"), Some(5), true)
+            .unwrap();
+        let expected_state = voice
+            .test_document_with_tempo("A l8 o5 c4", None, true)
+            .unwrap();
+        assert_eq!(inherited_state, expected_state);
+
+        let selected_state = voice
+            .test_document_with_state("A @1 l16 o3 c4", None, Some("l8"), Some(5), true)
+            .unwrap();
+        let expected_selected_state = voice
+            .test_document_with_tempo("A l16 o3 c4", None, true)
+            .unwrap();
+        assert_eq!(selected_state, expected_selected_state);
+
+        let shifted_octave = voice
+            .test_document_with_state("A @1 > c4", None, None, Some(5), true)
+            .unwrap();
+        let expected_shifted_octave = voice
+            .test_document_with_tempo("A o5 > c4", None, true)
+            .unwrap();
+        assert_eq!(shifted_octave, expected_shifted_octave);
     }
 }

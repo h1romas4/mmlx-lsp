@@ -58,18 +58,16 @@ const keyboardControls = createKeyboardControls(document.getElementById('keyboar
 	keyboardMode = mode;
 	saveState();
 	}, note => { if (note.event !== 'pitchBend') { audioMonitors.setNote(note); } vscode.postMessage({ type: 'emulationNote', id: outputId, ...note }); },
-	(action, mml) => {
+	(action, mml, state) => {
 		keyboardControls.releaseAll();
 		if (action === 'play' || action === 'playSelection') { keyboardControls.setVoiceTest(true); }
 		saveState();
-		vscode.postMessage({ type: 'voiceTestAction', id: outputId, action, mml });
+		vscode.postMessage({ type: 'voiceTestAction', id: outputId, action, mml, ...state });
 	});
 const outputConnections = {
 	keyboard: createOutputConnection(document.querySelector('.keyboard-output'), async request => {
 		if (request.reset) {
-			resettingOutput = true;
-			keyboardControls.releaseAll(); keyboardControls.setResetting(true); keyboardControls.setVoiceTest(false);
-			emulationAudio.clear(); outputConnections.keyboard.setResetting(true);
+			beginOutputReset();
 			vscode.postMessage({ type: 'resetOutput', id: outputId, mode: request.mode });
 			return;
 		}
@@ -98,6 +96,12 @@ const outputConnections = {
 		}
 	})
 };
+function beginOutputReset() {
+	if (resettingOutput) { return; }
+	resettingOutput = true;
+	keyboardControls.releaseAll(); keyboardControls.setResetting(true); keyboardControls.setVoiceTest(false);
+	emulationAudio.clear(); outputConnections.keyboard.setResetting(true);
+}
 for (const id of ['keyboard-reset', 'voice-test-play']) {
 	const button = document.getElementById(id);
 	button.addEventListener('click', () => {
@@ -245,9 +249,11 @@ window.addEventListener('message', event => {
 		keyboardControls.setVoiceAvailable(!!message.voice && !message.error);
 		saveState();
 	} else if (message?.type === 'editorSelection') {
-		keyboardControls.setEditorSelection(message.mml, message.tooLong);
+		keyboardControls.setEditorSelection(message.mml, message.tooLong, message);
 	} else if (message?.type === 'voiceTest' && message.id === outputId) {
 		keyboardControls.setVoiceTest(message.playing, message.error);
+	} else if (message?.type === 'outputResetting' && message.id === outputId) {
+		beginOutputReset();
 	} else if (message?.type === 'outputReset' && message.id === outputId) {
 		resettingOutput = false;
 		emulationAudio.clear(); outputConnections.keyboard.setState({ connected: message.connected, connecting: false });

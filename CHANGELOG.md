@@ -2,6 +2,16 @@
 
 All notable changes to the "mmlx-lsp" extension will be documented in this file.
 
+## [Unreleased]
+
+- Ignore selected FM voice-number commands during FM Voice audition and inherit the previous MML tempo, default note length, and octave when the selection does not set them.
+- Show VS Code error notifications when FM Voice selection or Chip State MML playback fails.
+- Keep the FM Voice selection-play button in its normal color after an error.
+- Toggle active MML selection playback from the keyboard with Ctrl+Alt+P (Cmd+Option+P on macOS) when FM Voice output is ready, including stopping after the selection is cleared.
+- Reset the connected sound chip from an MML editor with Ctrl+Alt+R (Cmd+Option+R on macOS).
+- Clear inherited MML tempo, octave, and default-length state on sound-chip reset; subsequent selection playback rebuilds that state from played commands.
+- Highlight the selected MML notes and rests as FM Voice selection playback advances.
+
 ## [0.18.0] - 2026-10-12
 
 - Build PDX sample banks from JSON manifests and WAV files in the Utilities panel.

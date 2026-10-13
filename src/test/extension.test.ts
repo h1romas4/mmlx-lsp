@@ -17,7 +17,7 @@ import type { FmKeyEvent } from '../emulationProtocol';
 import { NanoDriveWorker } from '../nanodriveWorker';
 import { NanoDriveRuntime } from '../nanodriveRuntime';
 import { NanoDriveThreadClient, type NanoDriveThreadEvent } from '../nanodriveThreadClient';
-import { PlaybackSourceTracker } from '../playbackSource';
+import { PlaybackSourceTracker, selectionTraceSource } from '../playbackSource';
 import { WasiMcpHttpBridge } from '../mcpServer';
 import type { NanoDriveConnection } from '../nanodrive';
 import { Port as NanoDriveTestPort, codec as nanoDriveTestCodec } from './nanodrive.test';
@@ -193,6 +193,21 @@ function waitForDiagnostics(uri: vscode.Uri, count: number): Promise<void> {
 }
 
 suite('mmlx extension', () => {
+	test('MML playback state ignores comments and strings and respects the cursor position', async () => {
+		const extension = vscode.extensions.all.find(extension => extension.packageJSON.name === 'mmlx-lsp');
+		assert.ok(extension);
+		const { mmlPlaybackStateAfter, mmlPlaybackStateBefore, tempoBefore } = await import(path.join(extension.extensionUri.fsPath, 'out', 'mmlTempo.js'));
+		const source = '#title "t200 l2 o2"\nA t120 l8 o5 c4 ; t130 l4 o3\nB /* @t42 l2 o2 */ d4\nC @t48 e4\nD t180 f4';
+		assert.deepStrictEqual(mmlPlaybackStateBefore(source, source.indexOf('D t180')),
+			{ tempo: '@t48', length: 'l8', octave: 5 });
+		const firstSelectionState = mmlPlaybackStateAfter('A @1 t120 l8cdef grgr af>c<a g1');
+		assert.deepStrictEqual(firstSelectionState, { tempo: 't120', length: 'l8', octave: 4 });
+		assert.deepStrictEqual(mmlPlaybackStateAfter('A af>c<a g1 gfff feee eded cegr', firstSelectionState), firstSelectionState);
+		assert.strictEqual(tempoBefore(source, source.length), 't180');
+		assert.strictEqual(tempoBefore('A t0 c4\nB t4294967296 d4', 28), undefined);
+		assert.strictEqual(mmlPlaybackStateBefore('A o5 > l%192 c4', 17).octave, 6);
+	});
+
 	test('FM Voice MML test plays through the connected WASM, finishes silently and reports MML errors', async function () {
 		this.timeout(20000);
 		const extension = vscode.extensions.all.find(extension => extension.packageJSON.name === 'mmlx-lsp'); assert.ok(extension);
@@ -247,7 +262,13 @@ suite('mmlx extension', () => {
 			assert.ok(testError && state?.connected && !state.error);
 			session.startVoiceTest('@42 o4 c16', voice);
 			for (let count = 0; count < 100 && testing; count++) { await render(); }
-			assert.ok(!testing && testError && state?.connected, 'Runtime MML errors also preserve the connection');
+			assert.ok(!testing && testError && state?.connected, 'Chip State MML still reports undefined source voices');
+			session.startVoiceTest('A @1 t120 cdef grgr af>c<a g1', voice, undefined, true);
+			let selectionEnergy = 0;
+			for (let count = 0; count < 30 && testing; count++) { selectionEnergy += energy(await render()); }
+			assert.ok(testing && !testError && state?.connected && selectionEnergy > 1,
+				'Editor selection ignores @n and produces audio');
+			session.stopVoiceTest();
 			session.startVoiceTest('o4 c1', voice); await render(); session.stopVoiceTest();
 			assert.ok(!testing && !testError && state?.connected);
 			session.note({ type: 'noteOn', source: 0, channel: 0, note: 60, velocity: 127 });
@@ -806,14 +827,19 @@ suite('mmlx extension', () => {
 		this.timeout(20000);
 		const extension = vscode.extensions.all.find(extension => extension.packageJSON.name === 'mmlx-lsp');
 		assert.ok(extension);
-		const document = await vscode.workspace.openTextDocument({ language: 'mmlx', content: '@0 = {\n' + '31,0,0,15,0,32,0,1,0,0,0,\n'.repeat(4) + '7,0,15\n}\n' });
+		const document = await vscode.workspace.openTextDocument({ language: 'mmlx', content: '@0 = {\n' + '31,0,0,15,0,32,0,1,0,0,0,\n'.repeat(4) + '7,0,15\n}\nA t120 l8 o5 c4\nA @1 d4\n' });
 		const editor = await vscode.window.showTextDocument(document);
 		const context = { extensionUri: extension.extensionUri, subscriptions: [] as vscode.Disposable[] };
 		const messages = new vscode.EventEmitter<unknown>();
 		const visibility = new vscode.EventEmitter<void>();
 		const disposed = new vscode.EventEmitter<void>();
+		const notifications: string[] = [];
+		const highlightWarnings: string[] = [];
+		const showErrorMessage = vscode.window.showErrorMessage;
+		const showWarningMessage = vscode.window.showWarningMessage;
 		type Update = { type: string; id?: number; connected?: boolean; connecting?: boolean; pcm?: ArrayBuffer;
-			voice?: unknown; name?: string | null; playing?: boolean; mml?: string; tooLong?: boolean };
+			voice?: unknown; name?: string | null; playing?: boolean; error?: boolean; mml?: string;
+			tempo?: string; length?: string; octave?: number; tooLong?: boolean };
 		const updates: Update[] = [];
 		const changed = new vscode.EventEmitter<Update>();
 		const voice = { number: 0, name: 'Grand Piano', algorithm: 7, feedback: 0, operatorMask: 15, position: { line: 0, character: 0 },
@@ -838,6 +864,14 @@ suite('mmlx extension', () => {
 			});
 		}
 		try {
+			vscode.window.showErrorMessage = ((message: string) => {
+				notifications.push(message);
+				return Promise.resolve(undefined);
+			}) as typeof showErrorMessage;
+			vscode.window.showWarningMessage = ((message: string) => {
+				highlightWarnings.push(message);
+				return Promise.resolve(undefined);
+			}) as typeof showWarningMessage;
 			await provider.resolveWebviewView(view as unknown as vscode.WebviewView);
 			const initialVoice = await waitFor(message => message.type === 'voice' && !!message.voice);
 			assert.strictEqual(initialVoice.name, 'Grand Piano');
@@ -847,6 +881,15 @@ suite('mmlx extension', () => {
 			const selectedMml = document.getText(editor.selection);
 			assert.strictEqual((await waitFor(message => message.type === 'editorSelection' && !!message.mml)).mml, selectedMml,
 				'Editor selection is synchronized exactly, including line breaks');
+			editor.selection = new vscode.Selection(8, 0, 8, document.lineAt(8).text.length);
+			const selectedWithVoice = await waitFor(message => message.type === 'editorSelection'
+				&& message.mml === 'A @1 d4');
+			assert.strictEqual(selectedWithVoice.tempo, 't120',
+				'Selection playback receives the last tempo set before its selection');
+			assert.strictEqual(selectedWithVoice.length, 'l8',
+				'Selection playback receives the last default length set before its selection');
+			assert.strictEqual(selectedWithVoice.octave, 5,
+				'Selection playback receives the current octave before its selection');
 			editor.selection = new vscode.Selection(0, 0, 0, 0);
 			assert.strictEqual((await waitFor(message => message.type === 'editorSelection' && !message.mml)).mml, '',
 				'Clearing the editor selection disables selection playback');
@@ -900,13 +943,88 @@ suite('mmlx extension', () => {
 			const multilineTestStop = updates.length;
 			messages.fire({ type: 'voiceTestAction', action: 'stop', id: 1 });
 			await waitFor(message => message.type === 'voiceTest' && message.playing === false, multilineTestStop);
+			editor.selection = new vscode.Selection(8, 0, 8, document.lineAt(8).text.length);
+			const selectionPlaybackStart = updates.length;
+			await provider.playEditorSelection();
+			await waitFor(message => message.type === 'voiceTest' && message.playing === true, selectionPlaybackStart);
+			const selectionAudioStart = updates.length;
+			messages.fire({ type: 'emulationRender', blocks: 4, id: 1 });
+			const selectionPcm = (await waitFor(message => message.type === 'emulationPcm'
+				&& updates.slice(selectionAudioStart).filter(update => update.type === 'emulationPcm').length === 4,
+			selectionAudioStart)).pcm;
+			assert.ok(selectionPcm instanceof ArrayBuffer
+				&& new Float32Array(selectionPcm).some(value => Math.abs(value) > 0.0001),
+			'Selection shortcut renders audio through the connected output');
+			const selectionTracker = (provider as unknown as { selectionPlaybackSources?: PlaybackSourceTracker }).selectionPlaybackSources;
+			for (let attempt = 0; attempt < 100
+				&& !selectionTracker?.ranges.some(range => document.getText(range) === 'd4'); attempt++) {
+				await new Promise(resolve => setTimeout(resolve, 20));
+			}
+			assert.ok(selectionTracker?.ranges.some(range => document.getText(range) === 'd4'),
+				'Selection playback highlights the corresponding MML note');
+			assert.deepStrictEqual(highlightWarnings, [], 'Selection source tracing succeeds without warnings');
+			editor.selection = new vscode.Selection(editor.selection.active, editor.selection.active);
+			const selectionPlaybackStop = updates.length;
+			await provider.playEditorSelection();
+			await waitFor(message => message.type === 'voiceTest' && message.playing === false, selectionPlaybackStop);
+			assert.strictEqual(selectionTracker?.ranges.length, 0, 'Stopping without a selection clears its MML highlight');
 			assert.strictEqual(view.title, 'mmlx [Connected]');
 			const invalidStart = updates.length;
 			messages.fire({ type: 'voiceTestAction', action: 'play', mml: 'invalid???', id: 1 });
-			await waitFor(message => message.type === 'voiceTest' && message.playing === false, invalidStart);
+			await waitFor(message => message.type === 'voiceTest' && message.error === true, invalidStart);
+			assert.ok(notifications.includes('FM Voice Chip State MML playback failed.'));
+			const invalidSelectionStart = updates.length;
+			messages.fire({ type: 'voiceTestAction', action: 'playSelection', mml: 'invalid???', id: 1 });
+			await waitFor(message => message.type === 'voiceTest' && message.error === true, invalidSelectionStart);
+			assert.ok(notifications.includes('FM Voice selection playback failed.'));
+			editor.selection = new vscode.Selection(8, 0, 8, 0);
 			const resetStart = updates.length;
-			messages.fire({ type: 'resetOutput', mode: 'emulation', id: 1 });
+			await provider.resetSoundChip();
+			assert.ok(updates.slice(resetStart).some(message => message.type === 'outputResetting'),
+				'Reset command immediately marks the sound-chip controls as busy');
 			await waitFor(message => message.type === 'outputReset' && message.connected === true, resetStart);
+			const clearedSelectionStart = updates.length;
+			editor.selection = new vscode.Selection(8, 0, 8, document.lineAt(8).text.length);
+			const clearedSelectionState = await waitFor(message => message.type === 'editorSelection' && message.mml === 'A @1 d4', clearedSelectionStart);
+			assert.strictEqual(clearedSelectionState.tempo, undefined, 'Reset clears inherited tempo');
+			assert.strictEqual(clearedSelectionState.length, undefined, 'Reset clears inherited default length');
+			assert.strictEqual(clearedSelectionState.octave, undefined, 'Reset clears inherited octave');
+			editor.selection = new vscode.Selection(7, 0, 7, document.lineAt(7).text.length);
+			const firstSelectionStart = updates.length;
+			await provider.playEditorSelection();
+			await waitFor(message => message.type === 'voiceTest' && message.playing === true, firstSelectionStart);
+			const firstSelectionStop = updates.length;
+			await provider.playEditorSelection();
+			await waitFor(message => message.type === 'voiceTest' && message.playing === false, firstSelectionStop);
+			editor.selection = new vscode.Selection(8, 0, 8, document.lineAt(8).text.length);
+			const inheritedSelectionStart = updates.length;
+			const inheritedSelectionState = await waitFor(message => message.type === 'editorSelection'
+				&& message.mml === 'A @1 d4', inheritedSelectionStart);
+			assert.strictEqual(inheritedSelectionState.tempo, 't120', 'A played selection restores tempo state after reset');
+			assert.strictEqual(inheritedSelectionState.length, 'l8', 'A played selection restores default length after reset');
+			assert.strictEqual(inheritedSelectionState.octave, 5, 'A played selection restores octave state after reset');
+			const append = new vscode.WorkspaceEdit();
+			const appendedOffset = document.getText().length;
+			const appendedStateLength = 'A t140 l16 o3 f4\n'.length;
+			append.insert(document.uri, document.positionAt(appendedOffset), 'A t140 l16 o3 f4\nA g4\n');
+			assert.ok(await vscode.workspace.applyEdit(append));
+			const restoredPosition = document.positionAt(appendedOffset + appendedStateLength);
+			const restoredLineLength = document.lineAt(restoredPosition.line).text.length;
+			const stateCommandPosition = document.positionAt(appendedOffset);
+			const stateCommandLength = document.lineAt(stateCommandPosition.line).text.length;
+			editor.selection = new vscode.Selection(stateCommandPosition.line, 0, stateCommandPosition.line, stateCommandLength);
+			const stateCommandStart = updates.length;
+			await provider.playEditorSelection();
+			await waitFor(message => message.type === 'voiceTest' && message.playing === true, stateCommandStart);
+			const stateCommandStop = updates.length;
+			await provider.playEditorSelection();
+			await waitFor(message => message.type === 'voiceTest' && message.playing === false, stateCommandStop);
+			const restoredSelectionStart = updates.length;
+			editor.selection = new vscode.Selection(restoredPosition.line, 0, restoredPosition.line, restoredLineLength);
+			const restoredSelectionState = await waitFor(message => message.type === 'editorSelection' && message.mml === 'A g4', restoredSelectionStart);
+			assert.strictEqual(restoredSelectionState.tempo, 't140', 'Later playback updates tempo state');
+			assert.strictEqual(restoredSelectionState.length, 'l16', 'Later playback updates default-length state');
+			assert.strictEqual(restoredSelectionState.octave, 3, 'Later playback updates octave state');
 			assert.strictEqual(view.title, 'mmlx [Connected]');
 			assert.ok(!updates.slice(invalidStart).some(message => message.type === 'outputConnection' && !message.connected));
 			messages.fire({ type: 'setOutputConnection', target: 'keyboard', connected: false, id: 1 });
@@ -914,6 +1032,8 @@ suite('mmlx extension', () => {
 			assert.strictEqual(view.title, 'mmlx');
 			assert.strictEqual(view.badge, undefined);
 		} finally {
+			vscode.window.showWarningMessage = showWarningMessage;
+			vscode.window.showErrorMessage = showErrorMessage;
 			provider.dispose();
 			for (const subscription of context.subscriptions) { subscription.dispose(); }
 			messages.dispose(); visibility.dispose(); disposed.dispose(); changed.dispose();
@@ -1117,6 +1237,22 @@ suite('mmlx extension', () => {
 			assert.deepStrictEqual(editor.selection, selection, 'Playback decorations never move the cursor or selection');
 			tracker.stop(); assert.strictEqual(tracker.ranges.length, 0);
 			assert.strictEqual(tracker.lineRanges.length, 0, 'Stop clears the line highlights together with the notes');
+			const selectedMml = '@1 o4 L c8 r8';
+			const selectedStart = document.offsetAt(document.positionAt(source.indexOf(selectedMml)));
+			const trace = selectionTraceSource(selectedMml, { tempo: 't120', length: 'l8', octave: 5 }, selectedStart);
+			assert.ok(trace.source.includes('@0 = {') && trace.source.includes('A @0 t120')
+				&& !trace.source.includes('l8') && !trace.source.includes('o5')
+				&& trace.source.endsWith('o4 L c8 r8'),
+			`Selection trace supplies a voice definition, removes ignored voice selects and inherits only missing state: ${JSON.stringify(trace.source)}`);
+			const inheritedTrace = selectionTraceSource('@1 c4', { tempo: 't120', length: 'l8', octave: 5 }, selectedStart);
+			assert.ok(inheritedTrace.source.includes('A @0 t120 l8 o5 c4'),
+				'Selection trace inherits default length and octave when the selection does not set them');
+			await tracker.start(document, false, trace.source, trace.documentOffsets);
+			await tracker.setPosition(0);
+			assert.ok(tokens().includes('c8'), `Selection trace maps its first note into the selected source range (${errors.join('; ')})`);
+			await tracker.setPosition(0.3);
+			assert.ok(tokens().includes('r8'), 'Selection trace advances through the original MML after its inserted tempo');
+			tracker.stop();
 			await tracker.start(document, false); await tracker.setPosition(0.3);
 			assert.ok(tokens().includes('r8'), 'A cursor-style start restores the current spans without displaying old positions');
 			await tracker.setPosition(2);
@@ -1972,6 +2108,14 @@ suite('mmlx extension', () => {
 		assert.ok(extension);
 		await extension.activate();
 		assert.ok((await vscode.commands.getCommands()).includes('mmlx.showVoicePanel'));
+		assert.ok((await vscode.commands.getCommands()).includes('mmlx.playSelection'));
+		assert.ok((await vscode.commands.getCommands()).includes('mmlx.resetSoundChip'));
+		assert.ok(extension.packageJSON.contributes.keybindings.some((binding: { command: string; key: string; mac?: string; when?: string }) =>
+			binding.command === 'mmlx.playSelection' && binding.key === 'ctrl+alt+p' && binding.mac === 'cmd+alt+p'
+				&& binding.when === 'editorTextFocus && editorLangId == mmlx'));
+		assert.ok(extension.packageJSON.contributes.keybindings.some((binding: { command: string; key: string; mac?: string; when?: string }) =>
+			binding.command === 'mmlx.resetSoundChip' && binding.key === 'ctrl+alt+r' && binding.mac === 'cmd+alt+r'
+				&& binding.when === 'editorTextFocus && editorLangId == mmlx'));
 		assert.ok(extension.packageJSON.contributes.views.mmlx.some((view: { id: string; type: string }) =>
 			view.id === 'mmlx.voice' && view.type === 'webview'));
 		assert.strictEqual(extension.packageJSON.contributes.viewsContainers.panel[0].title, 'mmlx');
@@ -3279,7 +3423,7 @@ finally:
 							testInput.value = 't120 y24,128 o4 c4'; testInput.dispatchEvent(new Event('input'));
 							check(!testPlay.disabled && api.getState().voiceTestMml === testInput.value, 'MML test input is persisted');
 							const selectedMml = 't120 y24,128\\no4 c4';
-							send({ type: 'editorSelection', mml: selectedMml });
+							send({ type: 'editorSelection', mml: selectedMml, tempo: 't144', length: 'l8', octave: 5 });
 							check(!selectionPlay.disabled, 'Non-empty editor selection enables the selection button');
 							await new Promise(resolve => setTimeout(resolve, 300));
 							const selectionColor = getComputedStyle(selectionPlay).backgroundColor;
@@ -3289,12 +3433,14 @@ finally:
 							const testInputBeforeSelection = testInput.value;
 							selectionPlay.click();
 							check(messages.at(-1).type === 'voiceTestAction' && messages.at(-1).action === 'playSelection'
-								&& messages.at(-1).mml === selectedMml && testInput.value === testInputBeforeSelection,
-							'Selection playback sends the selected MML without changing Chip State MML');
+								&& messages.at(-1).mml === selectedMml && messages.at(-1).tempo === 't144'
+								&& messages.at(-1).length === 'l8' && messages.at(-1).octave === 5
+								&& testInput.value === testInputBeforeSelection,
+							'Selection playback sends MML and inherited state without changing Chip State MML');
 							send({ type: 'voiceTest', id: request.id, playing: false, error: true });
-							check(selectionPlay.classList.contains('is-error') && !testPlay.classList.contains('is-error')
+							check(!selectionPlay.classList.contains('is-error') && !testPlay.classList.contains('is-error')
 								&& selectionPlay.title === 'MML error' && selectionPlay.getAttribute('aria-invalid') === 'true'
-								&& testInput.getAttribute('aria-invalid') === 'false', 'Selection error is shown only on the selection button');
+								&& testInput.getAttribute('aria-invalid') === 'false', 'Selection errors do not turn the playback button red');
 							send({ type: 'voiceTest', id: request.id, playing: false });
 							send({ type: 'editorSelection', mml: '', tooLong: true });
 							check(selectionPlay.disabled && selectionPlay.title.includes('too long'), 'Oversized editor selections cannot be submitted');

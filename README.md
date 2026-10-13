@@ -145,7 +145,8 @@ Dedicated bottom panel opened with **mmlx: Show mmlx Panel**.
 - **NanoDrive8 output:** Connect NanoDrive8 in **Settings**, then select **NanoDrive8** and connect under **Keyboard > Output**.
 - **Chip State MML:** Test short MML phrases with the displayed voice using Enter or Play/Stop.
     Input is saved; the default is `MH0,200,64,0,5,0,1 ; PMS LFO`. Hardware LFO, pan and operator settings remain for keyboard notes; software LFOs apply only during MML playback.
-- **Reset sound chip:** Use the icon left of the Keyboard Output connection button to clear chip state and restore the displayed voice without disconnecting.
+- **Selection playback:** Play a selected `.mml` passage with the displayed voice and highlight notes and rests during playback.
+- **Reset sound chip:** Use the icon left of the Keyboard Output connection button to clear chip and inherited MML state, then restore the displayed voice without disconnecting. Subsequent selection playback rebuilds MML state from the played commands.
     Available on Emulation and NanoDrive8 when connected and hardware Playback is idle.
 - **Pitch bend:** Drag the left-hand wheel with a mouse or touch, or hold arrow keys while focused. It returns to center when released. Both outputs use a fixed +/-2-semitone range; MIDI RPN range changes are not supported.
 - **MIDI bend:** Incoming bends apply per channel and update the wheel. Moving the on-screen wheel bends its notes and all MIDI channels.
@@ -153,6 +154,11 @@ Dedicated bottom panel opened with **mmlx: Show mmlx Panel**.
 - **Spectrum:** Shows frequency (Hz) and level (dB), with a reference-note marker.
 - **Chords:** The last pressed note sets the reference; both monitors show the mixed sound, including release tails.
 - **Monitors:** Emulation only, not Playback or NanoDrive8. Drawing pauses while hidden without stopping audio or MIDI. Modulation and detuning may move the waveform.
+
+### Keyboard shortcuts
+
+- `Ctrl+Alt+P` (`Cmd+Option+P` on macOS): Play the selected `.mml` passage; press again to stop, even after clearing the selection.
+- `Ctrl+Alt+R` (`Cmd+Option+R` on macOS): Reset the connected sound chip without disconnecting.
 
 ### Playback
 

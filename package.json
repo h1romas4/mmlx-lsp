@@ -66,6 +66,14 @@
         "title": "mmlx: Show mmlx Panel"
       },
       {
+        "command": "mmlx.playSelection",
+        "title": "mmlx: Play MML Selection"
+      },
+      {
+        "command": "mmlx.resetSoundChip",
+        "title": "mmlx: Reset Sound Chip"
+      },
+      {
         "command": "mmlx.toggleComment",
         "title": "mmlx: Toggle Comment"
       }
@@ -74,6 +82,18 @@
       {
         "command": "mmlx.toggleComment",
         "key": "ctrl+/",
+        "when": "editorTextFocus && editorLangId == mmlx"
+      },
+      {
+        "command": "mmlx.playSelection",
+        "key": "ctrl+alt+p",
+        "mac": "cmd+alt+p",
+        "when": "editorTextFocus && editorLangId == mmlx"
+      },
+      {
+        "command": "mmlx.resetSoundChip",
+        "key": "ctrl+alt+r",
+        "mac": "cmd+alt+r",
         "when": "editorTextFocus && editorLangId == mmlx"
       }
     ],

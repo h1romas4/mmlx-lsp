@@ -71,6 +71,14 @@ enum Operation {
         session: u32,
         mml: String,
         voice: Voice,
+        #[serde(default)]
+        tempo: Option<String>,
+        #[serde(default)]
+        length: Option<String>,
+        #[serde(default)]
+        octave: Option<u8>,
+        #[serde(default, rename = "ignoreVoiceSelect")]
+        ignore_voice_select: bool,
     },
     VoiceTestNext {
         session: u32,
@@ -196,6 +204,10 @@ impl Bridge {
                 session,
                 mml,
                 voice,
+                tempo,
+                length,
+                octave,
+                ignore_voice_select,
             } => {
                 self.voice_test = None;
                 if self
@@ -205,7 +217,13 @@ impl Bridge {
                 {
                     return Err("Stale keyboard session".into());
                 }
-                let mdx = voice.test_document(&mml)?;
+                let mdx = voice.test_document_with_state(
+                    &mml,
+                    tempo.as_deref(),
+                    length.as_deref(),
+                    octave,
+                    ignore_voice_select,
+                )?;
                 let registers = self.session.as_mut().unwrap().1.begin_voice_test();
                 self.voice_test = Some(playback::FmPlayback::voice_test(
                     soundlog::mdx::package::MdxPackage { mdx, pdx: None },
@@ -644,7 +662,7 @@ mod tests {
     fn voice_test_emits_only_timed_fm_and_preserves_keyboard_session() {
         let mut bridge = Bridge::default();
         audition(&mut bridge, json!({"type":"init", "voice":voice()}));
-        bridge.handle(json!({"operation":"voiceTestInit", "session":7, "mml":"A MH0,200,64,0,5,0,1 p1 t130cdefg y64,2\nB t130gfedc\nC t130ggggg", "voice":voice()})).unwrap();
+        bridge.handle(json!({"operation":"voiceTestInit", "session":7, "mml":"A @1 MH0,200,64,0,5,0,1 p1 t130cdefg y64,2\nB @42 t130gfedc\nC @63 t130ggggg", "voice":voice(), "length":"l8", "octave":4, "ignoreVoiceSelect":true})).unwrap();
         let mut lfo = false;
         let mut registers = Vec::new();
         let mut key_on_channels = [false; 8];

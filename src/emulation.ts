@@ -157,9 +157,9 @@ export class EmulationSession {
 		return this.resetting;
 	}
 
-	startVoiceTest(mml: string, voice: unknown): void {
+	startVoiceTest(mml: string, voice: unknown, tempo?: string, ignoreVoiceSelect = false, length?: string, octave?: number): void {
 		if (!this.connected) { return; }
-		this.setVoiceTesting(true); this.command({ type: 'voiceTest', mml, voice });
+		this.setVoiceTesting(true); this.command({ type: 'voiceTest', mml, voice, tempo, length, octave, ignoreVoiceSelect });
 	}
 
 	stopVoiceTest(): void {

@@ -59,6 +59,14 @@ enum Command {
     VoiceTest {
         mml: String,
         voice: Voice,
+        #[serde(default)]
+        tempo: Option<String>,
+        #[serde(default)]
+        length: Option<String>,
+        #[serde(default)]
+        octave: Option<u8>,
+        #[serde(default, rename = "ignoreVoiceSelect")]
+        ignore_voice_select: bool,
     },
     VoiceTestStop,
     Render,
@@ -211,8 +219,24 @@ impl Session {
                     .ok_or("Playback not initialized")?
                     .set_muted(muted)?;
             }
-            Command::VoiceTest { mml, voice } => {
-                let failed = engine.start_voice_test(&mml, voice).is_err();
+            Command::VoiceTest {
+                mml,
+                voice,
+                tempo,
+                length,
+                octave,
+                ignore_voice_select,
+            } => {
+                let failed = engine
+                    .start_voice_test_with_state(
+                        &mml,
+                        voice,
+                        tempo.as_deref(),
+                        length.as_deref(),
+                        octave,
+                        ignore_voice_select,
+                    )
+                    .is_err();
                 if failed {
                     engine.stop_voice_test();
                 }
@@ -310,6 +334,40 @@ mod tests {
         assert_eq!(output.len(), 14 + 4096);
         assert!(run(io::Cursor::new(b"{\"type\":\"render\"}\n"), Vec::new()).is_err());
         assert!(run(io::Cursor::new(vec![b'x'; 16385]), Vec::new()).is_err());
+    }
+
+    #[test]
+    fn voice_test_deserializes_selection_options() {
+        let operator = serde_json::json!({
+            "ar": 0, "d1r": 0, "d2r": 0, "rr": 0, "d1l": 0,
+            "tl": 0, "ks": 0, "mul": 0, "dt1": 0, "dt2": 0, "ame": 0
+        });
+        let voice = serde_json::json!({
+            "algorithm": 0,
+            "feedback": 0,
+            "operatorMask": 0,
+            "operators": vec![operator; 4]
+        });
+        let command: Command = serde_json::from_value(serde_json::json!({
+            "type": "voiceTest",
+            "mml": "A @1 t120 c4",
+            "voice": voice,
+            "tempo": "t100",
+            "length": "l8",
+            "octave": 5,
+            "ignoreVoiceSelect": true
+        }))
+        .unwrap();
+        assert!(matches!(
+            command,
+            Command::VoiceTest {
+                tempo: Some(tempo),
+                length: Some(length),
+                octave: Some(5),
+                ignore_voice_select: true,
+                ..
+            } if tempo == "t100" && length == "l8"
+        ));
     }
 
     #[test]

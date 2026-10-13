@@ -11,7 +11,8 @@ import { createMidiInput, MidiInputConnection, type MidiInputPort } from './midi
 import { NanoDriveConnection, openNanoDrivePort, type NanoDriveAdpcmMode, type NanoDriveCodec, type NanoDriveInput, type NanoDrivePort } from './nanodrive';
 import { NanoDriveWorker } from './nanodriveWorker';
 import { NanoDriveThreadClient } from './nanodriveThreadClient';
-import { PlaybackSourceTracker } from './playbackSource';
+import { PlaybackSourceTracker, selectionTraceSource } from './playbackSource';
+import { mmlPlaybackStateAfter, mmlPlaybackStateBefore, type MmlPlaybackState } from './mmlTempo';
 import type { McpServerController } from './mcpServer';
 import { findPdx, resolveUri } from './tasks';
 
@@ -85,7 +86,11 @@ export function registerVoiceView(
 		undefined, undefined, playbackLog, mcpServer);
 	context.subscriptions.push(provider,
 		window.registerWebviewViewProvider('mmlx.voice', provider, { webviewOptions: { retainContextWhenHidden: true } }),
-		commands.registerCommand('mmlx.showVoicePanel', () => commands.executeCommand('mmlx.voice.focus')));
+		commands.registerCommand('mmlx.showVoicePanel', () => commands.executeCommand('mmlx.voice.focus')),
+		commands.registerCommand('mmlx.playSelection', () => provider.playEditorSelection()),
+		commands.registerCommand('mmlx.resetSoundChip', () => provider.resetSoundChip().catch(error => {
+			void window.showErrorMessage(`Sound chip reset failed: ${error instanceof Error ? error.message : String(error)}`);
+		})));
 	return provider;
 }
 
@@ -114,6 +119,15 @@ export class VoiceViewProvider implements WebviewViewProvider {
 	private emulationConnected = false;
 	private readonly playback?: EmulationSession;
 	private readonly playbackSources?: PlaybackSourceTracker;
+	private readonly selectionPlaybackSources?: PlaybackSourceTracker;
+	private selectionPlaybackTimer: ReturnType<typeof setInterval> | undefined;
+	private selectionPlaybackStartedAt = 0;
+	private selectionPlaybackSamples = 0;
+	private keyboardSampleRate = 48000;
+	private selectionTrace?: { document: TextDocument; source: string; documentOffsets: number[] };
+	private selectionTraceStarted = false;
+	private postResetMmlState?: MmlPlaybackState;
+	private pendingSelectionState?: { previous: MmlPlaybackState; next: MmlPlaybackState; committed: boolean };
 	private playbackDocument?: TextDocument;
 	private playbackConnected = false;
 	private browserPlayback = false;
@@ -128,6 +142,7 @@ export class VoiceViewProvider implements WebviewViewProvider {
 	private voiceTesting = false;
 	private resettingOutput = false;
 	private voiceTestVoice = '';
+	private voiceTestSource: 'selection' | 'input' = 'input';
 	private pitchBendValue = 8192;
 	private bendTimer: ReturnType<typeof setTimeout> | undefined;
 	private pendingBends = new Map<string, Extract<NanoDriveInput, { type: 'pitchBend' }>>();
@@ -149,6 +164,9 @@ export class VoiceViewProvider implements WebviewViewProvider {
 		this.nanodriveAvailable = threaded || !!codec || !!this.nanodriveWorker;
 		this.playbackSources = wasm ? new PlaybackSourceTracker(new NanoDriveWorker(context.extensionUri, wasm), message => {
 			if (this.playbackState.playing || this.playbackState.loading) { void window.showWarningMessage(`Playback highlighting: ${message}`); }
+		}) : undefined;
+		this.selectionPlaybackSources = wasm ? new PlaybackSourceTracker(new NanoDriveWorker(context.extensionUri, wasm), message => {
+			if (this.voiceTestSource === 'selection') { void window.showWarningMessage(`Selection playback highlighting: ${message}`); }
 		}) : undefined;
 		const callbacks: ConstructorParameters<typeof NanoDriveThreadClient> = [
 			Uri.joinPath(context.extensionUri, 'dist', 'nanodriveThread.js').fsPath,
@@ -198,7 +216,13 @@ export class VoiceViewProvider implements WebviewViewProvider {
 					void this.view?.webview.postMessage({ type: 'outputConnection', target: 'keyboard', mode: 'emulation', id: this.outputId, ...state });
 				}
 			},
-			pcm => { void this.view?.webview.postMessage({ type: 'emulationPcm', id: this.outputId, pcm }); }, undefined,
+			pcm => {
+				if (this.voiceTesting && this.voiceTestSource === 'selection') {
+					this.selectionPlaybackSamples += pcm.byteLength / 8;
+					void this.selectionPlaybackSources?.setPosition(this.selectionPlaybackSamples / this.keyboardSampleRate);
+				}
+				void this.view?.webview.postMessage({ type: 'emulationPcm', id: this.outputId, pcm });
+			}, undefined,
 			(playing, error) => { if (this.keyboardOutputMode === 'emulation') { this.setVoiceTesting(playing, error); } }) : undefined;
 		this.playback = wasm ? new EmulationSession(context.extensionUri, wasm,
 			state => {
@@ -432,6 +456,7 @@ export class VoiceViewProvider implements WebviewViewProvider {
 			const id = this.outputId;
 			await this.nanodrive.disconnectOutput();
 			if (id === this.outputId && this.keyboardOutputMode === 'emulation') {
+				this.keyboardSampleRate = message.sampleRate as number;
 				await this.emulation!.connect(message.sampleRate as number, this.snapshot.voice);
 			}
 		}
@@ -440,6 +465,9 @@ export class VoiceViewProvider implements WebviewViewProvider {
 	private async resetOutput(message: { id: unknown; mode: unknown }): Promise<void> {
 		if (message.id !== this.outputId || message.mode !== this.keyboardOutputMode || this.resettingOutput || !workspace.isTrusted) { return; }
 		const id = this.outputId;
+		this.postResetMmlState = {};
+		this.pendingSelectionState = undefined;
+		this.sendEditorSelection(window.activeTextEditor);
 		this.resettingOutput = true;
 		clearTimeout(this.bendTimer); this.bendTimer = undefined; this.pendingBends.clear();
 		try {
@@ -452,6 +480,16 @@ export class VoiceViewProvider implements WebviewViewProvider {
 				void this.view?.webview.postMessage({ type: 'outputReset', id, connected: this.keyboardOutputMode === 'nanodrive8' ? this.nanodrive.outputState.connected : this.emulationConnected });
 			}
 		}
+	}
+
+	async resetSoundChip(): Promise<void> {
+		const connected = this.keyboardOutputMode === 'nanodrive8'
+			? this.nanodrive.outputState.connected
+			: this.keyboardOutputMode === 'emulation' && this.emulationConnected;
+		if (!connected || this.resettingOutput
+			|| (this.keyboardOutputMode === 'nanodrive8' && this.nanodrive.playbackState.busy)) { return; }
+		void this.view?.webview.postMessage({ type: 'outputResetting', id: this.outputId });
+		await this.resetOutput({ id: this.outputId, mode: this.keyboardOutputMode });
 	}
 
 	private note(command: Exclude<NanoDriveInput, { type: 'init' | 'voice' } | { type: 'stop' }>): void {
@@ -485,27 +523,96 @@ export class VoiceViewProvider implements WebviewViewProvider {
 	}
 
 	private setVoiceTesting(playing: boolean, error = false): void {
+		const wasPlaying = this.voiceTesting;
 		this.voiceTesting = playing;
 		this.voiceTestVoice = playing ? JSON.stringify(this.snapshot.voice) : '';
+		if (playing && this.voiceTestSource === 'selection') {
+			if (this.pendingSelectionState) {
+				this.postResetMmlState = this.pendingSelectionState.next;
+				this.pendingSelectionState.committed = true;
+			}
+			if (!this.selectionTraceStarted && this.selectionTrace) {
+				this.selectionTraceStarted = true;
+				void this.selectionPlaybackSources?.start(this.selectionTrace.document, false,
+					this.selectionTrace.source, this.selectionTrace.documentOffsets);
+			}
+			if (!wasPlaying) {
+				this.selectionPlaybackSamples = 0;
+				void this.selectionPlaybackSources?.setPosition(0);
+			}
+			if (this.keyboardOutputMode === 'nanodrive8' && !this.selectionPlaybackTimer) {
+				this.selectionPlaybackStartedAt = performance.now();
+				this.selectionPlaybackTimer = setInterval(() => {
+					void this.selectionPlaybackSources?.setPosition((performance.now() - this.selectionPlaybackStartedAt) / 1000);
+				}, 33);
+			}
+		} else if (!playing) {
+			if (error && this.pendingSelectionState?.committed) {
+				this.postResetMmlState = this.pendingSelectionState.previous;
+			}
+			this.pendingSelectionState = undefined;
+			clearInterval(this.selectionPlaybackTimer); this.selectionPlaybackTimer = undefined;
+			this.selectionTraceStarted = false;
+			this.selectionPlaybackSources?.stop();
+		}
+		if (error) {
+			const message = this.voiceTestSource === 'selection'
+				? 'FM Voice selection playback failed.'
+				: 'FM Voice Chip State MML playback failed.';
+			void window.showErrorMessage(message);
+		}
 		void this.view?.webview.postMessage({ type: 'voiceTest', id: this.outputId, playing, error });
 	}
 
-	private async voiceTestAction(message: { id: unknown; action: unknown; mml: unknown }): Promise<void> {
+	private async voiceTestAction(message: {
+		id: unknown; action: unknown; mml: unknown; tempo?: unknown; length?: unknown; octave?: unknown
+	}): Promise<void> {
 		if (message.id !== this.outputId) { return; }
 		if (message.action === 'stop') {
 			this.emulation?.stopVoiceTest(); await this.nanodrive.stopVoiceTest(); return;
 		}
 		const selection = message.action === 'playSelection';
+		this.voiceTestSource = selection ? 'selection' : 'input';
+		const messageTempo = selection && typeof message.tempo === 'string'
+			&& /^(?:t[0-9]+|@t[0-9]+)$/i.test(message.tempo) ? message.tempo : undefined;
+		const messageLength = selection && typeof message.length === 'string' && message.length.length <= 128
+			&& /^l(?:\s*%?\d+\.*(?:\s*[\^~]\s*%?\d+\.*)*)?$/i.test(message.length) ? message.length : undefined;
+		const messageOctave = selection && typeof message.octave === 'number' && Number.isInteger(message.octave)
+			&& message.octave >= 0 && message.octave <= 255 ? message.octave : undefined;
+		const inheritedState = selection
+			? this.postResetMmlState ?? { tempo: messageTempo, length: messageLength, octave: messageOctave }
+			: {};
 		if ((!selection && message.action !== 'play') || !workspace.isTrusted || !this.snapshot.voice || this.snapshot.error
 			|| typeof message.mml !== 'string' || !message.mml.trim() || message.mml.length > 8192
 			|| !selection && /[\r\n]/.test(message.mml)) {
+			this.pendingSelectionState = undefined;
 			this.setVoiceTesting(false, true); return;
 		}
+		this.pendingSelectionState = undefined;
+		if (selection) {
+			if (this.postResetMmlState !== undefined) {
+				this.pendingSelectionState = {
+					previous: this.postResetMmlState,
+					next: mmlPlaybackStateAfter(message.mml, inheritedState),
+					committed: false
+				};
+			}
+			const editor = window.activeTextEditor;
+			if (editor?.document.languageId === 'mmlx' && !editor.selection.isEmpty
+				&& editor.document.getText(editor.selection) === message.mml) {
+				const trace = selectionTraceSource(message.mml, inheritedState, editor.document.offsetAt(editor.selection.start));
+				this.selectionTrace = { document: editor.document, source: trace.source, documentOffsets: trace.documentOffsets };
+				this.selectionTraceStarted = false;
+				this.selectionPlaybackSamples = 0;
+			} else { this.selectionTrace = undefined; this.selectionPlaybackSources?.stop(); }
+		} else { this.selectionTrace = undefined; this.selectionPlaybackSources?.stop(); }
 		this.voiceTestVoice = JSON.stringify(this.snapshot.voice);
 		if (this.keyboardOutputMode === 'nanodrive8' && this.nanodrive.outputState.connected) {
-			await this.nanodrive.startVoiceTest(message.mml, this.snapshot.voice);
+			await this.nanodrive.startVoiceTest(message.mml, this.snapshot.voice, inheritedState.tempo, selection,
+				inheritedState.length, inheritedState.octave);
 		} else if (this.keyboardOutputMode === 'emulation' && this.emulationConnected) {
-			this.emulation?.startVoiceTest(message.mml, this.snapshot.voice);
+			this.emulation?.startVoiceTest(message.mml, this.snapshot.voice, inheritedState.tempo, selection,
+				inheritedState.length, inheritedState.octave);
 		} else { this.setVoiceTesting(false); }
 	}
 
@@ -915,10 +1022,39 @@ export class VoiceViewProvider implements WebviewViewProvider {
 	}
 
 	private sendEditorSelection(editor: TextEditor | undefined): void {
-		const selection = editor?.document.languageId === 'mmlx' && !editor.selection.isEmpty
-			? editor.document.getText(editor.selection) : '';
+		const validEditor = editor?.document.languageId === 'mmlx' && !editor.selection.isEmpty;
+		const selection = validEditor ? editor.document.getText(editor.selection) : '';
+		let state = {};
+		if (validEditor) {
+			const source = editor.document.getText();
+			const offset = editor.document.offsetAt(editor.selection.start);
+			state = this.postResetMmlState !== undefined
+				? this.postResetMmlState
+				: mmlPlaybackStateBefore(source, offset);
+		}
 		void this.view?.webview.postMessage({ type: 'editorSelection',
-			mml: selection.length <= 8192 ? selection : '', tooLong: selection.length > 8192 });
+			mml: selection.length <= 8192 ? selection : '', ...state, tooLong: selection.length > 8192 });
+	}
+
+	async playEditorSelection(): Promise<void> {
+		if (this.voiceTesting && this.voiceTestSource === 'selection') {
+			await this.voiceTestAction({ id: this.outputId, action: 'stop', mml: '' });
+			return;
+		}
+		const editor = window.activeTextEditor;
+		const connected = this.keyboardOutputMode === 'emulation' ? this.emulationConnected
+			: this.keyboardOutputMode === 'nanodrive8' && this.nanodrive.outputState.connected;
+		if (!editor || editor.document.languageId !== 'mmlx' || editor.selection.isEmpty
+			|| !workspace.isTrusted || !connected || this.voiceTesting || this.resettingOutput
+			|| !this.snapshot.voice || this.snapshot.error) { return; }
+		const mml = editor.document.getText(editor.selection);
+		if (!mml.trim() || mml.length > 8192) { return; }
+		const source = editor.document.getText();
+		const offset = editor.document.offsetAt(editor.selection.start);
+		const state = this.postResetMmlState !== undefined
+			? this.postResetMmlState
+			: mmlPlaybackStateBefore(source, offset);
+		await this.voiceTestAction({ id: this.outputId, action: 'playSelection', mml, ...state });
 	}
 
 	private schedule(): void {
@@ -1050,7 +1186,7 @@ export class VoiceViewProvider implements WebviewViewProvider {
 	}
 
 	dispose(): void {
-		this.playbackSources?.dispose();
+		clearInterval(this.selectionPlaybackTimer); this.selectionPlaybackSources?.dispose(); this.playbackSources?.dispose();
 		this.view = undefined;
 		if (this.nanodrive instanceof NanoDriveThreadClient) { void this.nanodrive.dispose(); }
 		else { void this.disconnectNanoDrive(); }

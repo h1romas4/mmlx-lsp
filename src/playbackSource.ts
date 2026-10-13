@@ -1,8 +1,84 @@
 import { Range, ThemeColor, window, workspace, type Disposable, type TextDocument, type TextEditor } from 'vscode';
 import type { NanoDriveWorker } from './nanodriveWorker';
+import { scanMmlPlaybackState, type MmlPlaybackState } from './mmlTempo';
 
 export interface SourceEvent { position: number; channel: number; start: number | null; end: number | null; }
 export interface SourceBatch { events: SourceEvent[]; position: number; finished: boolean; }
+export interface SelectionTraceSource { source: string; documentOffsets: number[]; }
+
+export function selectionTraceSource(mml: string, inheritedState: MmlPlaybackState, documentStart: number): SelectionTraceSource {
+	const selectionState = scanMmlPlaybackState(mml, mml.length);
+	const tempo = inheritedState.tempo && !selectionState.hasTempo ? inheritedState.tempo : undefined;
+	const length = inheritedState.length && !selectionState.hasLength ? inheritedState.length : undefined;
+	const octave = inheritedState.octave !== undefined && !selectionState.hasOctave ? `o${inheritedState.octave}` : undefined;
+	const commands = [tempo, length, octave].filter((command): command is string => command !== undefined).join(' ');
+	let body = '';
+	const bodyOffsets = [documentStart];
+	const appendBodyOriginal = (start: number, end: number) => {
+		body += mml.slice(start, end);
+		for (let offset = start + 1; offset <= end; offset++) { bodyOffsets.push(documentStart + offset); }
+	};
+	const appendBodyInserted = (value: string, offset: number) => {
+		body += value;
+		for (let index = 0; index < value.length; index++) { bodyOffsets.push(documentStart + offset); }
+	};
+	let index = 0;
+	let segmentStart = 0;
+	while (index < mml.length) {
+		const character = mml[index];
+		if (character === ';') {
+			const newline = mml.indexOf('\n', index + 1);
+			index = newline < 0 ? mml.length : newline + 1;
+		} else if (character === '/' && mml[index + 1] === '*') {
+			const close = mml.indexOf('*/', index + 2);
+			index = close < 0 ? mml.length : close + 2;
+		} else if (character === '"') {
+			const close = mml.indexOf('"', index + 1);
+			index = close < 0 ? mml.length : close + 1;
+		} else if (character === '@' && /[0-9]/.test(mml[index + 1] ?? '')) {
+			appendBodyOriginal(segmentStart, index);
+			appendBodyInserted(' ', index);
+			index++;
+			while (index < mml.length && /[0-9]/.test(mml[index])) { index++; }
+			segmentStart = index;
+		} else { index++; }
+	}
+	appendBodyOriginal(segmentStart, mml.length);
+
+	const voice = '@0 = {\n31,0,0,15,0,32,0,1,0,0,0,\n31,0,0,15,0,32,0,1,0,0,0,\n31,0,0,15,0,32,0,1,0,0,0,\n31,0,0,15,0,32,0,1,0,0,0,\n7,0,15\n}\n';
+	let source = '';
+	const documentOffsets = [documentStart];
+	const appendOriginal = (start: number, end: number) => {
+		source += body.slice(start, end);
+		for (let offset = start + 1; offset <= end; offset++) { documentOffsets.push(bodyOffsets[offset]); }
+	};
+	const appendInserted = (value: string, offset: number) => {
+		source += value;
+		for (let index = 0; index < value.length; index++) { documentOffsets.push(offset); }
+	};
+	appendInserted(voice, documentStart);
+	const lines = body.split('\n');
+	const isChannel = (line: string) => /^[A-H](?:\s|$)/.test(line.trimStart());
+	if (!lines.some(isChannel)) {
+		appendInserted(`A @0${commands ? ` ${commands}` : ''} `, documentStart);
+		appendOriginal(0, body.length);
+		return { source, documentOffsets };
+	}
+	let start = 0;
+	for (const line of lines) {
+		const end = start + line.length;
+		const indent = line.length - line.trimStart().length;
+		if (isChannel(line)) {
+			const channelEnd = start + indent + 1;
+			appendOriginal(start, channelEnd);
+			appendInserted(` @0${commands ? ` ${commands}` : ''}`, bodyOffsets[channelEnd]);
+			appendOriginal(channelEnd, end);
+		} else { appendOriginal(start, end); }
+		if (end < body.length) { appendOriginal(end, end + 1); }
+		start = end + 1;
+	}
+	return { source, documentOffsets };
+}
 
 export class PlaybackSourceTracker implements Disposable {
 	private readonly decoration = window.createTextEditorDecorationType({
@@ -46,17 +122,21 @@ export class PlaybackSourceTracker implements Disposable {
 		return [...lines].sort((first, second) => first - second).map(line => new Range(line, 0, line, 0));
 	}
 
-	async start(document: TextDocument, looped: boolean): Promise<void> {
+	async start(document: TextDocument, looped: boolean, source = document.getText(), documentOffsets?: readonly number[]): Promise<void> {
 		this.stop();
 		const generation = this.generation;
 		this.document = document; this.version = document.version;
-		const source = document.getText(); const bytes = new TextEncoder().encode(source);
+		if (documentOffsets && (documentOffsets.length !== source.length + 1
+			|| documentOffsets.some(offset => !Number.isInteger(offset) || offset < 0 || offset > document.getText().length))) {
+			throw new Error('Invalid playback source mapping.');
+		}
+		const bytes = new TextEncoder().encode(source);
 		this.offsets = new Int32Array(bytes.length + 1).fill(-1);
 		let byteOffset = 0; let characterOffset = 0;
-		this.offsets[0] = 0;
+		this.offsets[0] = documentOffsets?.[0] ?? 0;
 		for (const character of source) {
 			byteOffset += Buffer.byteLength(character); characterOffset += character.length;
-			this.offsets[byteOffset] = characterOffset;
+			this.offsets[byteOffset] = documentOffsets?.[characterOffset] ?? characterOffset;
 		}
 		try {
 			await this.stopping;

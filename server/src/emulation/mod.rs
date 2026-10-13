@@ -74,8 +74,31 @@ impl Emulation {
     }
 
     pub fn start_voice_test(&mut self, mml: &str, voice: Voice) -> Result<(), String> {
+        self.start_voice_test_with_tempo(mml, voice, None, false)
+    }
+
+    pub fn start_voice_test_with_tempo(
+        &mut self,
+        mml: &str,
+        voice: Voice,
+        tempo: Option<&str>,
+        ignore_voice_select: bool,
+    ) -> Result<(), String> {
+        self.start_voice_test_with_state(mml, voice, tempo, None, None, ignore_voice_select)
+    }
+
+    pub fn start_voice_test_with_state(
+        &mut self,
+        mml: &str,
+        voice: Voice,
+        tempo: Option<&str>,
+        length: Option<&str>,
+        octave: Option<u8>,
+        ignore_voice_select: bool,
+    ) -> Result<(), String> {
         self.stop_voice_test();
-        let mdx = voice.test_document(mml)?;
+        let mdx =
+            voice.test_document_with_state(mml, tempo, length, octave, ignore_voice_select)?;
         self.all_off(None, None);
         self.voice_test = Some(playback::Playback::voice_test(
             mdx,

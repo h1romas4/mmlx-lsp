@@ -15,6 +15,7 @@ export function createKeyboardControls(root, onModeChange = () => {}, onNote = (
 	let voiceTestChangedChip = false;
 	let voiceAvailable = false;
 	let editorSelection = '';
+	let editorSelectionState = {};
 	let selectionTooLong = false;
 	function updateTestControls() {
 		if (!testInput) { return; }
@@ -25,7 +26,6 @@ export function createKeyboardControls(root, onModeChange = () => {}, onNote = (
 			const selectionError = testError && testErrorSource === 'selection';
 			selectionPlay.disabled = resetting || testPlaying || !outputConnected || !voiceAvailable || !hasSelection || selectionTooLong;
 			selectionPlay.classList.toggle('transport-play', !selectionPlay.disabled);
-			selectionPlay.classList.toggle('is-error', selectionError);
 			selectionPlay.title = selectionError ? 'MML error'
 				: selectionTooLong ? 'Editor selection is too long (maximum 8192 characters)' : 'Play editor selection';
 			selectionPlay.setAttribute('aria-label', selectionPlay.title);
@@ -61,7 +61,7 @@ export function createKeyboardControls(root, onModeChange = () => {}, onNote = (
 	selectionPlay?.addEventListener('click', () => {
 		if (!selectionPlay.disabled) {
 			testErrorSource = 'selection'; testError = false; updateTestControls();
-			onVoiceTest('playSelection', editorSelection);
+			onVoiceTest('playSelection', editorSelection, editorSelectionState);
 		}
 	});
 	let bendValue = 8192;
@@ -220,12 +220,21 @@ export function createKeyboardControls(root, onModeChange = () => {}, onNote = (
 			}
 		},
 		setVoiceAvailable(value) { voiceAvailable = value === true; updateTestControls(); },
-		setEditorSelection(value, tooLong = false) {
+		setEditorSelection(value, tooLong = false, state = {}) {
 			const nextSelection = typeof value === 'string' ? value.slice(0, 8192) : '';
 			const nextTooLong = tooLong === true;
+			const nextState = {
+				tempo: typeof state?.tempo === 'string' ? state.tempo : undefined,
+				length: typeof state?.length === 'string' ? state.length : undefined,
+				octave: Number.isInteger(state?.octave) ? state.octave : undefined
+			};
 			if (testError && testErrorSource === 'selection'
-				&& (nextSelection !== editorSelection || nextTooLong !== selectionTooLong)) { testError = false; }
+				&& (nextSelection !== editorSelection || nextTooLong !== selectionTooLong
+					|| nextState.tempo !== editorSelectionState.tempo
+					|| nextState.length !== editorSelectionState.length
+					|| nextState.octave !== editorSelectionState.octave)) { testError = false; }
 			editorSelection = nextSelection;
+			editorSelectionState = nextState;
 			selectionTooLong = nextTooLong;
 			updateTestControls();
 		},
