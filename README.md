@@ -25,8 +25,8 @@ Currently supports the MDX (MXDRV) dialect and `.mml` files.
 
 ## Usage
 
-The following usage and settings instructions are for VS Code.
-For Helix configuration, see [Install in Helix](#install-in-helix).
+This extension needs a trusted workspace to work. If VS Code is in Restricted Mode,
+select "Manage Workspace Trust" and trust this folder. Learn more about [Workspace Trust](https://code.visualstudio.com/docs/editing/workspaces/workspace-trust).
 
 The extension automatically associates `.mml` files with **MML(mdx)**.
 If the file opens in another language mode, click the language mode in the
@@ -40,37 +40,50 @@ status bar and select **MML(mdx)**, or add this to your VS Code settings:
 }
 ```
 
-Use completion to insert commands and voice definitions. Parameter hints show
-the active argument as you type. To read a command's full description, select
-it in the completion list and choose **Show More** (`Ctrl+Space` toggles the details).
-Run **Format Document** to format FM voice definitions in the aligned block-comment style;
-existing comments inside definitions are replaced by the parameter headings. Other MML content
-is left unchanged.
-Run **Format Document** to format FM voice definitions; other MML content is left unchanged.
+## mmlx Panel
 
-## Settings
+Dedicated bottom panel opened with **mmlx: Show mmlx Panel**.
 
-Configure the extension in VS Code settings or `.vscode/settings.json`.
-The example below shows the extension's defaults. Only add the settings you want
-to override; you do not need to include every entry.
+### Get Started
 
-```json
-{
-    "mmlx.dialect": "mdx",
-    "mmlx.language": "auto",
-    "mmlx.build.format": "both",
-    "mmlx.build.onSave": false,
-    "mmlx.build.outputDirectory": "build",
-    "mmlx.build.pdx": "",
-    "mmlx.build.adpcmMode": "resample",
-    "mmlx.build.loopCount": 0,
-    "mmlx.build.maxTicks": 100000,
-    "mmlx.serial.connection": "",
-    "mmlx.midi.input": ""
-}
-```
+- **Get Started** opens an editable example `.mml` in a new, unsaved editor.
 
-### Build
+### FM Voice
+
+- **FM Voice editing** for parameters, algorithms, and envelopes directly in the source by placing the cursor in an `@` definition.
+- **Emulation output:** Select **Emulation** under **Keyboard > Output** to play up to eight notes with the on-screen keyboard or MIDI-IN.
+- **NanoDrive8 output:** Connect NanoDrive8 in **Settings**, then select **NanoDrive8** and connect under **Keyboard > Output**.
+- **Chip State MML:** Test short MML phrases with the displayed voice using Enter or Play/Stop.
+    Input is saved; the default is `MH0,200,64,0,5,0,1 ; PMS LFO`. Hardware LFO, pan and operator settings remain for keyboard notes; software LFOs apply only during MML playback.
+- **Selection playback:** Play a selected `.mml` passage with the displayed voice and highlight notes and rests during playback.
+- **Reset sound chip:** Use the icon left of the Keyboard Output connection button to clear chip and inherited MML state, then restore the displayed voice without disconnecting. Subsequent selection playback rebuilds MML state from the played commands.
+    Available on Emulation and NanoDrive8 when connected and hardware Playback is idle.
+- **MIDI-IN** connection and note reception, with pressed-key feedback in the FM Voice keyboard.
+- **Pitch bend:** Drag the left-hand wheel with a mouse or touch, or hold arrow keys while focused. It returns to center when released. Both outputs use a fixed +/-2-semitone range; MIDI RPN range changes are not supported.
+
+### Playback
+
+- **Outputs:** Emulation mixes YM2151 FM and OKIM6258 ADPCM with clock, divider and pan control. Both outputs use the configured PDX file or discover it beside the MML, and apply the ADPCM processing setting. NanoDrive8 uses FM bursts for FM-only songs and ADPCM streaming for songs with PCM notes.
+- **Playback:** Plays the active MML, including unsaved edits. Switching files stops playback without affecting FM Voice or MIDI-IN.
+- **Editor playback highlights:** Follow FM and PCM notes and rests on both outputs, including loops and muted tracks, without moving the cursor or selection. Pause holds highlights; Stop, completion or source edits clear them. Tracking failures show a warning without stopping audio.
+- **Controls:** Play, stop and volume on both outputs; pause and elapsed time on Emulation only. Both support optional MML loop points.
+- **Channel keyboards:** Eight 88-key FM keyboards (A0-C8) show playback activity on both outputs, including muted channels. Narrow panels keep active keys visible. Pause holds the display; Stop clears it. ADPCM is not displayed.
+- **Channel mute and solo:** MUTE silences individual FM channels or mixed ADPCM on both outputs. SOLO plays only the selected channels, supports multiple selections and overrides MUTE without changing its saved selections. Both selections persist across stops, restarts and output changes.
+- **NanoDrive8 volume:** Controls the device's main FM/PCM output, including keyboard audition. Requires firmware supporting `SET_OUTPUT_VOLUME`; older firmware may reject volume changes without stopping playback.
+- **Play from cursor:** Emulation starts at the current command or the next command on the same line. Repeats start at the first occurrence; seeking may take a moment.
+- **NanoDrive8 diagnostics:** **Output > mmlx NanoDrive8** logs playback failures, engine timing, buffer depth and serial status to help diagnose underruns. No MML or PDX contents are logged.
+
+### Utilities
+
+- **Create PDX JSON:** Open an example manifest for mapping WAV samples to PDX banks and voice slots.
+- **Build PDX:** Convert the saved manifest and its WAV files into a PDX sample bank.
+- **Build MDX:** Build the active MML file using the selected output format: MDX, VGM, or both.
+
+### Settings
+
+- **Connections:** `[Connected]` and the badge show active connections. Hiding the panel stops on-screen notes, not connections. Disconnect manually; connections are not restored after a reload.
+
+## Build
 
 Open an MML file in a trusted workspace and run **mmlx: Build** from the
 command palette, or select it via **Tasks: Run Build Task** (`Ctrl+Shift+B`,
@@ -87,7 +100,7 @@ Errors appear in the Problems view and task terminal. Ctrl-click an error
 location (Cmd-click on macOS, depending on your terminal settings) to jump to
 the source. Stop the task to cancel.
 
-Change the options below in VS Code settings or in **Settings > Build** in the
+Change the options below in VS Code settings or in **Utilities > MDX Build** in the
 [mmlx panel](#mmlx-panel). The panel saves changes to the
 workspace folder's `.vscode/settings.json`; they apply to the next build without
 restarting the language server.
@@ -106,10 +119,9 @@ MDX output checks parsing and compilation without loading PDX samples.
 VGM conversion requires any referenced PDX and reports playback errors or
 tick-limit failures before saving the output. When building both formats,
 neither output is saved until both conversions succeed. Loop points for per-track
-MDX F1 loops are estimates. Build tasks are VS Code-only; Helix continues to use
-the native language server.
+MDX F1 loops are estimates.
 
-### Other Settings
+## Other Settings
 
 - `mmlx.dialect`: `mdx` is the default and currently the only supported dialect.
 - `mmlx.language`: `auto` follows the editor language, falling back to Japanese.
@@ -128,69 +140,6 @@ the native language server.
 
 After changing the dialect or language, run **mmlx: Restart Language Server** from the
 command palette. Diagnostic messages are not translated.
-
-## mmlx Panel
-
-Dedicated bottom panel opened with **mmlx: Show mmlx Panel**.
-
-### Get Started
-
-- **Get Started** opens an editable example `.mml` in a new, unsaved editor.
-
-### FM Voice
-
-- **FM Voice editing** for parameters, algorithms, and envelopes directly in the source by placing the cursor in an `@` definition.
-- **MIDI-IN** connection and note reception, with pressed-key feedback in the FM Voice keyboard.
-- **Emulation output:** Select **Emulation** under **Keyboard > Output** to play up to eight notes with the on-screen keyboard or MIDI-IN.
-- **NanoDrive8 output:** Connect NanoDrive8 in **Settings**, then select **NanoDrive8** and connect under **Keyboard > Output**.
-- **Chip State MML:** Test short MML phrases with the displayed voice using Enter or Play/Stop.
-    Input is saved; the default is `MH0,200,64,0,5,0,1 ; PMS LFO`. Hardware LFO, pan and operator settings remain for keyboard notes; software LFOs apply only during MML playback.
-- **Selection playback:** Play a selected `.mml` passage with the displayed voice and highlight notes and rests during playback.
-- **Reset sound chip:** Use the icon left of the Keyboard Output connection button to clear chip and inherited MML state, then restore the displayed voice without disconnecting. Subsequent selection playback rebuilds MML state from the played commands.
-    Available on Emulation and NanoDrive8 when connected and hardware Playback is idle.
-- **Pitch bend:** Drag the left-hand wheel with a mouse or touch, or hold arrow keys while focused. It returns to center when released. Both outputs use a fixed +/-2-semitone range; MIDI RPN range changes are not supported.
-- **MIDI bend:** Incoming bends apply per channel and update the wheel. Moving the on-screen wheel bends its notes and all MIDI channels.
-- **Oscilloscope:** Shows up to two periods of the reference note. Choose x1, x4, or x16 gain (default x4).
-- **Spectrum:** Shows frequency (Hz) and level (dB), with a reference-note marker.
-- **Chords:** The last pressed note sets the reference; both monitors show the mixed sound, including release tails.
-- **Monitors:** Emulation only, not Playback or NanoDrive8. Drawing pauses while hidden without stopping audio or MIDI. Modulation and detuning may move the waveform.
-
-### Keyboard shortcuts
-
-- `Ctrl+Alt+P` (`Cmd+Option+P` on macOS): Play the selected `.mml` passage; press again to stop, even after clearing the selection.
-- `Ctrl+Alt+R` (`Cmd+Option+R` on macOS): Reset the connected sound chip without disconnecting.
-
-### Playback
-
-- **Playback:** Plays the active MML, including unsaved edits. Switching files stops playback without affecting FM Voice or MIDI-IN.
-- **Editor playback highlights:** Follow FM and PCM notes and rests on both outputs, including loops and muted tracks, without moving the cursor or selection. Pause holds highlights; Stop, completion or source edits clear them. Tracking failures show a warning without stopping audio.
-- **Controls:** Play, stop and volume on both outputs; pause and elapsed time on Emulation only. Both support optional MML loop points.
-- **Channel keyboards:** Eight 88-key FM keyboards (A0-C8) show playback activity on both outputs, including muted channels. Narrow panels keep active keys visible. Pause holds the display; Stop clears it. ADPCM is not displayed.
-- **Channel mute and solo:** MUTE silences individual FM channels or mixed ADPCM on both outputs. SOLO plays only the selected channels, supports multiple selections and overrides MUTE without changing its saved selections. Both selections persist across stops, restarts and output changes.
-- **NanoDrive8 volume:** Controls the device's main FM/PCM output, including keyboard audition. Requires firmware supporting `SET_OUTPUT_VOLUME`; older firmware may reject volume changes without stopping playback.
-- **Play from cursor:** Emulation starts at the current command or the next command on the same line. Repeats start at the first occurrence; seeking may take a moment.
-- **Outputs:** Emulation mixes YM2151 FM and OKIM6258 ADPCM with clock, divider and pan control. Both outputs use the configured PDX file or discover it beside the MML, and apply the ADPCM processing setting. NanoDrive8 uses FM bursts for FM-only songs and ADPCM streaming for songs with PCM notes.
-- **NanoDrive8 diagnostics:** **Output > mmlx NanoDrive8** logs playback failures, engine timing, buffer depth and serial status to help diagnose underruns. No MML or PDX contents are logged.
-- **Windows native engine:** If buffer underruns occur on Windows x64, try **Settings > Connection > NanoDrive8 native engine** (`mmlx.serial.windowsNative`, default `false`). Disconnect before changing it, then reconnect. This uses the bundled Rust audio engine instead of WASM; other platforms stay on WASM. A missing or blocked executable reports an error without silently falling back.
-- **Playback isolation:** Emulation audio runs in Webview workers. NanoDrive8 uses a dedicated process, prepares up to 24 PCM chunks ahead and handles protocol messages separately. Editor or panel stalls do not block audio supply; NanoDrive8 mute/solo changes take effect after already buffered audio.
-
-### Utilities
-
-- **Create PDX JSON:** Open an example manifest for mapping WAV samples to PDX banks and voice slots.
-- **Build PDX:** Convert the saved manifest and its WAV files into a PDX sample bank.
-- **Build MDX:** Build the active MML file using the selected output format: MDX, VGM, or both.
-
-### Settings
-
-- **Connections:** `[Connected]` and the badge show active connections. Hiding the panel stops on-screen notes, not connections. Disconnect manually; connections are not restored after a reload.
-
-## Current Limitations
-
-- Language-server playback validation checks one playthrough with execution limits; it does not
-    load or validate PDX sample files.
-- Completion covers commands and voice-definition templates, not notes,
-    metadata directives, available voice numbers, or argument values.
-- Hover, go-to-definition, general MML formatting, and browser-based VS Code are not supported.
 
 ## Manual Installation in VS Code
 
