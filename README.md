@@ -55,7 +55,7 @@ Dedicated bottom panel opened with **mmlx: Show mmlx Panel**.
 - **NanoDrive8 output:** Connect NanoDrive8 in **Settings**, then select **NanoDrive8** and connect under **Keyboard > Output**.
 - **Chip State MML:** Test short MML phrases with the displayed voice using Enter or Play/Stop.
     Input is saved; the default is `MH0,200,64,0,5,0,1 ; PMS LFO`. Hardware LFO, pan and operator settings remain for keyboard notes; software LFOs apply only during MML playback.
-- **Selection playback:** Play a selected `.mml` passage with the displayed voice and highlight notes and rests during playback.
+- **Selection playback:** Play a selected `.mml` passage with the displayed voice and highlight notes and rests during playback. Tempo, octave, default length, volume, gate, and pan state carry over from earlier MML or previously played selections.
 - **Reset sound chip:** Use the icon left of the Keyboard Output connection button to clear chip and inherited MML state, then restore the displayed voice without disconnecting. Subsequent selection playback rebuilds MML state from the played commands.
     Available on Emulation and NanoDrive8 when connected and hardware Playback is idle.
 - **MIDI-IN** connection and note reception, with pressed-key feedback in the FM Voice keyboard.

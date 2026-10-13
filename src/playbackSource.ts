@@ -11,7 +11,10 @@ export function selectionTraceSource(mml: string, inheritedState: MmlPlaybackSta
 	const tempo = inheritedState.tempo && !selectionState.hasTempo ? inheritedState.tempo : undefined;
 	const length = inheritedState.length && !selectionState.hasLength ? inheritedState.length : undefined;
 	const octave = inheritedState.octave !== undefined && !selectionState.hasOctave ? `o${inheritedState.octave}` : undefined;
-	const commands = [tempo, length, octave].filter((command): command is string => command !== undefined).join(' ');
+	const volume = inheritedState.volume?.join(' ');
+	const gate = inheritedState.gate;
+	const pan = inheritedState.pan;
+	const commands = [tempo, length, octave, volume, gate, pan].filter((command): command is string => command !== undefined).join(' ');
 	let body = '';
 	const bodyOffsets = [documentStart];
 	const appendBodyOriginal = (start: number, end: number) => {

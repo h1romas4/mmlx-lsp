@@ -35,7 +35,8 @@ export type NanoDriveCodec = (params: { operation: 'encode'; command: NanoDriveC
     | { operation: 'playbackFilter'; bytes: number[] }
     | { operation: 'playbackPrepare'; bytes: number[]; position: number }
     | { operation: 'playbackMute'; muted: number; requestId: number; position: number }
-    | { operation: 'voiceTestInit'; session: number; mml: string; voice: unknown; tempo?: string; length?: string; octave?: number; ignoreVoiceSelect?: boolean }
+    | { operation: 'voiceTestInit'; session: number; mml: string; voice: unknown; tempo?: string; length?: string;
+        octave?: number; volume?: string[]; gate?: string; pan?: string; ignoreVoiceSelect?: boolean }
     | { operation: 'voiceTestNext' | 'voiceTestStop'; session: number; requestId: number }) => Promise<{ bytes: number[] | Uint8Array; count?: number; position?: number; ended?: boolean; fm?: boolean; synchronize?: boolean; keys?: FmKeyEvent[] } | { pdxName?: string | null; audio?: boolean } | import('./playbackSource').SourceBatch | NanoDriveReply | null>;
 type NanoDriveChunk = Extract<Awaited<ReturnType<NanoDriveCodec>>, { bytes: number[] | Uint8Array }>;
 export interface NanoDriveState {
@@ -205,7 +206,8 @@ export class NanoDriveConnection {
         return updating.finally(() => { if (this.volumeUpdate === updating) { this.volumeUpdate = undefined; } });
     }
 
-    async startVoiceTest(mml: string, voice: unknown, tempo?: string, ignoreVoiceSelect = false, length?: string, octave?: number): Promise<void> {
+    async startVoiceTest(mml: string, voice: unknown, tempo?: string, ignoreVoiceSelect = false, length?: string,
+        octave?: number, volume?: string[], gate?: string, pan?: string): Promise<void> {
         const stopping = this.stopVoiceTest(); const token = ++this.voiceTestGeneration;
         await stopping;
         if (token !== this.voiceTestGeneration || !this.output.connected || this.hardwarePlayback.busy) { return; }
@@ -218,7 +220,7 @@ export class NanoDriveConnection {
         let failed = false;
         try {
             await this.input({ type: 'allOff' }); check();
-            await this.codec({ operation: 'voiceTestInit', session, mml, voice, tempo, length, octave, ignoreVoiceSelect }); check();
+            await this.codec({ operation: 'voiceTestInit', session, mml, voice, tempo, length, octave, volume, gate, pan, ignoreVoiceSelect }); check();
             await this.playFm(connection, token, check, session); check();
         } catch { failed = true; }
         if (token === this.voiceTestGeneration) { await this.stopVoiceTest(failed); }

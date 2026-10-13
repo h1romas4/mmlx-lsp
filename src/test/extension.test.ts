@@ -203,6 +203,11 @@ suite('mmlx extension', () => {
 		const firstSelectionState = mmlPlaybackStateAfter('A @1 t120 l8cdef grgr af>c<a g1');
 		assert.deepStrictEqual(firstSelectionState, { tempo: 't120', length: 'l8', octave: 4 });
 		assert.deepStrictEqual(mmlPlaybackStateAfter('A af>c<a g1 gfff feee eded cegr', firstSelectionState), firstSelectionState);
+		const bugFirst = mmlPlaybackStateAfter('B v15t80o3l16q8 ab>cd eede8ede4 e8e8d4.dd2');
+		assert.deepStrictEqual(bugFirst, { tempo: 't80', length: 'l16', octave: 4, volume: ['v15'], gate: 'q8' });
+		const bugSecond = mmlPlaybackStateAfter('B cc<b>c& c8<b>c4c8c8 f4&f8q4g8re8rq8e4', bugFirst);
+		assert.deepStrictEqual(bugSecond, { ...bugFirst, gate: 'q8' });
+		assert.deepStrictEqual(mmlPlaybackStateAfter('A v10))', {}).volume, ['v10', ')', ')']);
 		assert.strictEqual(tempoBefore(source, source.length), 't180');
 		assert.strictEqual(tempoBefore('A t0 c4\nB t4294967296 d4', 28), undefined);
 		assert.strictEqual(mmlPlaybackStateBefore('A o5 > l%192 c4', 17).octave, 6);
@@ -268,6 +273,19 @@ suite('mmlx extension', () => {
 			for (let count = 0; count < 30 && testing; count++) { selectionEnergy += energy(await render()); }
 			assert.ok(testing && !testError && state?.connected && selectionEnergy > 1,
 				'Editor selection ignores @n and produces audio');
+			session.stopVoiceTest();
+			const firstSelection = 'B v15t80o3l16q8 ab>cd eede8ede4 e8e8d4.dd2';
+			const secondSelection = 'B cc<b>c& c8<b>c4c8c8 f4&f8q4g8re8rq8e4';
+			session.startVoiceTest(firstSelection, voice, undefined, true);
+			let firstSelectionEnergy = 0;
+			for (let count = 0; count < 30 && testing; count++) { firstSelectionEnergy += energy(await render()); }
+			assert.ok(firstSelectionEnergy > 1 && !testError, 'The first state-setting selection produces audio');
+			session.stopVoiceTest();
+			session.startVoiceTest(secondSelection, voice, 't80', true, 'l16', 4, ['v15'], 'q8');
+			let inheritedStateEnergy = 0;
+			for (let count = 0; count < 300 && testing; count++) { inheritedStateEnergy += energy(await render()); }
+			assert.ok(inheritedStateEnergy > 1 && !testError,
+				'The next selection remains audible with inherited volume and gate when it overrides the gate later');
 			session.stopVoiceTest();
 			session.startVoiceTest('o4 c1', voice); await render(); session.stopVoiceTest();
 			assert.ok(!testing && !testError && state?.connected);
@@ -839,7 +857,7 @@ suite('mmlx extension', () => {
 		const showWarningMessage = vscode.window.showWarningMessage;
 		type Update = { type: string; id?: number; connected?: boolean; connecting?: boolean; pcm?: ArrayBuffer;
 			voice?: unknown; name?: string | null; playing?: boolean; error?: boolean; mml?: string;
-			tempo?: string; length?: string; octave?: number; tooLong?: boolean };
+			tempo?: string; length?: string; octave?: number; volume?: string[]; gate?: string; pan?: string; tooLong?: boolean };
 		const updates: Update[] = [];
 		const changed = new vscode.EventEmitter<Update>();
 		const voice = { number: 0, name: 'Grand Piano', algorithm: 7, feedback: 0, operatorMask: 15, position: { line: 0, character: 0 },
@@ -1025,6 +1043,46 @@ suite('mmlx extension', () => {
 			assert.strictEqual(restoredSelectionState.tempo, 't140', 'Later playback updates tempo state');
 			assert.strictEqual(restoredSelectionState.length, 'l16', 'Later playback updates default-length state');
 			assert.strictEqual(restoredSelectionState.octave, 3, 'Later playback updates octave state');
+			const firstStatefulLine = 'B v15t80o3l16q8 ab>cd eede8ede4 e8e8d4.dd2';
+			const secondStatefulLine = 'B cc<b>c& c8<b>c4c8c8 f4&f8q4g8re8rq8e4';
+			const statefulOffset = document.getText().length;
+			const statefulAppend = new vscode.WorkspaceEdit();
+			statefulAppend.insert(document.uri, document.positionAt(statefulOffset), `${firstStatefulLine}\n${secondStatefulLine}\n`);
+			assert.ok(await vscode.workspace.applyEdit(statefulAppend));
+			const firstStatefulPosition = document.positionAt(statefulOffset);
+			editor.selection = new vscode.Selection(firstStatefulPosition.line, 0, firstStatefulPosition.line,
+				document.lineAt(firstStatefulPosition.line).text.length);
+			const firstStatefulStart = updates.length;
+			await provider.playEditorSelection();
+			await waitFor(message => message.type === 'voiceTest' && message.playing === true, firstStatefulStart);
+			const firstStatefulStop = updates.length;
+			await provider.playEditorSelection();
+			await waitFor(message => message.type === 'voiceTest' && message.playing === false, firstStatefulStop);
+			const secondStatefulPosition = document.positionAt(statefulOffset + firstStatefulLine.length + 1);
+			const secondStatefulStart = updates.length;
+			editor.selection = new vscode.Selection(secondStatefulPosition.line, 0, secondStatefulPosition.line,
+				document.lineAt(secondStatefulPosition.line).text.length);
+			const secondState = await waitFor(message => message.type === 'editorSelection'
+				&& message.mml === secondStatefulLine, secondStatefulStart);
+			assert.deepStrictEqual(secondState.volume, ['v15']);
+			assert.strictEqual(secondState.gate, 'q8');
+			assert.strictEqual(secondState.tempo, 't80');
+			assert.strictEqual(secondState.length, 'l16');
+			assert.strictEqual(secondState.octave, 4);
+			const secondStatefulPlayStart = updates.length;
+			await provider.playEditorSelection();
+			await waitFor(message => message.type === 'voiceTest' && message.playing === true, secondStatefulPlayStart);
+			const secondStatefulAudioStart = updates.length;
+			messages.fire({ type: 'emulationRender', blocks: 4, id: 1 });
+			const secondStatefulPcm = await waitFor(message => message.type === 'emulationPcm'
+				&& updates.slice(secondStatefulAudioStart).filter(update => update.type === 'emulationPcm').length === 4,
+			secondStatefulAudioStart);
+			assert.ok(secondStatefulPcm.pcm instanceof ArrayBuffer
+				&& new Float32Array(secondStatefulPcm.pcm).some(value => Math.abs(value) > 0.0001),
+			'The second selection remains audible after inheriting the first selection volume and gate');
+			const secondStatefulStop = updates.length;
+			await provider.playEditorSelection();
+			await waitFor(message => message.type === 'voiceTest' && message.playing === false, secondStatefulStop);
 			assert.strictEqual(view.title, 'mmlx [Connected]');
 			assert.ok(!updates.slice(invalidStart).some(message => message.type === 'outputConnection' && !message.connected));
 			messages.fire({ type: 'setOutputConnection', target: 'keyboard', connected: false, id: 1 });
@@ -1247,6 +1305,11 @@ suite('mmlx extension', () => {
 			const inheritedTrace = selectionTraceSource('@1 c4', { tempo: 't120', length: 'l8', octave: 5 }, selectedStart);
 			assert.ok(inheritedTrace.source.includes('A @0 t120 l8 o5 c4'),
 				'Selection trace inherits default length and octave when the selection does not set them');
+			const statefulTrace = selectionTraceSource('B cc<b>c& f4q4g8', {
+				tempo: 't80', length: 'l16', octave: 4, volume: ['v15'], gate: 'q8', pan: 'p0'
+			}, selectedStart);
+			assert.ok(statefulTrace.source.includes('B @0 t80 l16 o4 v15 q8 p0 cc<b>c& f4q4g8'),
+				'Selection trace restores volume, gate, and pan before the selected notes');
 			await tracker.start(document, false, trace.source, trace.documentOffsets);
 			await tracker.setPosition(0);
 			assert.ok(tokens().includes('c8'), `Selection trace maps its first note into the selected source range (${errors.join('; ')})`);
@@ -3423,7 +3486,8 @@ finally:
 							testInput.value = 't120 y24,128 o4 c4'; testInput.dispatchEvent(new Event('input'));
 							check(!testPlay.disabled && api.getState().voiceTestMml === testInput.value, 'MML test input is persisted');
 							const selectedMml = 't120 y24,128\\no4 c4';
-							send({ type: 'editorSelection', mml: selectedMml, tempo: 't144', length: 'l8', octave: 5 });
+							send({ type: 'editorSelection', mml: selectedMml, tempo: 't144', length: 'l8', octave: 5,
+								volume: ['v15', ')'], gate: '@q128', pan: 'p0' });
 							check(!selectionPlay.disabled, 'Non-empty editor selection enables the selection button');
 							await new Promise(resolve => setTimeout(resolve, 300));
 							const selectionColor = getComputedStyle(selectionPlay).backgroundColor;
@@ -3435,6 +3499,8 @@ finally:
 							check(messages.at(-1).type === 'voiceTestAction' && messages.at(-1).action === 'playSelection'
 								&& messages.at(-1).mml === selectedMml && messages.at(-1).tempo === 't144'
 								&& messages.at(-1).length === 'l8' && messages.at(-1).octave === 5
+								&& JSON.stringify(messages.at(-1).volume) === JSON.stringify(['v15', ')'])
+								&& messages.at(-1).gate === '@q128' && messages.at(-1).pan === 'p0'
 								&& testInput.value === testInputBeforeSelection,
 							'Selection playback sends MML and inherited state without changing Chip State MML');
 							send({ type: 'voiceTest', id: request.id, playing: false, error: true });

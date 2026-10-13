@@ -65,6 +65,12 @@ enum Command {
         length: Option<String>,
         #[serde(default)]
         octave: Option<u8>,
+        #[serde(default)]
+        volume: Option<Vec<String>>,
+        #[serde(default)]
+        gate: Option<String>,
+        #[serde(default)]
+        pan: Option<String>,
         #[serde(default, rename = "ignoreVoiceSelect")]
         ignore_voice_select: bool,
     },
@@ -225,6 +231,9 @@ impl Session {
                 tempo,
                 length,
                 octave,
+                volume,
+                gate,
+                pan,
                 ignore_voice_select,
             } => {
                 let failed = engine
@@ -234,6 +243,9 @@ impl Session {
                         tempo.as_deref(),
                         length.as_deref(),
                         octave,
+                        volume.as_deref(),
+                        gate.as_deref(),
+                        pan.as_deref(),
                         ignore_voice_select,
                     )
                     .is_err();
@@ -355,6 +367,9 @@ mod tests {
             "tempo": "t100",
             "length": "l8",
             "octave": 5,
+            "volume": ["v15", ")"],
+            "gate": "q8",
+            "pan": "p0",
             "ignoreVoiceSelect": true
         }))
         .unwrap();
@@ -364,9 +379,13 @@ mod tests {
                 tempo: Some(tempo),
                 length: Some(length),
                 octave: Some(5),
+                volume: Some(volume),
+                gate: Some(gate),
+                pan: Some(pan),
                 ignore_voice_select: true,
                 ..
-            } if tempo == "t100" && length == "l8"
+            } if tempo == "t100" && length == "l8" && volume == ["v15", ")"]
+                && gate == "q8" && pan == "p0"
         ));
     }
 

@@ -4,6 +4,10 @@ All notable changes to the "mmlx-lsp" extension will be documented in this file.
 
 ## [Unreleased]
 
+## [0.19.1] - 2026-10-13
+
+- Preserve MML volume and gate settings, including relative volume changes, across FM Voice selection playback; also inherit pan.
+
 ## [0.19.0] - 2026-10-13
 
 - Ignore selected FM voice-number commands during FM Voice audition and inherit the previous MML tempo, default note length, and octave when the selection does not set them.

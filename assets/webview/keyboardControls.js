@@ -226,13 +226,19 @@ export function createKeyboardControls(root, onModeChange = () => {}, onNote = (
 			const nextState = {
 				tempo: typeof state?.tempo === 'string' ? state.tempo : undefined,
 				length: typeof state?.length === 'string' ? state.length : undefined,
-				octave: Number.isInteger(state?.octave) ? state.octave : undefined
+				octave: Number.isInteger(state?.octave) ? state.octave : undefined,
+				volume: Array.isArray(state?.volume) && state.volume.every(command => typeof command === 'string') ? state.volume : undefined,
+				gate: typeof state?.gate === 'string' ? state.gate : undefined,
+				pan: typeof state?.pan === 'string' ? state.pan : undefined
 			};
 			if (testError && testErrorSource === 'selection'
 				&& (nextSelection !== editorSelection || nextTooLong !== selectionTooLong
 					|| nextState.tempo !== editorSelectionState.tempo
 					|| nextState.length !== editorSelectionState.length
-					|| nextState.octave !== editorSelectionState.octave)) { testError = false; }
+					|| nextState.octave !== editorSelectionState.octave
+					|| JSON.stringify(nextState.volume) !== JSON.stringify(editorSelectionState.volume)
+					|| nextState.gate !== editorSelectionState.gate
+					|| nextState.pan !== editorSelectionState.pan)) { testError = false; }
 			editorSelection = nextSelection;
 			editorSelectionState = nextState;
 			selectionTooLong = nextTooLong;

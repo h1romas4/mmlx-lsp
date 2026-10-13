@@ -565,7 +565,8 @@ export class VoiceViewProvider implements WebviewViewProvider {
 	}
 
 	private async voiceTestAction(message: {
-		id: unknown; action: unknown; mml: unknown; tempo?: unknown; length?: unknown; octave?: unknown
+		id: unknown; action: unknown; mml: unknown; tempo?: unknown; length?: unknown; octave?: unknown;
+		volume?: unknown; gate?: unknown; pan?: unknown
 	}): Promise<void> {
 		if (message.id !== this.outputId) { return; }
 		if (message.action === 'stop') {
@@ -579,8 +580,20 @@ export class VoiceViewProvider implements WebviewViewProvider {
 			&& /^l(?:\s*%?\d+\.*(?:\s*[\^~]\s*%?\d+\.*)*)?$/i.test(message.length) ? message.length : undefined;
 		const messageOctave = selection && typeof message.octave === 'number' && Number.isInteger(message.octave)
 			&& message.octave >= 0 && message.octave <= 255 ? message.octave : undefined;
+		const messageVolume = selection && Array.isArray(message.volume) && message.volume.length <= 128
+			&& message.volume.every(command => typeof command === 'string' && /^(?:v[0-9]{1,3}|@v[0-9]{1,3}|[()])$/i.test(command)
+				&& (!/^(?:v|@v)/i.test(command) || Number(command.replace(/^@?v/i, '')) <= 255))
+			? message.volume as string[] : undefined;
+		const messageGate = selection && typeof message.gate === 'string'
+			&& /^(?:q[0-9]{1,3}|@q[0-9]{1,3})$/i.test(message.gate)
+			&& Number(message.gate.replace(/^@?q/i, '')) <= (message.gate.startsWith('@') ? 256 : 255)
+			? message.gate : undefined;
+		const messagePan = selection && typeof message.pan === 'string' && /^p[0-9]{1,3}$/i.test(message.pan)
+			&& Number(message.pan.slice(1)) <= 255
+			? message.pan : undefined;
 		const inheritedState = selection
-			? this.postResetMmlState ?? { tempo: messageTempo, length: messageLength, octave: messageOctave }
+			? this.postResetMmlState ?? { tempo: messageTempo, length: messageLength, octave: messageOctave,
+				volume: messageVolume, gate: messageGate, pan: messagePan }
 			: {};
 		if ((!selection && message.action !== 'play') || !workspace.isTrusted || !this.snapshot.voice || this.snapshot.error
 			|| typeof message.mml !== 'string' || !message.mml.trim() || message.mml.length > 8192
@@ -609,10 +622,10 @@ export class VoiceViewProvider implements WebviewViewProvider {
 		this.voiceTestVoice = JSON.stringify(this.snapshot.voice);
 		if (this.keyboardOutputMode === 'nanodrive8' && this.nanodrive.outputState.connected) {
 			await this.nanodrive.startVoiceTest(message.mml, this.snapshot.voice, inheritedState.tempo, selection,
-				inheritedState.length, inheritedState.octave);
+				inheritedState.length, inheritedState.octave, inheritedState.volume, inheritedState.gate, inheritedState.pan);
 		} else if (this.keyboardOutputMode === 'emulation' && this.emulationConnected) {
 			this.emulation?.startVoiceTest(message.mml, this.snapshot.voice, inheritedState.tempo, selection,
-				inheritedState.length, inheritedState.octave);
+				inheritedState.length, inheritedState.octave, inheritedState.volume, inheritedState.gate, inheritedState.pan);
 		} else { this.setVoiceTesting(false); }
 	}
 

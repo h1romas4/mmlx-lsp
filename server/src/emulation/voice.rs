@@ -35,7 +35,16 @@ impl Voice {
         inherited_tempo: Option<&str>,
         ignore_voice_select: bool,
     ) -> Result<soundlog::mdx::document::MdxDocument, String> {
-        self.test_document_with_state(mml, inherited_tempo, None, None, ignore_voice_select)
+        self.test_document_with_state(
+            mml,
+            inherited_tempo,
+            None,
+            None,
+            None,
+            None,
+            None,
+            ignore_voice_select,
+        )
     }
 
     pub fn test_document_with_state(
@@ -44,6 +53,9 @@ impl Voice {
         inherited_tempo: Option<&str>,
         inherited_length: Option<&str>,
         inherited_octave: Option<u8>,
+        inherited_volume: Option<&[String]>,
+        inherited_gate: Option<&str>,
+        inherited_pan: Option<&str>,
         ignore_voice_select: bool,
     ) -> Result<soundlog::mdx::document::MdxDocument, String> {
         use mmlx::mdx::{MmlCommand, MmlTrack};
@@ -145,6 +157,40 @@ impl Voice {
                 _ => Err("Invalid inherited default length".into()),
             }
         }
+        fn parse_volume(value: &[String]) -> Result<Vec<MmlCommand>, String> {
+            value
+                .iter()
+                .map(|value| {
+                    let parsed = mmlx::mdx::parse(&format!("A {value}"))
+                        .map_err(|error| format!("Invalid inherited volume: {error}"))?;
+                    match parsed
+                        .tracks
+                        .first()
+                        .and_then(|track| track.commands.first())
+                    {
+                        Some(
+                            command @ (MmlCommand::Volume(_)
+                            | MmlCommand::FineVolume(_)
+                            | MmlCommand::VolumeDown
+                            | MmlCommand::VolumeUp),
+                        ) if parsed.tracks[0].commands.len() == 1 => Ok(command.clone()),
+                        _ => Err("Invalid inherited volume".into()),
+                    }
+                })
+                .collect()
+        }
+        fn parse_single_state_command(value: &str) -> Result<MmlCommand, String> {
+            let parsed = mmlx::mdx::parse(&format!("A {value}"))
+                .map_err(|error| format!("Invalid inherited MML state: {error}"))?;
+            match parsed
+                .tracks
+                .first()
+                .and_then(|track| track.commands.first())
+            {
+                Some(command) if parsed.tracks[0].commands.len() == 1 => Ok(command.clone()),
+                _ => Err("Invalid inherited MML state".into()),
+            }
+        }
         let source = self.test_source(mml)?;
         let mut parsed = mmlx::mdx::parse(&source).map_err(|error| error.to_string())?;
         let inherited_tempo = if inherited_tempo.is_some()
@@ -174,7 +220,34 @@ impl Voice {
         } else {
             None
         };
-        if inherited_tempo.is_some() || inherited_length.is_some() || inherited_octave.is_some() {
+        let inherited_volume = inherited_volume.map(parse_volume).transpose()?;
+        let inherited_gate = inherited_gate
+            .map(parse_single_state_command)
+            .transpose()?
+            .map(|command| -> Result<MmlCommand, String> {
+                match command {
+                    command @ (MmlCommand::Gate(_) | MmlCommand::FineGate(_)) => Ok(command),
+                    _ => Err("Invalid inherited gate".into()),
+                }
+            })
+            .transpose()?;
+        let inherited_pan = inherited_pan
+            .map(parse_single_state_command)
+            .transpose()?
+            .map(|command| -> Result<MmlCommand, String> {
+                match command {
+                    command @ MmlCommand::Pan(_) => Ok(command),
+                    _ => Err("Invalid inherited pan".into()),
+                }
+            })
+            .transpose()?;
+        if inherited_tempo.is_some()
+            || inherited_length.is_some()
+            || inherited_octave.is_some()
+            || inherited_volume.is_some()
+            || inherited_gate.is_some()
+            || inherited_pan.is_some()
+        {
             for track in &mut parsed.tracks {
                 if ('A'..='H').contains(&track.channel) {
                     let index = usize::from(matches!(
@@ -189,6 +262,19 @@ impl Voice {
                     ]
                     .into_iter()
                     .flatten()
+                    {
+                        track.commands.insert(index, command);
+                        index += 1;
+                    }
+                    if let Some(commands) = &inherited_volume {
+                        for command in commands {
+                            track.commands.insert(index, command.clone());
+                            index += 1;
+                        }
+                    }
+                    for command in [inherited_gate.clone(), inherited_pan.clone()]
+                        .into_iter()
+                        .flatten()
                     {
                         track.commands.insert(index, command);
                         index += 1;
@@ -509,7 +595,7 @@ mod tests {
         ));
 
         let inherited_state = voice
-            .test_document_with_state("A @1 c4", None, Some("l8"), Some(5), true)
+            .test_document_with_state("A @1 c4", None, Some("l8"), Some(5), None, None, None, true)
             .unwrap();
         let expected_state = voice
             .test_document_with_tempo("A l8 o5 c4", None, true)
@@ -517,7 +603,16 @@ mod tests {
         assert_eq!(inherited_state, expected_state);
 
         let selected_state = voice
-            .test_document_with_state("A @1 l16 o3 c4", None, Some("l8"), Some(5), true)
+            .test_document_with_state(
+                "A @1 l16 o3 c4",
+                None,
+                Some("l8"),
+                Some(5),
+                None,
+                None,
+                None,
+                true,
+            )
             .unwrap();
         let expected_selected_state = voice
             .test_document_with_tempo("A l16 o3 c4", None, true)
@@ -525,11 +620,43 @@ mod tests {
         assert_eq!(selected_state, expected_selected_state);
 
         let shifted_octave = voice
-            .test_document_with_state("A @1 > c4", None, None, Some(5), true)
+            .test_document_with_state("A @1 > c4", None, None, Some(5), None, None, None, true)
             .unwrap();
         let expected_shifted_octave = voice
             .test_document_with_tempo("A o5 > c4", None, true)
             .unwrap();
         assert_eq!(shifted_octave, expected_shifted_octave);
+
+        let example_state = mmlx::mdx::parse("B v15t80o3l16q8 ab>cd eede8ede4 e8e8d4.dd2")
+            .unwrap()
+            .tracks[0]
+            .commands
+            .iter()
+            .filter_map(|command| match command {
+                mmlx::mdx::MmlCommand::Volume(value) => Some(format!("v{value}")),
+                mmlx::mdx::MmlCommand::Gate(value) => Some(format!("q{value}")),
+                _ => None,
+            })
+            .collect::<Vec<_>>();
+        let selected_state = voice
+            .test_document_with_state(
+                "B cc<b>c& c8<b>c4c8c8 f4&f8q4g8re8rq8e4",
+                Some("t80"),
+                Some("l16"),
+                Some(4),
+                Some(&example_state[..1]),
+                Some("q8"),
+                None,
+                true,
+            )
+            .unwrap();
+        let expected_selected = voice
+            .test_document_with_tempo(
+                "B t80 l16 o4 v15 q8 cc<b>c& c8<b>c4c8c8 f4&f8q4g8re8rq8e4",
+                Some("t80"),
+                true,
+            )
+            .unwrap();
+        assert_eq!(selected_state, expected_selected);
     }
 }

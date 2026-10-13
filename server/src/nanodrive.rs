@@ -77,6 +77,12 @@ enum Operation {
         length: Option<String>,
         #[serde(default)]
         octave: Option<u8>,
+        #[serde(default)]
+        volume: Option<Vec<String>>,
+        #[serde(default)]
+        gate: Option<String>,
+        #[serde(default)]
+        pan: Option<String>,
         #[serde(default, rename = "ignoreVoiceSelect")]
         ignore_voice_select: bool,
     },
@@ -207,6 +213,9 @@ impl Bridge {
                 tempo,
                 length,
                 octave,
+                volume,
+                gate,
+                pan,
                 ignore_voice_select,
             } => {
                 self.voice_test = None;
@@ -222,6 +231,9 @@ impl Bridge {
                     tempo.as_deref(),
                     length.as_deref(),
                     octave,
+                    volume.as_deref(),
+                    gate.as_deref(),
+                    pan.as_deref(),
                     ignore_voice_select,
                 )?;
                 let registers = self.session.as_mut().unwrap().1.begin_voice_test();
@@ -662,7 +674,7 @@ mod tests {
     fn voice_test_emits_only_timed_fm_and_preserves_keyboard_session() {
         let mut bridge = Bridge::default();
         audition(&mut bridge, json!({"type":"init", "voice":voice()}));
-        bridge.handle(json!({"operation":"voiceTestInit", "session":7, "mml":"A @1 MH0,200,64,0,5,0,1 p1 t130cdefg y64,2\nB @42 t130gfedc\nC @63 t130ggggg", "voice":voice(), "length":"l8", "octave":4, "ignoreVoiceSelect":true})).unwrap();
+        bridge.handle(json!({"operation":"voiceTestInit", "session":7, "mml":"A @1 MH0,200,64,0,5,0,1 p1 t130cdefg y64,2\nB @42 t130gfedc\nC @63 t130ggggg", "voice":voice(), "length":"l8", "octave":4, "volume":["v15"], "gate":"q8", "pan":"p0", "ignoreVoiceSelect":true})).unwrap();
         let mut lfo = false;
         let mut registers = Vec::new();
         let mut key_on_channels = [false; 8];

@@ -84,7 +84,17 @@ impl Emulation {
         tempo: Option<&str>,
         ignore_voice_select: bool,
     ) -> Result<(), String> {
-        self.start_voice_test_with_state(mml, voice, tempo, None, None, ignore_voice_select)
+        self.start_voice_test_with_state(
+            mml,
+            voice,
+            tempo,
+            None,
+            None,
+            None,
+            None,
+            None,
+            ignore_voice_select,
+        )
     }
 
     pub fn start_voice_test_with_state(
@@ -94,11 +104,22 @@ impl Emulation {
         tempo: Option<&str>,
         length: Option<&str>,
         octave: Option<u8>,
+        volume: Option<&[String]>,
+        gate: Option<&str>,
+        pan: Option<&str>,
         ignore_voice_select: bool,
     ) -> Result<(), String> {
         self.stop_voice_test();
-        let mdx =
-            voice.test_document_with_state(mml, tempo, length, octave, ignore_voice_select)?;
+        let mdx = voice.test_document_with_state(
+            mml,
+            tempo,
+            length,
+            octave,
+            volume,
+            gate,
+            pan,
+            ignore_voice_select,
+        )?;
         self.all_off(None, None);
         self.voice_test = Some(playback::Playback::voice_test(
             mdx,
