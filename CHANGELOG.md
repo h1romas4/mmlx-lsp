@@ -4,6 +4,10 @@ All notable changes to the "mmlx-lsp" extension will be documented in this file.
 
 ## [Unreleased]
 
+## [0.20.1] - 2026-10-14
+
+- Fix MML playback highlighting for loop boundaries that target offsets inside MDX commands.
+
 ## [0.20.0] - 2026-10-14
 
 - Make the FM Voice selection-play icon clearer by showing a highlighted editor range with a play symbol.
