@@ -4,6 +4,8 @@ All notable changes to the "mmlx-lsp" extension will be documented in this file.
 
 ## [Unreleased]
 
+## [0.20.0] - 2026-10-14
+
 - Make the FM Voice selection-play icon clearer by showing a highlighted editor range with a play symbol.
 - Show the total tick duration of a selected MML range in the status bar, using the longest selected track across parallel channels.
 - Parse inherited FM Voice selection-playback state from the Rust MML syntax tree instead of scanning source text in the extension.
