@@ -3650,6 +3650,8 @@ finally:
 								'Editor selection play precedes Chip State MML playback and starts disabled');
 							check(getComputedStyle(selectionPlay, '::before').maskImage.includes('selection-play.svg'),
 								'Selection playback uses a distinct selection-and-play icon');
+							check(getComputedStyle(selectionPlay, '::before').width === '14px',
+								'Selection playback uses its compact SVG without resizing the button icon');
 							check(testPlay.disabled && !document.getElementById('voice-test-stop'), 'One voice test toggle requires a selected voice');
 							const beforeVoice = messages.length;
 							testInput.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true, cancelable: true }));
