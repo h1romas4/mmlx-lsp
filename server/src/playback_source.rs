@@ -24,6 +24,31 @@ pub struct SourceTrace {
     finished: bool,
 }
 
+fn remap_offset(old_map: &[(usize, usize)], new_starts: &[usize], offset: usize) -> Option<usize> {
+    if let Some(index) = old_map.iter().position(|(start, _)| *start == offset) {
+        return new_starts.get(index).copied();
+    }
+    if let Some(mapped) = old_map
+        .iter()
+        .enumerate()
+        .find_map(|(index, (start, length))| {
+            let relative = offset.checked_sub(*start)?;
+            if relative < *length {
+                new_starts.get(index)?.checked_add(relative)
+            } else {
+                None
+            }
+        })
+    {
+        return Some(mapped);
+    }
+    old_map.last().and_then(|(start, length)| {
+        (start.checked_add(*length)? == offset)
+            .then(|| new_starts.get(old_map.len()).copied())
+            .flatten()
+    })
+}
+
 impl SourceTrace {
     pub fn new(source: &str, looped: bool) -> Result<Self, String> {
         let parsed = frontend::parse(source).map_err(|error| error.to_string())?;
@@ -100,16 +125,12 @@ impl SourceTrace {
                     let target = (old_start + length)
                         .checked_add_signed(isize::from(jump.offset) + adjustment)
                         .ok_or("Invalid playback loop target")?;
-                    let target_index = old_map[track]
-                        .iter()
-                        .position(|(start, _)| *start == target)
+                    let target = remap_offset(&old_map[track], &starts, target)
                         .ok_or("Invalid playback loop boundary")?;
                     let command_index = command_indices[index];
                     let command_end = starts[index + 1];
-                    let value = i16::try_from(
-                        starts[target_index] as isize - command_end as isize - adjustment,
-                    )
-                    .map_err(|_| "Playback source loop is too large")?;
+                    let value = i16::try_from(target as isize - command_end as isize - adjustment)
+                        .map_err(|_| "Playback source loop is too large")?;
                     match &mut commands[command_index] {
                         MdxCommand::LoopEnd(jump)
                         | MdxCommand::LoopEscape(jump)
@@ -194,6 +215,15 @@ impl SourceTrace {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn remap_offset_prefers_exact_command_start_over_previous_command_end() {
+        let old_map = [(0, 3), (3, 4), (7, 1)];
+        let new_starts = [0, 6, 10, 11];
+        assert_eq!(remap_offset(&old_map, &new_starts, 3), Some(6));
+        assert_eq!(remap_offset(&old_map, &new_starts, 5), Some(8));
+        assert_eq!(remap_offset(&old_map, &new_starts, 8), Some(11));
+    }
 
     #[test]
     fn nested_repeats_and_escapes_keep_original_note_times() {
@@ -281,5 +311,27 @@ mod tests {
                 .iter()
                 .any(|event| event.channel == 0 && event.start.is_none())
         );
+    }
+
+    #[test]
+    fn legacy_end_of_track_loop_offsets_inside_commands_keep_source_trace_valid() {
+        let source = "A r4 L r8 [c8 d8]2";
+        let mut trace = SourceTrace::new(source, false).unwrap();
+        let mut events = Vec::new();
+        for _ in 0..100 {
+            let (batch, done) = trace.next(10.0).unwrap();
+            events.extend(batch);
+            if done {
+                break;
+            }
+        }
+        let notes = events
+            .iter()
+            .filter_map(|event| {
+                let start = event.start?;
+                Some(&source[start..event.end?])
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(notes, ["r4", "r8", "c8", "d8", "c8", "d8"]);
     }
 }
