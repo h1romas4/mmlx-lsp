@@ -2,36 +2,64 @@ use crate::Error;
 
 pub const PROTOCOL_VERSION: u8 = 1;
 pub const MAX_PAYLOAD_SIZE: usize = 256;
-pub const MAX_RAW_SIZE: usize = 266;
-pub const MAX_COBS_SIZE: usize = 268;
-pub const MAX_ENCODED_SIZE: usize = 270;
+pub const MAX_RAW_SIZE: usize = 267;
+pub const MAX_COBS_SIZE: usize = 269;
+pub const MAX_ENCODED_SIZE: usize = 271;
 
 const CRC: crc::Crc<u16> = crc::Crc::<u16>::new(&crc::CRC_16_IBM_3740);
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[repr(u8)]
+pub enum MessageType {
+    NoResponse = 0,
+    Request = 1,
+    Response = 2,
+}
+
+impl TryFrom<u8> for MessageType {
+    type Error = Error;
+
+    fn try_from(value: u8) -> Result<Self, Self::Error> {
+        match value {
+            0 => Ok(Self::NoResponse),
+            1 => Ok(Self::Request),
+            2 => Ok(Self::Response),
+            _ => Err(Error::InvalidMessageType(value)),
+        }
+    }
+}
 
 /// CRC-16/CCITT-FALSE over the header and payload, excluding the CRC itself.
 pub fn checksum(bytes: &[u8]) -> u16 {
     CRC.checksum(bytes)
 }
 
-/// An owned, validated v1 frame. Unknown opcodes are intentionally retained.
+/// An owned, validated v1 frame. Command IDs are not overloaded for responses.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Frame {
-    opcode: u8,
-    request_id: u16,
+    message_type: MessageType,
+    command_id: u8,
+    transaction_id: u16,
     payload: [u8; MAX_PAYLOAD_SIZE],
     length: usize,
 }
 
 impl Frame {
-    pub fn new(opcode: u8, request_id: u16, payload: &[u8]) -> Result<Self, Error> {
+    pub fn new(
+        message_type: MessageType,
+        command_id: u8,
+        transaction_id: u16,
+        payload: &[u8],
+    ) -> Result<Self, Error> {
         if payload.len() > MAX_PAYLOAD_SIZE {
             return Err(Error::PayloadTooLong {
                 length: payload.len(),
             });
         }
         let mut frame = Self {
-            opcode,
-            request_id,
+            message_type,
+            command_id,
+            transaction_id,
             payload: [0; MAX_PAYLOAD_SIZE],
             length: payload.len(),
         };
@@ -39,15 +67,22 @@ impl Frame {
         Ok(frame)
     }
 
-    pub const fn opcode(&self) -> u8 {
-        self.opcode
+    pub const fn message_type(&self) -> MessageType {
+        self.message_type
     }
-    pub const fn request_id(&self) -> u16 {
-        self.request_id
+
+    pub const fn command_id(&self) -> u8 {
+        self.command_id
     }
+
+    pub const fn transaction_id(&self) -> u16 {
+        self.transaction_id
+    }
+
     pub const fn is_response(&self) -> bool {
-        self.opcode & 0x80 != 0
+        matches!(self.message_type, MessageType::Response)
     }
+
     pub fn payload(&self) -> &[u8] {
         &self.payload[..self.length]
     }
@@ -64,7 +99,7 @@ impl Frame {
         raw[..encoded.len()].copy_from_slice(encoded);
         let length =
             cobs::decode_in_place(&mut raw[..encoded.len()]).map_err(|_| Error::InvalidCobs)?;
-        if !(10..=MAX_RAW_SIZE).contains(&length) {
+        if !(11..=MAX_RAW_SIZE).contains(&length) {
             return Err(Error::InvalidLength);
         }
         if &raw[..2] != b"ND" {
@@ -73,8 +108,9 @@ impl Frame {
         if raw[2] != PROTOCOL_VERSION {
             return Err(Error::UnsupportedVersion(raw[2]));
         }
-        let payload_length = u16::from_le_bytes([raw[6], raw[7]]) as usize;
-        if payload_length > MAX_PAYLOAD_SIZE || length != payload_length + 10 {
+        let message_type = MessageType::try_from(raw[3])?;
+        let payload_length = u16::from_le_bytes([raw[7], raw[8]]) as usize;
+        if payload_length > MAX_PAYLOAD_SIZE || length != payload_length + 11 {
             return Err(Error::InvalidLength);
         }
         let expected = checksum(&raw[..length - 2]);
@@ -83,9 +119,10 @@ impl Frame {
             return Err(Error::CrcMismatch { expected, received });
         }
         Self::new(
-            raw[3],
-            u16::from_le_bytes([raw[4], raw[5]]),
-            &raw[8..length - 2],
+            message_type,
+            raw[4],
+            u16::from_le_bytes([raw[5], raw[6]]),
+            &raw[9..length - 2],
         )
     }
 
@@ -94,18 +131,19 @@ impl Frame {
         let mut raw = [0; MAX_RAW_SIZE];
         raw[..2].copy_from_slice(b"ND");
         raw[2] = PROTOCOL_VERSION;
-        raw[3] = self.opcode;
-        raw[4..6].copy_from_slice(&self.request_id.to_le_bytes());
-        raw[6..8].copy_from_slice(&(self.length as u16).to_le_bytes());
-        raw[8..8 + self.length].copy_from_slice(self.payload());
-        let crc = checksum(&raw[..8 + self.length]);
-        raw[8 + self.length..10 + self.length].copy_from_slice(&crc.to_le_bytes());
+        raw[3] = self.message_type as u8;
+        raw[4] = self.command_id;
+        raw[5..7].copy_from_slice(&self.transaction_id.to_le_bytes());
+        raw[7..9].copy_from_slice(&(self.length as u16).to_le_bytes());
+        raw[9..9 + self.length].copy_from_slice(self.payload());
+        let crc = checksum(&raw[..9 + self.length]);
+        raw[9 + self.length..11 + self.length].copy_from_slice(&crc.to_le_bytes());
         let mut result = EncodedFrame {
             bytes: [0; MAX_ENCODED_SIZE],
             length: 0,
         };
         result.length = cobs::encode(
-            &raw[..10 + self.length],
+            &raw[..11 + self.length],
             &mut result.bytes[1..MAX_ENCODED_SIZE - 1],
         ) + 2;
         result

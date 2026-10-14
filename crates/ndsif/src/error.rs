@@ -8,6 +8,7 @@ pub enum Error {
     InvalidCobs,
     InvalidMagic,
     UnsupportedVersion(u8),
+    InvalidMessageType(u8),
     InvalidLength,
     CrcMismatch { expected: u16, received: u16 },
     BufferTooSmall { required: usize },
@@ -24,11 +25,14 @@ impl fmt::Display for Error {
             Self::PayloadTooLong { length } => {
                 write!(formatter, "payload exceeds 256 bytes: {length}")
             }
-            Self::FrameTooLong => formatter.write_str("encoded frame exceeds 268 bytes"),
+            Self::FrameTooLong => formatter.write_str("COBS body exceeds 269 bytes"),
             Self::InvalidCobs => formatter.write_str("invalid COBS frame"),
             Self::InvalidMagic => formatter.write_str("invalid NDSIF magic"),
             Self::UnsupportedVersion(version) => {
                 write!(formatter, "unsupported protocol version: {version}")
+            }
+            Self::InvalidMessageType(value) => {
+                write!(formatter, "invalid message type: {value:02X}")
             }
             Self::InvalidLength => formatter.write_str("invalid frame or message length"),
             Self::CrcMismatch { expected, received } => write!(
@@ -39,7 +43,9 @@ impl fmt::Display for Error {
                 write!(formatter, "output buffer needs {required} bytes")
             }
             Self::InvalidArgument => formatter.write_str("invalid command argument"),
-            Self::UnexpectedOpcode(opcode) => write!(formatter, "unexpected opcode: {opcode:02X}"),
+            Self::UnexpectedOpcode(opcode) => {
+                write!(formatter, "unexpected command ID: {opcode:02X}")
+            }
             Self::InvalidStatus(status) => {
                 write!(formatter, "unknown response status: {status:02X}")
             }

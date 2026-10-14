@@ -1,7 +1,8 @@
 use mmlx_lsp_server::audition::{Audition, CLOCK, polyphony::Note, voice::Voice};
 use mmlx_lsp_server::playback_source::SourceTrace;
 use ndsif::{
-    Chip, Command, CommandEncoder, Divider, Frame, OkiClock, RegisterWrite, Reply, Response, Status,
+    Command, CommandEncoder, Divider, Frame, OkiClock, RegisterWrite, Reply, Response, Status,
+    WriteId,
 };
 use serde::Deserialize;
 use serde_json::{Value, json};
@@ -283,7 +284,7 @@ impl Bridge {
                 let mut encoder =
                     CommandEncoder::new(request_id, |frame: &[u8]| bytes.extend_from_slice(frame));
                 encoder
-                    .ym2151_burst(&writes)
+                    .register_burst(WriteId::YM2151, 0, 0, &writes)
                     .map_err(|error| error.to_string())?;
                 let count = encoder.count();
                 Ok(Output::Bytes(bytes, Some(count)))
@@ -303,21 +304,31 @@ impl Bridge {
                         };
                         Command::SetOutputVolume {
                             attenuation: *attenuation,
+                            response: true,
                         }
                     }
                     Control::SetClock => Command::SetChipClock {
-                        chip: Chip::Ym2151,
+                        write_id: WriteId::YM2151,
+                        instance: 0,
                         hz: CLOCK,
+                        response: false,
                     },
                     Control::SetPlaybackClock => Command::SetChipClock {
-                        chip: Chip::Ym2151,
+                        write_id: WriteId::YM2151,
+                        instance: 0,
                         hz: 4_000_000,
+                        response: false,
                     },
                     Control::AudioStart => Command::AudioStart {
+                        stream_id: WriteId::OKIM6258.get(),
+                        instance: 0,
                         clock: OkiClock::Mhz8,
                         divider: Divider::Div512,
                     },
-                    Control::AudioStatus => Command::AudioStatus,
+                    Control::AudioStatus => Command::AudioStatus {
+                        stream_id: WriteId::OKIM6258.get(),
+                        instance: 0,
+                    },
                 };
                 let encoded = command
                     .encode(request_id)
@@ -488,8 +499,10 @@ impl Bridge {
                     self.session = Some((session, audition));
                     encoder
                         .push(Command::SetChipClock {
-                            chip: Chip::Ym2151,
+                            write_id: WriteId::YM2151,
+                            instance: 0,
                             hz: CLOCK,
+                            response: false,
                         })
                         .map_err(|error| error.to_string())?;
                     writes
@@ -547,7 +560,7 @@ impl Bridge {
                     .map(|(address, value)| RegisterWrite { address, value })
                     .collect();
                 encoder
-                    .ym2151_burst(&writes)
+                    .register_burst(WriteId::YM2151, 0, 0, &writes)
                     .map_err(|error| error.to_string())?;
                 let count = encoder.count();
                 Ok(Output::Bytes(bytes, Some(count)))
@@ -602,11 +615,16 @@ mod tests {
                 .is_err()
         );
     }
-    use ndsif::{AudioStatus, DeviceInfo, StatusFlags};
+    use ndsif::{AudioStatus, DeviceInfo, MessageType, Request, StatusFlags};
 
     #[test]
     fn audio_status_preserves_fault_reasons_and_diagnostics() {
-        let request = Command::AudioStatus.to_frame(42).unwrap();
+        let request = Command::AudioStatus {
+            stream_id: WriteId::OKIM6258.get(),
+            instance: 0,
+        }
+        .to_frame(42)
+        .unwrap();
         for flags in [1, 0x15, 0x45, 0x105] {
             let response = Response::for_request(
                 &request,
@@ -641,18 +659,28 @@ mod tests {
             (
                 "setPlaybackClock",
                 Command::SetChipClock {
-                    chip: Chip::Ym2151,
+                    write_id: WriteId::YM2151,
+                    instance: 0,
                     hz: 4_000_000,
+                    response: false,
                 },
             ),
             (
                 "audioStart",
                 Command::AudioStart {
+                    stream_id: WriteId::OKIM6258.get(),
+                    instance: 0,
                     clock: OkiClock::Mhz8,
                     divider: Divider::Div512,
                 },
             ),
-            ("audioStatus", Command::AudioStatus),
+            (
+                "audioStatus",
+                Command::AudioStatus {
+                    stream_id: WriteId::OKIM6258.get(),
+                    instance: 0,
+                },
+            ),
         ] {
             let result = Bridge::default()
                 .handle(json!({"operation":"encode","command":name,"requestId":7}))
@@ -697,17 +725,15 @@ mod tests {
                 .filter(|body| !body.is_empty())
             {
                 let frame = Frame::decode(body).unwrap();
-                assert_eq!(frame.opcode(), 0x56);
-                for pair in frame.payload().chunks_exact(2) {
-                    if pair[0] == 0x08 && pair[1] & 0x78 != 0 {
-                        key_on_channels[usize::from(pair[1] & 7)] = true;
+                assert_eq!(frame.command_id(), WriteId::YM2151.get());
+                let writes = register_writes(&frame);
+                for (address, value) in &writes {
+                    if *address == 0x08 && value & 0x78 != 0 {
+                        key_on_channels[usize::from(value & 7)] = true;
                     }
-                    registers.push((pair[0], pair[1]));
+                    registers.push((*address, *value));
                 }
-                lfo |= frame
-                    .payload()
-                    .chunks_exact(2)
-                    .any(|pair| pair == [24, 200]);
+                lfo |= writes.contains(&(24, 200));
             }
             if chunk.ended {
                 ended = true;
@@ -729,15 +755,7 @@ mod tests {
                 &mut bridge,
                 json!({"type":"noteOn", "source":0, "channel":0, "note":60 + channel, "velocity":127}),
             );
-            let writes: Vec<_> = frames
-                .iter()
-                .flat_map(|frame| {
-                    frame
-                        .payload()
-                        .chunks_exact(2)
-                        .map(|pair| (pair[0], pair[1]))
-                })
-                .collect();
+            let writes: Vec<_> = frames.iter().flat_map(register_writes).collect();
             assert!(writes.contains(&(0x38 + channel, 0x50)));
             assert!(writes.contains(&(0x20 + channel, 0x47)));
             assert!(writes.contains(&(0x40 + channel, 2)));
@@ -772,6 +790,16 @@ mod tests {
         frames
     }
 
+    fn register_writes(frame: &Frame) -> Vec<(u8, u8)> {
+        let Request::WriteRegisters { writes, .. } = Request::decode(frame).unwrap() else {
+            panic!("Expected register write request");
+        };
+        writes
+            .iter()
+            .map(|write| (write.address, write.value))
+            .collect()
+    }
+
     #[test]
     fn keyboard_initializes_clock_and_bounded_bursts_and_sends_midi_pitch() {
         let mut bridge = Bridge::default();
@@ -780,23 +808,17 @@ mod tests {
         assert_eq!(
             frames[0],
             Command::SetChipClock {
-                chip: Chip::Ym2151,
-                hz: 4_000_000
+                write_id: WriteId::YM2151,
+                instance: 0,
+                hz: 4_000_000,
+                response: false
             }
             .to_frame(65535)
             .unwrap()
         );
-        assert_eq!(frames[1].request_id(), 0);
-        assert_eq!(frames[2].request_id(), 1);
-        let writes: Vec<_> = frames[1..]
-            .iter()
-            .flat_map(|frame| {
-                frame
-                    .payload()
-                    .chunks_exact(2)
-                    .map(|pair| (pair[0], pair[1]))
-            })
-            .collect();
+        assert_eq!(frames[1].transaction_id(), 0);
+        assert_eq!(frames[2].transaction_id(), 1);
+        let writes: Vec<_> = frames[1..].iter().flat_map(register_writes).collect();
         assert_eq!(
             &writes[..8],
             &(0..8).map(|channel| (0x08, channel)).collect::<Vec<_>>()
@@ -806,30 +828,30 @@ mod tests {
             assert!(writes.contains(&(0x20 + channel, 0xc7)));
         }
         for frame in &frames[1..] {
-            assert_eq!(frame.opcode(), 0x56);
-            assert!(frame.payload().len() <= 256);
+            assert_eq!(frame.command_id(), WriteId::YM2151.get());
+            assert!(matches!(
+                Request::decode(frame).unwrap(),
+                Request::WriteRegisters { .. }
+            ));
         }
         let frames = audition(
             &mut bridge,
             json!({"type":"noteOn", "source":0, "channel":0, "note":69, "velocity":127}),
         );
-        let writes: Vec<_> = frames[0]
-            .payload()
-            .chunks_exact(2)
-            .map(|pair| (pair[0], pair[1]))
-            .collect();
+        let writes = register_writes(&frames[0]);
         assert_eq!(writes[0], (0x08, 0));
         assert_eq!(
             &writes[writes.len() - 3..],
             &[(0x28, 0x48), (0x30, 20), (0x08, 0x78)]
         );
         assert_eq!(
-            audition(
-                &mut bridge,
-                json!({"type":"noteOff", "source":0, "channel":0, "note":69})
-            )[0]
-            .payload(),
-            &[0x08, 0]
+            register_writes(
+                &audition(
+                    &mut bridge,
+                    json!({"type":"noteOff", "source":0, "channel":0, "note":69})
+                )[0]
+            ),
+            [(0x08, 0)]
         );
         assert!(
             audition(
@@ -854,28 +876,27 @@ mod tests {
             json!({"type":"noteOn", "source":1, "channel":2, "note":60, "velocity":80}),
         );
         assert_eq!(
-            audition(&mut bridge, json!({"type":"allOff", "source":0}))[0].payload(),
-            &[0x08, 0]
+            register_writes(&audition(&mut bridge, json!({"type":"allOff", "source":0}))[0]),
+            [(0x08, 0)]
         );
         assert_eq!(
-            audition(
-                &mut bridge,
-                json!({"type":"noteOff", "source":1, "channel":2, "note":60})
-            )[0]
-            .payload(),
-            &[0x08, 1]
+            register_writes(
+                &audition(
+                    &mut bridge,
+                    json!({"type":"noteOff", "source":1, "channel":2, "note":60})
+                )[0]
+            ),
+            [(0x08, 1)]
         );
         let frames = audition(&mut bridge, json!({"type":"stop"}));
         assert_eq!(
-            &frames[0].payload()[..16],
-            &(0..8)
-                .flat_map(|channel| [0x08, channel])
-                .collect::<Vec<_>>()
+            &register_writes(&frames[0])[..8],
+            &(0..8).map(|channel| (0x08, channel)).collect::<Vec<_>>()
         );
         assert_eq!(
-            &frames[0].payload()[16..],
+            &register_writes(&frames[0])[8..],
             &(0x60..=0x7f)
-                .flat_map(|address| [address, 127])
+                .map(|address| (address, 127))
                 .collect::<Vec<_>>()
         );
         assert!(bridge.session.is_none());
@@ -894,8 +915,8 @@ mod tests {
             json!({"type":"pitchBend", "source":1, "channel":3, "value":10240}),
         );
         assert_eq!(frames.len(), 1);
-        assert_eq!(frames[0].opcode(), 0x56);
-        assert_eq!(frames[0].payload(), &[0x28, 0x48, 0x30, 148]);
+        assert_eq!(frames[0].command_id(), WriteId::YM2151.get());
+        assert_eq!(register_writes(&frames[0]), [(0x28, 0x48), (0x30, 148)]);
         audition(
             &mut bridge,
             json!({"type":"noteOff", "source":1, "channel":3, "note":69}),
@@ -904,11 +925,7 @@ mod tests {
             &mut bridge,
             json!({"type":"noteOn", "source":1, "channel":3, "note":69, "velocity":127}),
         );
-        assert!(
-            frames[0]
-                .payload()
-                .ends_with(&[0x29, 0x48, 0x31, 148, 0x08, 0x79])
-        );
+        assert!(register_writes(&frames[0]).ends_with(&[(0x29, 0x48), (0x31, 148), (0x08, 0x79)]));
         assert!(
             audition(
                 &mut bridge,
@@ -925,10 +942,13 @@ mod tests {
             let bytes: Vec<u8> = serde_json::from_value(result["bytes"].clone()).unwrap();
             assert_eq!(
                 bytes,
-                Command::SetOutputVolume { attenuation }
-                    .encode(42)
-                    .unwrap()
-                    .as_bytes()
+                Command::SetOutputVolume {
+                    attenuation,
+                    response: true,
+                }
+                .encode(42)
+                .unwrap()
+                .as_bytes()
             );
         }
         for payload in [vec![], vec![12, 13], vec![97]] {
@@ -945,8 +965,10 @@ mod tests {
             (
                 "setClock",
                 Command::SetChipClock {
-                    chip: Chip::Ym2151,
+                    write_id: WriteId::YM2151,
+                    instance: 0,
                     hz: 4_000_000,
+                    response: false,
                 },
             ),
         ] {
@@ -982,8 +1004,14 @@ mod tests {
             assert_eq!(handle(json!({"operation": "decode", "body": &bytes[1..bytes.len()-1], "request": request.encode().as_bytes()})).unwrap(), expected);
         }
         for frame in [
-            Frame::new(0x82, 41, b"\0\x0bNanoDrive 8\x051.0b8").unwrap(),
-            Frame::new(0x81, 42, b"\0ND8").unwrap(),
+            Frame::new(
+                MessageType::Response,
+                0x02,
+                41,
+                b"\0\x0bNanoDrive 8\x051.0b8",
+            )
+            .unwrap(),
+            Frame::new(MessageType::Request, 0x01, 42, b"\0ND8").unwrap(),
         ] {
             let encoded = frame.encode();
             let bytes = encoded.as_bytes();

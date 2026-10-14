@@ -60,22 +60,43 @@ impl BytePosition {
     }
 }
 
-/// Chips supported by the current v1 firmware. Raw frames can carry other IDs.
+/// VGM sound command ID used by clock configuration and register-write targets.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-#[repr(u8)]
-pub enum Chip {
-    Ym2151 = 5,
-    OkiM6258 = 14,
+pub struct WriteId(u8);
+
+impl WriteId {
+    pub const YM2151: Self = Self(0x54);
+    pub const OKIM6258: Self = Self(0xb7);
+    pub const SN76489: Self = Self(0x50);
+    pub const SN76489_SECOND: Self = Self(0x30);
+
+    pub const fn get(self) -> u8 {
+        self.0
+    }
+
+    pub const fn supports_register_pairs(self) -> bool {
+        matches!(
+            self.0,
+            0x51..=0x5f
+                | 0xa0..=0xa5
+                | 0xaa
+                | 0xab
+                | 0xae
+                | 0xaf
+                | 0xb7
+                | 0xd0
+        )
+    }
 }
 
-impl TryFrom<u8> for Chip {
+impl TryFrom<u8> for WriteId {
     type Error = Error;
-    fn try_from(value: u8) -> Result<Self, Error> {
-        match value {
-            5 => Ok(Self::Ym2151),
-            14 => Ok(Self::OkiM6258),
-            _ => Err(Error::InvalidArgument),
+
+    fn try_from(value: u8) -> Result<Self, Self::Error> {
+        if value < 0x30 {
+            return Err(Error::InvalidArgument);
         }
+        Ok(Self(value))
     }
 }
 
@@ -229,7 +250,7 @@ impl StatusFlags {
     pub const RUNNING: Self = Self(0x001);
     pub const ENDED: Self = Self(0x002);
     pub const FAULT: Self = Self(0x004);
-    pub const USB_BUS_RESET: Self = Self(0x008);
+    pub const TRANSPORT_RESET: Self = Self(0x008);
     pub const RECEIVE_OVERFLOW: Self = Self(0x010);
     pub const RECEIVE_DISCARDED: Self = Self(0x020);
     pub const PCM_UNDERFLOW: Self = Self(0x040);

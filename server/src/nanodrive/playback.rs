@@ -3,7 +3,8 @@ use mmlx_lsp_server::playback_events::{FmKeyEvent, fm_key_events};
 use mmlx_lsp_server::playback_mute::PlaybackMute;
 use ndsif::{
     AudioEvent, AudioSampleConverter, AudioTiming, BytePosition, Command, CommandEncoder, Divider,
-    Frame, MAX_YM2151_EVENT_WRITES, OkiClock, Pan, RegisterWrite, Request, RequestEvent, ZeroPair,
+    Frame, MAX_REGISTER_EVENT_WRITES, OkiClock, Pan, RegisterWrite, Request, RequestEvent, WriteId,
+    ZeroPair,
 };
 use soundlog::chip::{Okim6258Spec, Ym2151Spec, state::Ym2151State};
 use soundlog::mdx::{
@@ -205,17 +206,27 @@ impl MuteFilter {
         if !writes.is_empty() {
             if let Some(position) = position {
                 encoder
-                    .ym2151_event(BytePosition::new(position), &writes)
+                    .register_event(
+                        0xb7,
+                        0,
+                        BytePosition::new(position),
+                        WriteId::YM2151,
+                        0,
+                        0,
+                        &writes,
+                    )
                     .map_err(|error| error.to_string())?;
             } else {
                 encoder
-                    .ym2151_burst(&writes)
+                    .register_burst(WriteId::YM2151, 0, 0, &writes)
                     .map_err(|error| error.to_string())?;
             }
         }
         if let Some(position) = position {
             encoder
                 .push(Command::AudioEvent {
+                    stream_id: 0xb7,
+                    instance: 0,
                     position: BytePosition::new(position),
                     event: AudioEvent::Pan(
                         Pan::try_from(self.mute.pcm_output()).map_err(|error| error.to_string())?,
@@ -238,7 +249,12 @@ impl MuteFilter {
             let frame = Frame::decode(body).map_err(|error| error.to_string())?;
             let request = Request::decode(&frame).map_err(|error| error.to_string())?;
             let filtered = match request {
-                Request::WriteYm2151Burst(writes) => {
+                Request::WriteRegisters {
+                    write_id,
+                    instance,
+                    page,
+                    writes,
+                } if write_id == WriteId::YM2151 => {
                     let writes = writes
                         .iter()
                         .map(|write| {
@@ -248,13 +264,26 @@ impl MuteFilter {
                             )
                         })
                         .collect::<Vec<_>>();
-                    Command::WriteYm2151Burst(&writes)
-                        .encode(frame.request_id())
-                        .map_err(|error| error.to_string())?
+                    Command::WriteRegisters {
+                        write_id,
+                        instance,
+                        page,
+                        writes: &writes,
+                    }
+                    .encode(frame.transaction_id())
+                    .map_err(|error| error.to_string())?
                 }
                 Request::AudioEvent {
+                    stream_id,
+                    instance,
                     position,
-                    event: RequestEvent::Ym2151(writes),
+                    event:
+                        RequestEvent::Registers {
+                            write_id: WriteId::YM2151,
+                            instance: target_instance,
+                            page,
+                            writes,
+                        },
                 } => {
                     let writes = writes
                         .iter()
@@ -266,23 +295,34 @@ impl MuteFilter {
                         })
                         .collect::<Vec<_>>();
                     Command::AudioEvent {
+                        stream_id,
+                        instance,
                         position,
-                        event: AudioEvent::Ym2151(&writes),
+                        event: AudioEvent::Registers {
+                            write_id: WriteId::YM2151,
+                            instance: target_instance,
+                            page,
+                            writes: &writes,
+                        },
                     }
-                    .encode(frame.request_id())
+                    .encode(frame.transaction_id())
                     .map_err(|error| error.to_string())?
                 }
                 Request::AudioEvent {
+                    stream_id,
+                    instance,
                     position,
                     event: RequestEvent::Pan(pan),
                 } => {
                     let pan = Pan::try_from(self.mute.write_pcm_pan(pan as u8))
                         .map_err(|error| error.to_string())?;
                     Command::AudioEvent {
+                        stream_id,
+                        instance,
                         position,
                         event: AudioEvent::Pan(pan),
                     }
-                    .encode(frame.request_id())
+                    .encode(frame.transaction_id())
                     .map_err(|error| error.to_string())?
                 }
                 Request::AudioData { .. } | Request::AudioEvent { .. } => frame.encode(),
@@ -414,7 +454,7 @@ impl FmPlayback {
         let mut encoder =
             CommandEncoder::new(request_id, |frame: &[u8]| bytes.extend_from_slice(frame));
         encoder
-            .ym2151_burst(&writes)
+            .register_burst(WriteId::YM2151, 0, 0, &writes)
             .map_err(|error| error.to_string())?;
         let count = encoder.count();
         writes.clear();
@@ -608,13 +648,15 @@ impl AudioPlayback {
             match event {
                 Event::Pan(pan) => encoder
                     .push(Command::AudioEvent {
+                        stream_id: 0xb7,
+                        instance: 0,
                         position: BytePosition::new(position),
                         event: AudioEvent::Pan(pan),
                     })
                     .map_err(|error| error.to_string())?,
                 Event::Fm(write) => {
                     let mut writes = vec![write];
-                    while writes.len() < MAX_YM2151_EVENT_WRITES
+                    while writes.len() < MAX_REGISTER_EVENT_WRITES
                         && events.front().is_some_and(|(next, event)| {
                             *next == position && matches!(event, Event::Fm(_))
                         })
@@ -624,20 +666,30 @@ impl AudioPlayback {
                         }
                     }
                     encoder
-                        .ym2151_event(BytePosition::new(position), &writes)
+                        .register_event(
+                            0xb7,
+                            0,
+                            BytePosition::new(position),
+                            WriteId::YM2151,
+                            0,
+                            0,
+                            &writes,
+                        )
                         .map_err(|error| error.to_string())?;
                 }
             }
         }
         if !pcm.is_empty() {
             encoder
-                .audio_data(BytePosition::new(start), &pcm)
+                .audio_data(0xb7, 0, BytePosition::new(start), &pcm)
                 .map_err(|error| error.to_string())?;
         }
         if self.ended {
             let silence = self.encoder.clone().pair([0, 0]);
             encoder
                 .push(Command::AudioEvent {
+                    stream_id: 0xb7,
+                    instance: 0,
                     position: BytePosition::new(self.position),
                     event: AudioEvent::End(
                         ZeroPair::try_from(silence).map_err(|error| error.to_string())?,
@@ -670,15 +722,35 @@ mod tests {
         let mut filter = MuteFilter::default();
         let past = [RegisterWrite::new(0x20, 0x47)];
         let future = [RegisterWrite::new(0x20, 0x87)];
-        let past = Command::WriteYm2151Burst(&past).encode(1).unwrap();
-        let future = Command::WriteYm2151Burst(&future).encode(2).unwrap();
+        let past = Command::WriteRegisters {
+            write_id: WriteId::YM2151,
+            instance: 0,
+            page: 0,
+            writes: &past,
+        }
+        .encode(1)
+        .unwrap();
+        let future = Command::WriteRegisters {
+            write_id: WriteId::YM2151,
+            instance: 0,
+            page: 0,
+            writes: &future,
+        }
+        .encode(2)
+        .unwrap();
         filter.prepare(past.as_bytes(), 160).unwrap();
         filter.prepare(future.as_bytes(), 320).unwrap();
         filter.set_muted(1, 3, Some(160)).unwrap();
         let restored = filter.set_muted(0, 4, Some(160)).unwrap();
         let frame_end = restored[1..].iter().position(|byte| *byte == 0).unwrap() + 1;
         let frame = Frame::decode(&restored[1..frame_end]).unwrap();
-        assert_eq!(&frame.payload()[5..], &[0x20, 0x47]);
+        assert!(matches!(
+            Request::decode(&frame).unwrap(),
+            Request::AudioEvent {
+                event: RequestEvent::Registers { writes, .. },
+                ..
+            } if writes.iter().collect::<Vec<_>>() == [RegisterWrite::new(0x20, 0x47)]
+        ));
         for _ in 0..100 {
             filter.prepare(future.as_bytes(), 320).unwrap();
         }
@@ -700,20 +772,46 @@ mod tests {
             ];
             let fm = if audio {
                 Command::AudioEvent {
+                    stream_id: 0xb7,
+                    instance: 0,
                     position: BytePosition::new(160),
-                    event: AudioEvent::Ym2151(&writes),
+                    event: AudioEvent::Registers {
+                        write_id: WriteId::YM2151,
+                        instance: 0,
+                        page: 0,
+                        writes: &writes,
+                    },
                 }
             } else {
-                Command::WriteYm2151Burst(&writes)
+                Command::WriteRegisters {
+                    write_id: WriteId::YM2151,
+                    instance: 0,
+                    page: 0,
+                    writes: &writes,
+                }
             };
             let filtered = filter.filter(fm.encode(9).unwrap().as_bytes()).unwrap();
             let frame = Frame::decode(&filtered[1..filtered.len() - 1]).unwrap();
-            assert_eq!(frame.request_id(), 9);
+            assert_eq!(frame.transaction_id(), 9);
+            let registers = match Request::decode(&frame).unwrap() {
+                Request::WriteRegisters { writes, .. } => writes,
+                Request::AudioEvent {
+                    event: RequestEvent::Registers { writes, .. },
+                    ..
+                } => writes,
+                _ => panic!("Expected FM registers"),
+            };
             assert_eq!(
-                &frame.payload()[if audio { 5 } else { 0 }..],
-                &[0x20, 7, 0x27, 0x47, 0x60, 32]
+                registers.iter().collect::<Vec<_>>(),
+                [
+                    RegisterWrite::new(0x20, 7),
+                    RegisterWrite::new(0x27, 0x47),
+                    RegisterWrite::new(0x60, 32)
+                ]
             );
             let data = Command::AudioData {
+                stream_id: 0xb7,
+                instance: 0,
                 position: BytePosition::new(160),
                 adpcm: &[0x7f, 0x21],
             }
@@ -721,6 +819,8 @@ mod tests {
             .unwrap();
             assert_eq!(filter.filter(data.as_bytes()).unwrap(), data.as_bytes());
             let pan = Command::AudioEvent {
+                stream_id: 0xb7,
+                instance: 0,
                 position: BytePosition::new(160),
                 event: AudioEvent::Pan(Pan::Left),
             }
@@ -728,19 +828,38 @@ mod tests {
             .unwrap();
             let filtered = filter.filter(pan.as_bytes()).unwrap();
             let frame = Frame::decode(&filtered[1..filtered.len() - 1]).unwrap();
-            assert_eq!(frame.payload(), &[160, 0, 0, 0, 2, 3]);
+            assert!(matches!(
+                Request::decode(&frame).unwrap(),
+                Request::AudioEvent {
+                    position,
+                    event: RequestEvent::Pan(Pan::Off),
+                    ..
+                } if position == BytePosition::new(160)
+            ));
             let restored = filter.set_muted(0, 12, audio.then_some(320)).unwrap();
             let frames = restored
                 .split(|byte| *byte == 0)
                 .filter(|body| !body.is_empty())
                 .map(|body| Frame::decode(body).unwrap())
                 .collect::<Vec<_>>();
-            assert_eq!(
-                &frames[0].payload()[if audio { 5 } else { 0 }..],
-                &[0x20, 0xc7]
-            );
+            let restored_registers: Vec<_> = match Request::decode(&frames[0]).unwrap() {
+                Request::WriteRegisters { writes, .. } => writes.iter().collect(),
+                Request::AudioEvent {
+                    event: RequestEvent::Registers { writes, .. },
+                    ..
+                } => writes.iter().collect(),
+                _ => panic!("Expected restored FM registers"),
+            };
+            assert_eq!(restored_registers, [RegisterWrite::new(0x20, 0xc7)]);
             if audio {
-                assert_eq!(frames[1].payload(), &[64, 1, 0, 0, 2, Pan::Left as u8]);
+                assert!(matches!(
+                    Request::decode(&frames[1]).unwrap(),
+                    Request::AudioEvent {
+                        position,
+                        event: RequestEvent::Pan(Pan::Left),
+                        ..
+                    } if position == BytePosition::new(320)
+                ));
             }
         }
     }
@@ -828,28 +947,34 @@ mod tests {
             assert_eq!(frames.len(), chunk.count);
             let mut data_seen = false;
             for frame in frames {
-                let payload = frame.payload();
-                let position = u32::from_le_bytes(payload[..4].try_into().unwrap());
-                match frame.opcode() {
-                    0x58 => {
-                        assert_eq!(position, adpcm.len() as u32);
-                        assert!(payload.len() <= 164);
-                        adpcm.extend_from_slice(&payload[4..]);
+                match Request::decode(&frame).unwrap() {
+                    Request::AudioData {
+                        position,
+                        adpcm: data,
+                        ..
+                    } => {
+                        assert_eq!(position.get(), adpcm.len() as u32);
+                        assert!(data.len() <= 250);
+                        adpcm.extend_from_slice(data);
                         data_seen = true;
                     }
-                    0x59 => {
+                    Request::AudioEvent {
+                        position,
+                        event: RequestEvent::End(pair),
+                        ..
+                    } => {
+                        assert!(data_seen && chunk.ended);
+                        assert_eq!(position.get(), chunk.position);
+                        assert!(matches!(pair, ZeroPair::Byte80 | ZeroPair::Byte08));
+                    }
+                    Request::AudioEvent { position, .. } => {
+                        let position = position.get();
                         assert!(position >= event_position);
                         event_position = position;
-                        if payload[4] == 3 {
-                            assert!(data_seen && chunk.ended);
-                            assert_eq!(position, chunk.position);
-                            assert!(matches!(payload[5], 0x80 | 0x08));
-                        } else {
-                            assert!(!data_seen);
-                            assert!(position >= PREROLL && position < chunk.position);
-                        }
+                        assert!(!data_seen);
+                        assert!(position >= PREROLL && position < chunk.position);
                     }
-                    _ => panic!("Unexpected streaming opcode"),
+                    _ => panic!("Unexpected streaming request"),
                 }
             }
             previous = chunk.position;
@@ -889,9 +1014,13 @@ mod tests {
                     .filter(|body| !body.is_empty())
                 {
                     let frame = ndsif::Frame::decode(body).unwrap();
-                    assert_eq!(frame.opcode(), 0x56);
-                    for pair in frame.payload().chunks_exact(2) {
-                        if pair[0] == 0x08 && pair[1] & 0x78 != 0 {
+                    assert_eq!(frame.command_id(), WriteId::YM2151.get());
+                    let Request::WriteRegisters { writes, .. } = Request::decode(&frame).unwrap()
+                    else {
+                        panic!("Expected register write request");
+                    };
+                    for write in writes.iter() {
+                        if write.address == 0x08 && write.value & 0x78 != 0 {
                             assert!(synchronized);
                             key_on = true;
                         }
@@ -933,7 +1062,10 @@ mod tests {
                 .split(|byte| *byte == 0)
                 .filter(|body| !body.is_empty())
             {
-                assert_eq!(ndsif::Frame::decode(body).unwrap().opcode(), 0x56);
+                assert_eq!(
+                    ndsif::Frame::decode(body).unwrap().command_id(),
+                    WriteId::YM2151.get()
+                );
             }
         }
         assert_eq!(synchronizations, 1);
@@ -957,8 +1089,8 @@ mod tests {
                     .filter(|body| !body.is_empty())
                 {
                     let frame = ndsif::Frame::decode(body).unwrap();
-                    if frame.opcode() == 0x58 {
-                        audio.extend_from_slice(&frame.payload()[4..]);
+                    if let Request::AudioData { adpcm, .. } = Request::decode(&frame).unwrap() {
+                        audio.extend_from_slice(adpcm);
                     }
                 }
                 if chunk.ended {
@@ -1012,8 +1144,8 @@ mod tests {
                 .filter(|body| !body.is_empty())
             {
                 let frame = ndsif::Frame::decode(body).unwrap();
-                if frame.opcode() == 0x58 {
-                    adpcm.extend_from_slice(&frame.payload()[4..]);
+                if let Request::AudioData { adpcm: data, .. } = Request::decode(&frame).unwrap() {
+                    adpcm.extend_from_slice(data);
                 }
             }
             if chunk.ended {

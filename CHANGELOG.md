@@ -4,6 +4,10 @@ All notable changes to the "mmlx-lsp" extension will be documented in this file.
 
 ## [Unreleased]
 
+## [0.21.0] - 2026-10-15
+
+- Replace the NDSIF b-version wire format with the v1 draft protocol and migrate the NanoDrive worker; requires v1-compatible firmware.
+
 ## [0.20.1] - 2026-10-14
 
 - Fix MML playback highlighting for loop boundaries that target offsets inside MDX commands.

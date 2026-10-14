@@ -1,16 +1,24 @@
 use crate::{
-    BytePosition, Chip, Divider, EncodedFrame, Error, Frame, MAX_PAYLOAD_SIZE, OkiClock, Pan,
-    RegisterWrite, ZeroPair,
+    BytePosition, Divider, EncodedFrame, Error, Frame, MAX_PAYLOAD_SIZE, MessageType, OkiClock,
+    Pan, RegisterWrite, WriteId, ZeroPair,
 };
 
-pub const MAX_YM2151_WRITES: usize = MAX_PAYLOAD_SIZE / 2;
-pub const MAX_YM2151_EVENT_WRITES: usize = (MAX_PAYLOAD_SIZE - 5) / 2;
-pub const MAX_AUDIO_DATA_BYTES: usize = MAX_PAYLOAD_SIZE - 4;
+pub const MAX_REGISTER_WRITES: usize = (MAX_PAYLOAD_SIZE - 2) / 2;
+pub const MAX_REGISTER_EVENT_WRITES: usize = (MAX_PAYLOAD_SIZE - 10) / 2;
+pub const MAX_AUDIO_DATA_BYTES: usize = MAX_PAYLOAD_SIZE - 6;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum AudioEvent<'a> {
-    Ym2151(&'a [RegisterWrite]),
-    OkiSettings { clock: OkiClock, divider: Divider },
+    Registers {
+        write_id: WriteId,
+        instance: u8,
+        page: u8,
+        writes: &'a [RegisterWrite],
+    },
+    Clock {
+        clock: OkiClock,
+        divider: Divider,
+    },
     Pan(Pan),
     End(ZeroPair),
 }
@@ -24,69 +32,85 @@ pub enum Command<'a> {
     GetInfo,
     SetOutputVolume {
         attenuation: u8,
+        response: bool,
     },
-    WriteYm2151(&'a [RegisterWrite]),
-    WriteYm2151Burst(&'a [RegisterWrite]),
     SetChipClock {
-        chip: Chip,
+        write_id: WriteId,
+        instance: u8,
         hz: u32,
+        response: bool,
+    },
+    GetCapabilities {
+        offset: u16,
+    },
+    WriteRegisters {
+        write_id: WriteId,
+        instance: u8,
+        page: u8,
+        writes: &'a [RegisterWrite],
     },
     AudioData {
+        stream_id: u8,
+        instance: u8,
         position: BytePosition,
         adpcm: &'a [u8],
     },
     AudioEvent {
+        stream_id: u8,
+        instance: u8,
         position: BytePosition,
         event: AudioEvent<'a>,
     },
     AudioStart {
+        stream_id: u8,
+        instance: u8,
         clock: OkiClock,
         divider: Divider,
     },
-    AudioStatus,
+    AudioStatus {
+        stream_id: u8,
+        instance: u8,
+    },
 }
 
 impl Command<'_> {
-    pub const fn opcode(&self) -> u8 {
+    pub const fn command_id(&self) -> u8 {
         match self {
             Self::Reset => 0x00,
             Self::Ping(_) => 0x01,
             Self::GetInfo => 0x02,
             Self::SetOutputVolume { .. } => 0x03,
-            Self::WriteYm2151(_) => 0x54,
-            Self::WriteYm2151Burst(_) => 0x56,
-            Self::SetChipClock { .. } => 0x57,
-            Self::AudioData { .. } => 0x58,
-            Self::AudioEvent { .. } => 0x59,
-            Self::AudioStart { .. } => 0x5a,
-            Self::AudioStatus => 0x5b,
+            Self::SetChipClock { .. } => 0x04,
+            Self::GetCapabilities { .. } => 0x05,
+            Self::AudioData { .. } => 0x10,
+            Self::AudioEvent { .. } => 0x11,
+            Self::AudioStart { .. } => 0x12,
+            Self::AudioStatus { .. } => 0x13,
+            Self::WriteRegisters { write_id, .. } => write_id.get(),
         }
     }
 
-    /// Whether the protocol defines a reply; does not schedule or wait for it.
     pub const fn expects_response(&self) -> bool {
-        matches!(
-            self,
+        match self {
             Self::Reset
-                | Self::Ping(_)
-                | Self::GetInfo
-                | Self::SetOutputVolume { .. }
-                | Self::WriteYm2151(_)
-                | Self::AudioStatus
-        )
+            | Self::Ping(_)
+            | Self::GetInfo
+            | Self::GetCapabilities { .. }
+            | Self::AudioStatus { .. } => true,
+            Self::SetOutputVolume { response, .. } | Self::SetChipClock { response, .. } => {
+                *response
+            }
+            Self::WriteRegisters { .. }
+            | Self::AudioData { .. }
+            | Self::AudioEvent { .. }
+            | Self::AudioStart { .. } => false,
+        }
     }
 
-    pub fn to_frame(&self, request_id: u16) -> Result<Frame, Error> {
+    pub fn to_frame(&self, transaction_id: u16) -> Result<Frame, Error> {
         let mut payload = [0; MAX_PAYLOAD_SIZE];
         let length = match *self {
-            Self::Reset | Self::GetInfo | Self::AudioStatus => 0,
-            Self::SetOutputVolume { attenuation } => {
-                if attenuation > 96 {
-                    return Err(Error::InvalidArgument);
-                }
-                payload[0] = attenuation;
-                1
-            }
+            Self::Reset | Self::GetInfo => 0,
             Self::Ping(bytes) => {
                 if bytes.len() > 32 {
                     return Err(Error::InvalidArgument);
@@ -94,69 +118,139 @@ impl Command<'_> {
                 payload[..bytes.len()].copy_from_slice(bytes);
                 bytes.len()
             }
-            Self::WriteYm2151(writes) | Self::WriteYm2151Burst(writes) => {
-                encode_writes(writes, &mut payload, MAX_YM2151_WRITES)?
+            Self::SetOutputVolume { attenuation, .. } => {
+                if attenuation > 96 {
+                    return Err(Error::InvalidArgument);
+                }
+                payload[0] = attenuation;
+                1
             }
-            Self::SetChipClock { chip, hz } => {
+            Self::SetChipClock {
+                write_id,
+                instance,
+                hz,
+                ..
+            } => {
                 if hz == 0 {
                     return Err(Error::InvalidArgument);
                 }
-                if chip == Chip::OkiM6258 {
-                    OkiClock::try_from(hz)?;
-                }
-                payload[0] = chip as u8;
-                payload[1..5].copy_from_slice(&hz.to_le_bytes());
-                5
+                payload[0] = write_id.get();
+                payload[1] = instance;
+                payload[2..6].copy_from_slice(&hz.to_le_bytes());
+                6
             }
-            Self::AudioData { position, adpcm } => {
+            Self::GetCapabilities { offset } => {
+                payload[..2].copy_from_slice(&offset.to_le_bytes());
+                2
+            }
+            Self::WriteRegisters {
+                write_id,
+                instance,
+                page,
+                writes,
+            } => {
+                validate_register_id(write_id)?;
+                payload[0] = instance;
+                payload[1] = page;
+                2 + encode_writes(writes, &mut payload[2..], MAX_REGISTER_WRITES)?
+            }
+            Self::AudioData {
+                stream_id,
+                instance,
+                position,
+                adpcm,
+            } => {
                 if !(1..=MAX_AUDIO_DATA_BYTES).contains(&adpcm.len()) {
                     return Err(Error::InvalidArgument);
                 }
                 position.checked_advance(adpcm.len())?;
-                payload[..4].copy_from_slice(&position.get().to_le_bytes());
-                payload[4..4 + adpcm.len()].copy_from_slice(adpcm);
-                4 + adpcm.len()
+                payload[0] = stream_id;
+                payload[1] = instance;
+                payload[2..6].copy_from_slice(&position.get().to_le_bytes());
+                payload[6..6 + adpcm.len()].copy_from_slice(adpcm);
+                6 + adpcm.len()
             }
-            Self::AudioEvent { position, event } => {
-                payload[..4].copy_from_slice(&position.get().to_le_bytes());
+            Self::AudioEvent {
+                stream_id,
+                instance,
+                position,
+                event,
+            } => {
+                payload[0] = stream_id;
+                payload[1] = instance;
+                payload[2..6].copy_from_slice(&position.get().to_le_bytes());
                 match event {
-                    AudioEvent::Ym2151(writes) => {
-                        payload[4] = 0;
-                        5 + encode_writes(writes, &mut payload[5..], MAX_YM2151_EVENT_WRITES)?
+                    AudioEvent::Registers {
+                        write_id,
+                        instance: target_instance,
+                        page,
+                        writes,
+                    } => {
+                        validate_register_id(write_id)?;
+                        payload[6] = 0;
+                        payload[7] = write_id.get();
+                        payload[8] = target_instance;
+                        payload[9] = page;
+                        10 + encode_writes(writes, &mut payload[10..], MAX_REGISTER_EVENT_WRITES)?
                     }
-                    AudioEvent::OkiSettings { clock, divider } => {
-                        payload[4] = 1;
-                        payload[5..9].copy_from_slice(&(clock as u32).to_le_bytes());
-                        payload[9..11].copy_from_slice(&(divider as u16).to_le_bytes());
-                        11
+                    AudioEvent::Clock { clock, divider } => {
+                        payload[6] = 1;
+                        payload[7..11].copy_from_slice(&(clock as u32).to_le_bytes());
+                        payload[11..13].copy_from_slice(&(divider as u16).to_le_bytes());
+                        13
                     }
                     AudioEvent::Pan(pan) => {
-                        payload[4] = 2;
-                        payload[5] = pan as u8;
-                        6
+                        payload[6] = 2;
+                        payload[7] = pan as u8;
+                        8
                     }
                     AudioEvent::End(pair) => {
-                        payload[4] = 3;
-                        payload[5] = pair as u8;
-                        6
+                        payload[6] = 3;
+                        payload[7] = pair as u8;
+                        8
                     }
                 }
             }
-            Self::AudioStart { clock, divider } => {
-                payload[..4].copy_from_slice(&(clock as u32).to_le_bytes());
-                payload[4..6].copy_from_slice(&(divider as u16).to_le_bytes());
-                6
+            Self::AudioStart {
+                stream_id,
+                instance,
+                clock,
+                divider,
+            } => {
+                payload[0] = stream_id;
+                payload[1] = instance;
+                payload[2..6].copy_from_slice(&(clock as u32).to_le_bytes());
+                payload[6..8].copy_from_slice(&(divider as u16).to_le_bytes());
+                8
+            }
+            Self::AudioStatus {
+                stream_id,
+                instance,
+            } => {
+                payload[0] = stream_id;
+                payload[1] = instance;
+                2
             }
         };
-        Frame::new(self.opcode(), request_id, &payload[..length])
+        let message_type = match self {
+            Self::WriteRegisters { .. } => MessageType::NoResponse,
+            _ if self.expects_response() => MessageType::Request,
+            _ => MessageType::NoResponse,
+        };
+        Frame::new(
+            message_type,
+            self.command_id(),
+            transaction_id,
+            &payload[..length],
+        )
     }
 
-    pub fn encode(&self, request_id: u16) -> Result<EncodedFrame, Error> {
-        Ok(self.to_frame(request_id)?.encode())
+    pub fn encode(&self, transaction_id: u16) -> Result<EncodedFrame, Error> {
+        Ok(self.to_frame(transaction_id)?.encode())
     }
 
-    pub fn encode_into(&self, request_id: u16, output: &mut [u8]) -> Result<usize, Error> {
-        self.to_frame(request_id)?.encode_into(output)
+    pub fn encode_into(&self, transaction_id: u16, output: &mut [u8]) -> Result<usize, Error> {
+        self.to_frame(transaction_id)?.encode_into(output)
     }
 }
 
@@ -175,17 +269,23 @@ fn encode_writes(
     Ok(writes.len() * 2)
 }
 
-/// Received AUDIO_EVENT, with register pairs borrowed rather than copied.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum RequestEvent<'a> {
-    Ym2151(crate::types::RegisterWrites<'a>),
-    OkiSettings { clock: OkiClock, divider: Divider },
+    Registers {
+        write_id: WriteId,
+        instance: u8,
+        page: u8,
+        writes: crate::types::RegisterWrites<'a>,
+    },
+    Clock {
+        clock: OkiClock,
+        divider: Divider,
+    },
     Pan(Pan),
     End(ZeroPair),
 }
 
-/// Typed view of a request. Unknown opcodes retain their entire payload.
-/// Known commands validate local arguments only, not the device's playback state.
+/// Typed request view. Unknown commands preserve their command ID and payload.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[non_exhaustive]
 pub enum Request<'a> {
@@ -195,53 +295,108 @@ pub enum Request<'a> {
     SetOutputVolume {
         attenuation: u8,
     },
-    WriteYm2151(crate::types::RegisterWrites<'a>),
-    WriteYm2151Burst(crate::types::RegisterWrites<'a>),
     SetChipClock {
-        chip: Chip,
+        write_id: WriteId,
+        instance: u8,
         hz: u32,
     },
+    GetCapabilities {
+        offset: u16,
+    },
+    WriteRegisters {
+        write_id: WriteId,
+        instance: u8,
+        page: u8,
+        writes: crate::types::RegisterWrites<'a>,
+    },
     AudioData {
+        stream_id: u8,
+        instance: u8,
         position: BytePosition,
         adpcm: &'a [u8],
     },
     AudioEvent {
+        stream_id: u8,
+        instance: u8,
         position: BytePosition,
         event: RequestEvent<'a>,
     },
     AudioStart {
+        stream_id: u8,
+        instance: u8,
         clock: OkiClock,
         divider: Divider,
     },
-    AudioStatus,
+    AudioStatus {
+        stream_id: u8,
+        instance: u8,
+    },
     Unknown {
-        opcode: u8,
+        message_type: MessageType,
+        command_id: u8,
+        transaction_id: u16,
         payload: &'a [u8],
     },
 }
 
 impl<'a> Request<'a> {
     pub fn decode(frame: &'a Frame) -> Result<Self, Error> {
-        if frame.is_response() {
-            return Err(Error::UnexpectedOpcode(frame.opcode()));
-        }
+        let message_type = frame.message_type();
+        let command_id = frame.command_id();
+        let transaction_id = frame.transaction_id();
         let bytes = frame.payload();
-        match frame.opcode() {
-            0x00 | 0x02 | 0x5b => {
-                require_length(bytes, 0)?;
-                Ok(match frame.opcode() {
-                    0 => Self::Reset,
-                    2 => Self::GetInfo,
-                    _ => Self::AudioStatus,
-                })
+        if message_type == MessageType::Response {
+            return Err(Error::UnexpectedOpcode(command_id));
+        }
+        if message_type == MessageType::NoResponse && (0x30..=0xff).contains(&command_id) {
+            let write_id = WriteId::try_from(command_id)?;
+            if !write_id.supports_register_pairs() {
+                return Ok(Self::Unknown {
+                    message_type,
+                    command_id,
+                    transaction_id,
+                    payload: bytes,
+                });
             }
-            0x01 => {
+            if bytes.len() < 4 || bytes.len() % 2 != 0 {
+                return Err(Error::InvalidLength);
+            }
+            let writes = crate::types::RegisterWrites::decode(&bytes[2..], MAX_REGISTER_WRITES)?;
+            return Ok(Self::WriteRegisters {
+                write_id,
+                instance: bytes[0],
+                page: bytes[1],
+                writes,
+            });
+        }
+        if message_type == MessageType::Request && command_id >= 0x30 {
+            return Err(Error::InvalidMessageType(message_type as u8));
+        }
+        let expected_type = match command_id {
+            0x00..=0x02 | 0x05 | 0x13 => Some(MessageType::Request),
+            0x03..=0x04 => None,
+            0x10..=0x12 => Some(MessageType::NoResponse),
+            _ => None,
+        };
+        if expected_type.is_some_and(|expected| message_type != expected) {
+            return Err(Error::InvalidMessageType(message_type as u8));
+        }
+        match (message_type, command_id) {
+            (MessageType::Request, 0x00) => {
+                require_length(bytes, 0)?;
+                Ok(Self::Reset)
+            }
+            (MessageType::Request, 0x01) => {
                 if bytes.len() > 32 {
-                    return Err(Error::InvalidArgument);
+                    return Err(Error::InvalidLength);
                 }
                 Ok(Self::Ping(bytes))
             }
-            0x03 => {
+            (MessageType::Request, 0x02) => {
+                require_length(bytes, 0)?;
+                Ok(Self::GetInfo)
+            }
+            (MessageType::NoResponse | MessageType::Request, 0x03) => {
                 require_length(bytes, 1)?;
                 if bytes[0] > 96 {
                     return Err(Error::InvalidArgument);
@@ -250,49 +405,72 @@ impl<'a> Request<'a> {
                     attenuation: bytes[0],
                 })
             }
-            0x54 | 0x56 => {
-                let writes = crate::types::RegisterWrites::decode(bytes, MAX_YM2151_WRITES)?;
-                Ok(if frame.opcode() == 0x54 {
-                    Self::WriteYm2151(writes)
-                } else {
-                    Self::WriteYm2151Burst(writes)
-                })
-            }
-            0x57 => {
-                require_length(bytes, 5)?;
-                let chip = Chip::try_from(bytes[0])?;
-                let hz = read_u32(&bytes[1..]);
+            (MessageType::NoResponse | MessageType::Request, 0x04) => {
+                require_length(bytes, 6)?;
+                let write_id = WriteId::try_from(bytes[0])?;
+                let hz = read_u32(&bytes[2..]);
                 if hz == 0 {
                     return Err(Error::InvalidArgument);
                 }
-                if chip == Chip::OkiM6258 {
-                    OkiClock::try_from(hz)?;
-                }
-                Ok(Self::SetChipClock { chip, hz })
+                Ok(Self::SetChipClock {
+                    write_id,
+                    instance: bytes[1],
+                    hz,
+                })
             }
-            0x58 => {
-                if !(5..=MAX_PAYLOAD_SIZE).contains(&bytes.len()) {
-                    return Err(Error::InvalidArgument);
+            (MessageType::Request, 0x05) => {
+                require_length(bytes, 2)?;
+                Ok(Self::GetCapabilities {
+                    offset: u16::from_le_bytes([bytes[0], bytes[1]]),
+                })
+            }
+            (MessageType::NoResponse, 0x10) => {
+                if !(7..=MAX_PAYLOAD_SIZE).contains(&bytes.len()) {
+                    return Err(Error::InvalidLength);
                 }
-                let position = BytePosition::new(read_u32(bytes));
-                let adpcm = &bytes[4..];
+                let position = BytePosition::new(read_u32(&bytes[2..]));
+                let adpcm = &bytes[6..];
                 position.checked_advance(adpcm.len())?;
-                Ok(Self::AudioData { position, adpcm })
+                Ok(Self::AudioData {
+                    stream_id: bytes[0],
+                    instance: bytes[1],
+                    position,
+                    adpcm,
+                })
             }
-            0x59 => {
-                if bytes.len() < 6 {
-                    return Err(Error::InvalidArgument);
+            (MessageType::NoResponse, 0x11) => {
+                if bytes.len() < 8 {
+                    return Err(Error::InvalidLength);
                 }
-                let position = BytePosition::new(read_u32(bytes));
-                let data = &bytes[5..];
-                let event = match bytes[4] {
-                    0 => RequestEvent::Ym2151(crate::types::RegisterWrites::decode(
-                        data,
-                        MAX_YM2151_EVENT_WRITES,
-                    )?),
+                let stream_id = bytes[0];
+                let instance = bytes[1];
+                let position = BytePosition::new(read_u32(&bytes[2..]));
+                let data = &bytes[7..];
+                let event = match bytes[6] {
+                    0 => {
+                        if data.len() < 5 || data.len() % 2 == 0 {
+                            return Err(Error::InvalidLength);
+                        }
+                        RequestEvent::Registers {
+                            write_id: {
+                                let write_id = WriteId::try_from(data[0])?;
+                                validate_register_id(write_id)?;
+                                write_id
+                            },
+                            instance: data[1],
+                            page: data[2],
+                            writes: crate::types::RegisterWrites::decode(
+                                &data[3..],
+                                MAX_REGISTER_EVENT_WRITES,
+                            )?,
+                        }
+                    }
                     1 => {
-                        let (clock, divider) = decode_oki(data)?;
-                        RequestEvent::OkiSettings { clock, divider }
+                        require_length(data, 6)?;
+                        RequestEvent::Clock {
+                            clock: OkiClock::try_from(read_u32(data))?,
+                            divider: Divider::try_from(u16::from_le_bytes([data[4], data[5]]))?,
+                        }
                     }
                     2 => {
                         require_length(data, 1)?;
@@ -304,14 +482,33 @@ impl<'a> Request<'a> {
                     }
                     _ => return Err(Error::InvalidArgument),
                 };
-                Ok(Self::AudioEvent { position, event })
+                Ok(Self::AudioEvent {
+                    stream_id,
+                    instance,
+                    position,
+                    event,
+                })
             }
-            0x5a => {
-                let (clock, divider) = decode_oki(bytes)?;
-                Ok(Self::AudioStart { clock, divider })
+            (MessageType::NoResponse, 0x12) => {
+                require_length(bytes, 8)?;
+                Ok(Self::AudioStart {
+                    stream_id: bytes[0],
+                    instance: bytes[1],
+                    clock: OkiClock::try_from(read_u32(&bytes[2..]))?,
+                    divider: Divider::try_from(u16::from_le_bytes([bytes[6], bytes[7]]))?,
+                })
             }
-            opcode => Ok(Self::Unknown {
-                opcode,
+            (MessageType::Request, 0x13) => {
+                require_length(bytes, 2)?;
+                Ok(Self::AudioStatus {
+                    stream_id: bytes[0],
+                    instance: bytes[1],
+                })
+            }
+            _ => Ok(Self::Unknown {
+                message_type,
+                command_id,
+                transaction_id,
                 payload: bytes,
             }),
         }
@@ -320,7 +517,7 @@ impl<'a> Request<'a> {
 
 fn require_length(bytes: &[u8], length: usize) -> Result<(), Error> {
     if bytes.len() != length {
-        return Err(Error::InvalidArgument);
+        return Err(Error::InvalidLength);
     }
     Ok(())
 }
@@ -329,10 +526,10 @@ fn read_u32(bytes: &[u8]) -> u32 {
     u32::from_le_bytes([bytes[0], bytes[1], bytes[2], bytes[3]])
 }
 
-fn decode_oki(bytes: &[u8]) -> Result<(OkiClock, Divider), Error> {
-    require_length(bytes, 6)?;
-    Ok((
-        OkiClock::try_from(read_u32(bytes))?,
-        Divider::try_from(u16::from_le_bytes([bytes[4], bytes[5]]))?,
-    ))
+fn validate_register_id(write_id: WriteId) -> Result<(), Error> {
+    if write_id.supports_register_pairs() {
+        Ok(())
+    } else {
+        Err(Error::InvalidArgument)
+    }
 }

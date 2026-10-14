@@ -1,4 +1,4 @@
-use crate::{EncodedFrame, Error, Frame, MAX_PAYLOAD_SIZE, StatusFlags};
+use crate::{EncodedFrame, Error, Frame, MAX_PAYLOAD_SIZE, MessageType, StatusFlags};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Status {
@@ -10,6 +10,57 @@ pub enum Status {
 pub struct DeviceInfo<'a> {
     pub model: &'a str,
     pub firmware: &'a str,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct CapabilityEntry {
+    pub write_id: u8,
+    pub instance: u8,
+    pub page: u8,
+    pub features: u8,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Capabilities<'a> {
+    pub max_payload: u16,
+    pub data_capacity: u32,
+    pub event_capacity: u16,
+    pub control_features: u16,
+    pub next_offset: u16,
+    entries: &'a [u8],
+}
+
+impl<'a> Capabilities<'a> {
+    pub fn new(
+        max_payload: u16,
+        data_capacity: u32,
+        event_capacity: u16,
+        control_features: u16,
+        next_offset: u16,
+        entries: &'a [u8],
+    ) -> Result<Self, Error> {
+        if max_payload as usize > MAX_PAYLOAD_SIZE || entries.len() % 4 != 0 || entries.len() > 240
+        {
+            return Err(Error::InvalidArgument);
+        }
+        Ok(Self {
+            max_payload,
+            data_capacity,
+            event_capacity,
+            control_features,
+            next_offset,
+            entries,
+        })
+    }
+
+    pub fn entries(self) -> impl ExactSizeIterator<Item = CapabilityEntry> + 'a {
+        self.entries.chunks_exact(4).map(|entry| CapabilityEntry {
+            write_id: entry[0],
+            instance: entry[1],
+            page: entry[2],
+            features: entry[3],
+        })
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -69,28 +120,26 @@ pub enum Reply<'a> {
     Rejected,
     Ping(&'a [u8]),
     Info(DeviceInfo<'a>),
+    Capabilities(Capabilities<'a>),
     AudioStatus(AudioStatus),
     Unknown(&'a [u8]),
 }
 
 /// Typed response. Parsed data borrows the frame payload; outgoing data borrows caller data.
-/// A completion is not hardware readback.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Response<'a> {
-    pub opcode: u8,
-    pub request_id: u16,
+    pub command_id: u8,
+    pub transaction_id: u16,
     pub status: Status,
     pub reply: Reply<'a>,
 }
 
 impl<'a> Response<'a> {
-    /// Builds a reply using the request's opcode and ID, checking the reply shape and PING echo.
-    /// Response frames and requests without a defined reply are rejected.
-    /// The caller still decides command acceptance and performs the device operation.
+    /// Builds a reply with the request's command ID and transaction ID.
     pub fn for_request(request: &Frame, reply: Reply<'a>) -> Result<Self, Error> {
         let response = Self {
-            opcode: request.opcode() | 0x80,
-            request_id: request.request_id(),
+            command_id: request.command_id(),
+            transaction_id: request.transaction_id(),
             status: if matches!(reply, Reply::Rejected) {
                 Status::Rejected
             } else {
@@ -103,69 +152,97 @@ impl<'a> Response<'a> {
         Ok(response)
     }
 
-    /// Encodes a locally valid response, rejecting inconsistent status/opcode/reply combinations.
+    /// Encodes a locally valid response. A completion is not hardware readback.
     pub fn to_frame(&self) -> Result<Frame, Error> {
         if (self.status == Status::Rejected) != matches!(self.reply, Reply::Rejected) {
             return Err(Error::InvalidArgument);
         }
         let mut payload = [0; MAX_PAYLOAD_SIZE];
-        payload[0] = match self.status {
-            Status::Complete => 0,
-            Status::Rejected => 1,
+        let length = if self.status == Status::Rejected {
+            payload[0] = 1;
+            1
+        } else {
+            payload[0] = 0;
+            match self.reply {
+                Reply::Complete | Reply::Rejected => 1,
+                Reply::Ping(bytes) | Reply::Unknown(bytes) => {
+                    if bytes.len() > MAX_PAYLOAD_SIZE - 1 {
+                        return Err(Error::PayloadTooLong {
+                            length: bytes.len().saturating_add(1),
+                        });
+                    }
+                    payload[1..1 + bytes.len()].copy_from_slice(bytes);
+                    1 + bytes.len()
+                }
+                Reply::Info(info) => {
+                    if info.model.len() > u8::MAX as usize
+                        || info.firmware.len() > u8::MAX as usize
+                        || info.model.contains('\0')
+                        || info.firmware.contains('\0')
+                    {
+                        return Err(Error::InvalidArgument);
+                    }
+                    let length = 3 + info.model.len() + info.firmware.len();
+                    if length > MAX_PAYLOAD_SIZE {
+                        return Err(Error::PayloadTooLong { length });
+                    }
+                    payload[1] = info.model.len() as u8;
+                    let model_end = 2 + info.model.len();
+                    payload[2..model_end].copy_from_slice(info.model.as_bytes());
+                    payload[model_end] = info.firmware.len() as u8;
+                    payload[model_end + 1..length].copy_from_slice(info.firmware.as_bytes());
+                    length
+                }
+                Reply::Capabilities(capabilities) => {
+                    let count = capabilities.entries.len() / 4;
+                    if capabilities.entries.len() % 4 != 0
+                        || count > 60
+                        || capabilities.max_payload as usize > MAX_PAYLOAD_SIZE
+                    {
+                        return Err(Error::InvalidArgument);
+                    }
+                    payload[1..3].copy_from_slice(&capabilities.max_payload.to_le_bytes());
+                    payload[3..7].copy_from_slice(&capabilities.data_capacity.to_le_bytes());
+                    payload[7..9].copy_from_slice(&capabilities.event_capacity.to_le_bytes());
+                    payload[9..11].copy_from_slice(&capabilities.control_features.to_le_bytes());
+                    payload[11..13].copy_from_slice(&capabilities.next_offset.to_le_bytes());
+                    payload[13] = count as u8;
+                    payload[14..14 + capabilities.entries.len()]
+                        .copy_from_slice(capabilities.entries);
+                    14 + capabilities.entries.len()
+                }
+                Reply::AudioStatus(status) => {
+                    let values = [
+                        status.accepted,
+                        status.played,
+                        status.pending,
+                        status.underflows,
+                        status.overflows,
+                        status.rejected,
+                        status.max_pending,
+                        status.flags.bits(),
+                        status.late_events,
+                        status.max_event_lag,
+                    ];
+                    for (bytes, value) in payload[1..41].chunks_exact_mut(4).zip(values) {
+                        bytes.copy_from_slice(&value.to_le_bytes());
+                    }
+                    41
+                }
+            }
         };
-        let length = match self.reply {
-            Reply::Complete | Reply::Rejected => 1,
-            Reply::Ping(bytes) | Reply::Unknown(bytes) => {
-                if bytes.len() > MAX_PAYLOAD_SIZE - 1 {
-                    return Err(Error::PayloadTooLong {
-                        length: bytes.len().saturating_add(1),
-                    });
-                }
-                payload[1..1 + bytes.len()].copy_from_slice(bytes);
-                1 + bytes.len()
-            }
-            Reply::Info(info) => {
-                if info.model.len() > u8::MAX as usize || info.firmware.len() > 63 {
-                    return Err(Error::InvalidArgument);
-                }
-                let length = 3 + info.model.len() + info.firmware.len();
-                if length > MAX_PAYLOAD_SIZE {
-                    return Err(Error::PayloadTooLong { length });
-                }
-                payload[1] = info.model.len() as u8;
-                let model_end = 2 + info.model.len();
-                payload[2..model_end].copy_from_slice(info.model.as_bytes());
-                payload[model_end] = info.firmware.len() as u8;
-                payload[model_end + 1..length].copy_from_slice(info.firmware.as_bytes());
-                length
-            }
-            Reply::AudioStatus(status) => {
-                let values = [
-                    status.accepted,
-                    status.played,
-                    status.pending,
-                    status.underflows,
-                    status.overflows,
-                    status.rejected,
-                    status.max_pending,
-                    status.flags.bits(),
-                    status.late_events,
-                    status.max_event_lag,
-                ];
-                for (bytes, value) in payload[1..41].chunks_exact_mut(4).zip(values) {
-                    bytes.copy_from_slice(&value.to_le_bytes());
-                }
-                41
-            }
-        };
-        let frame = Frame::new(self.opcode, self.request_id, &payload[..length])?;
+        let frame = Frame::new(
+            MessageType::Response,
+            self.command_id,
+            self.transaction_id,
+            &payload[..length],
+        )?;
         if Response::decode(&frame)? != *self {
             return Err(Error::InvalidArgument);
         }
         Ok(frame)
     }
 
-    /// Encode with both leading and trailing zero delimiters.
     pub fn encode(&self) -> Result<EncodedFrame, Error> {
         Ok(self.to_frame()?.encode())
     }
@@ -175,8 +252,8 @@ impl<'a> Response<'a> {
     }
 
     pub fn decode(frame: &'a Frame) -> Result<Self, Error> {
-        if !frame.is_response() {
-            return Err(Error::UnexpectedOpcode(frame.opcode()));
+        if frame.message_type() != MessageType::Response {
+            return Err(Error::UnexpectedOpcode(frame.command_id()));
         }
         let (&status, body) = frame.payload().split_first().ok_or(Error::InvalidLength)?;
         let status = match status {
@@ -190,38 +267,37 @@ impl<'a> Response<'a> {
             }
             Reply::Rejected
         } else {
-            match frame.opcode() {
-                0x80 | 0x83 | 0xd4 => {
+            match frame.command_id() {
+                0x00 | 0x03 | 0x04 => {
                     if !body.is_empty() {
                         return Err(Error::InvalidLength);
                     }
                     Reply::Complete
                 }
-                0x81 => {
+                0x01 => {
                     if body.len() > 32 {
                         return Err(Error::InvalidLength);
                     }
                     Reply::Ping(body)
                 }
-                0x82 => Reply::Info(decode_info(body)?),
-                0xdb => Reply::AudioStatus(AudioStatus::decode(body)?),
+                0x02 => Reply::Info(decode_info(body)?),
+                0x05 => Reply::Capabilities(decode_capabilities(body)?),
+                0x13 => Reply::AudioStatus(AudioStatus::decode(body)?),
                 _ => Reply::Unknown(body),
             }
         };
         Ok(Self {
-            opcode: frame.opcode(),
-            request_id: frame.request_id(),
+            command_id: frame.command_id(),
+            transaction_id: frame.transaction_id(),
             status,
             reply,
         })
     }
 
-    /// Checks opcode/ID and successful PING echo, without tracking timeouts or pending requests.
     pub fn matches_request(&self, request: &Frame) -> Result<(), Error> {
-        if request.is_response()
-            || (0x56..=0x5a).contains(&request.opcode())
-            || self.opcode != (request.opcode() | 0x80)
-            || self.request_id != request.request_id()
+        if request.message_type() != MessageType::Request
+            || self.command_id != request.command_id()
+            || self.transaction_id != request.transaction_id()
         {
             return Err(Error::ResponseMismatch);
         }
@@ -238,11 +314,38 @@ fn decode_info(body: &[u8]) -> Result<DeviceInfo<'_>, Error> {
         .split_at_checked(model_length as usize)
         .ok_or(Error::InvalidLength)?;
     let (&firmware_length, firmware) = rest.split_first().ok_or(Error::InvalidLength)?;
-    if firmware_length > 63 || firmware.len() != firmware_length as usize {
+    if firmware.len() != firmware_length as usize || model.contains(&0) || firmware.contains(&0) {
         return Err(Error::InvalidLength);
     }
     Ok(DeviceInfo {
         model: core::str::from_utf8(model).map_err(|_| Error::InvalidUtf8)?,
         firmware: core::str::from_utf8(firmware).map_err(|_| Error::InvalidUtf8)?,
+    })
+}
+
+fn decode_capabilities(body: &[u8]) -> Result<Capabilities<'_>, Error> {
+    if body.len() < 13 {
+        return Err(Error::InvalidLength);
+    }
+    let max_payload = u16::from_le_bytes([body[0], body[1]]);
+    if max_payload as usize > MAX_PAYLOAD_SIZE {
+        return Err(Error::InvalidArgument);
+    }
+    let data_capacity = u32::from_le_bytes([body[2], body[3], body[4], body[5]]);
+    let event_capacity = u16::from_le_bytes([body[6], body[7]]);
+    let control_features = u16::from_le_bytes([body[8], body[9]]);
+    let next_offset = u16::from_le_bytes([body[10], body[11]]);
+    let count = usize::from(body[12]);
+    let entries = &body[13..];
+    if count > 60 || entries.len() != count * 4 {
+        return Err(Error::InvalidLength);
+    }
+    Ok(Capabilities {
+        max_payload,
+        data_capacity,
+        event_capacity,
+        control_features,
+        next_offset,
+        entries,
     })
 }

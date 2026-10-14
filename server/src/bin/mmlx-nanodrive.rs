@@ -151,7 +151,7 @@ mod tests {
         assert_eq!(replies[1]["id"], 2);
         assert_eq!(
             replies[1]["result"]["bytes"],
-            json!([0, 6, 78, 68, 1, 1, 1, 2, 3, 6, 78, 68, 56, 51, 150, 0])
+            json!([0, 7, 78, 68, 1, 1, 1, 1, 2, 3, 6, 78, 68, 56, 68, 185, 0])
         );
         assert_eq!(replies[2]["result"]["count"], 2);
         assert_eq!(replies[3]["result"]["count"], 1);
