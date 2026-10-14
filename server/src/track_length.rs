@@ -1,5 +1,5 @@
 use mmlx::mdx::{MmlCommand, MmlLength};
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 
 const MAX_SAFE_TICKS: u64 = 9_007_199_254_740_991;
 
@@ -8,6 +8,19 @@ pub struct TrackLength {
     channel: char,
     ticks: u64,
     looping: bool,
+}
+
+#[derive(Debug, Serialize)]
+pub struct TrackLengthRange {
+    ticks: u64,
+    looping: bool,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct TrackLengthRangeParams {
+    pub text_document: lsp_types::TextDocumentIdentifier,
+    pub range: lsp_types::Range,
 }
 
 pub fn at_position(source: &str, position: lsp_types::Position) -> Option<TrackLength> {
@@ -31,6 +44,33 @@ pub fn at_position(source: &str, position: lsp_types::Position) -> Option<TrackL
         ticks: tick,
         looping: contains_loop(&track.commands),
     })
+}
+
+pub fn in_range(source: &str, range: lsp_types::Range) -> Option<TrackLengthRange> {
+    let start = crate::completion::byte_offset(source, range.start)?;
+    let end = crate::completion::byte_offset(source, range.end)?;
+    if end < start {
+        return None;
+    }
+    let parsed = mmlx::mdx::frontend::parse(source).ok()?;
+    let mut ticks = 0;
+    let mut looping = false;
+    for (index, track) in parsed.ast().tracks.iter().enumerate() {
+        let sources = parsed.syntax().commands(index)?;
+        let mut start_default = MmlLength::Denominator(4);
+        let start_ticks = commands_tick_at(&track.commands, sources, start, &mut start_default)?;
+        let mut end_default = MmlLength::Denominator(4);
+        let end_ticks = commands_tick_at(&track.commands, sources, end, &mut end_default)?;
+        let track_ticks = end_ticks.checked_sub(start_ticks)?;
+        if track_ticks > MAX_SAFE_TICKS {
+            return None;
+        }
+        if track_ticks > 0 {
+            ticks = ticks.max(track_ticks);
+            looping |= contains_loop(&track.commands);
+        }
+    }
+    Some(TrackLengthRange { ticks, looping })
 }
 
 fn channel_at_position(source: &str, offset: usize) -> Option<char> {
@@ -211,5 +251,42 @@ mod tests {
         assert!(at(source, 0, 3).unwrap().looping);
         assert!(at(source, 0, 0).is_some());
         assert!(at(source, 1, 0).is_none());
+    }
+
+    #[test]
+    fn measures_selected_tick_duration_and_uses_the_longest_parallel_track() {
+        let source = "A l8 c d e4 f\nB c1\n";
+        let selected = in_range(
+            source,
+            lsp_types::Range::new(Position::new(0, 5), Position::new(0, 11)),
+        )
+        .unwrap();
+        assert_eq!(selected.ticks, 96);
+
+        let parallel = in_range(
+            source,
+            lsp_types::Range::new(Position::new(0, 0), Position::new(1, 4)),
+        )
+        .unwrap();
+        assert_eq!(parallel.ticks, 192);
+    }
+
+    #[test]
+    fn selection_reports_loop_state_and_rejects_invalid_ranges() {
+        let source = "A c4 L d4 /\n";
+        let selected = in_range(
+            source,
+            lsp_types::Range::new(Position::new(0, 2), Position::new(0, 5)),
+        )
+        .unwrap();
+        assert_eq!(selected.ticks, 48);
+        assert!(selected.looping);
+        assert!(
+            in_range(
+                source,
+                lsp_types::Range::new(Position::new(0, 5), Position::new(0, 2))
+            )
+            .is_none()
+        );
     }
 }

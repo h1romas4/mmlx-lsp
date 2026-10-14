@@ -19,6 +19,7 @@ import { NanoDriveRuntime } from '../nanodriveRuntime';
 import { NanoDriveThreadClient, type NanoDriveThreadEvent } from '../nanodriveThreadClient';
 import { PlaybackSourceTracker, selectionTraceSource } from '../playbackSource';
 import { requestMmlPlaybackState, type MmlPlaybackStateScan } from '../mmlPlaybackState';
+import { registerTrackLengthStatus } from '../trackLengthStatus';
 import { WasiMcpHttpBridge } from '../mcpServer';
 import type { NanoDriveConnection } from '../nanodrive';
 import { Port as NanoDriveTestPort, codec as nanoDriveTestCodec } from './nanodrive.test';
@@ -224,6 +225,62 @@ suite('mmlx extension', () => {
 			initialState: {}
 		});
 		assert.deepStrictEqual(result, response);
+	});
+
+	test('track tick status shows selected-range duration instead of cursor ticks', async function () {
+		this.timeout(5000);
+		const document = await vscode.workspace.openTextDocument({ language: 'mmlx', content: 'A l8 c4 d4\nB c1\n' });
+		const editor = await vscode.window.showTextDocument(document);
+		const createStatusBarItem = vscode.window.createStatusBarItem;
+		let status: vscode.StatusBarItem | undefined;
+		vscode.window.createStatusBarItem = ((alignment?: vscode.StatusBarAlignment, priority?: number) => {
+			status = createStatusBarItem.call(vscode.window, alignment, priority);
+			return status;
+		}) as typeof vscode.window.createStatusBarItem;
+		const requests: { method: string; params: Record<string, unknown> }[] = [];
+		const client = {
+			isRunning: () => true,
+			code2ProtocolConverter: {
+				asTextDocumentPositionParams: (target: vscode.TextDocument, position: vscode.Position) => ({
+					textDocument: { uri: target.uri.toString() },
+					position: { line: position.line, character: position.character }
+				})
+			},
+			sendRequest: async (method: string, params: Record<string, unknown>) => {
+				requests.push({ method, params });
+				return method === 'mmlx/trackLengthInRange'
+					? { ticks: 48, looping: true }
+					: { channel: 'A', ticks: 96, looping: false };
+			}
+		} as unknown as LanguageClient;
+		const context = { subscriptions: [] as vscode.Disposable[] } as unknown as vscode.ExtensionContext;
+		const output = vscode.window.createOutputChannel('Track length status test');
+		const waitForText = async (text: string): Promise<void> => {
+			for (let attempt = 0; attempt < 100; attempt++) {
+				if (status?.text === text) { return; }
+				await new Promise(resolve => setTimeout(resolve, 10));
+			}
+			assert.fail(`Timed out waiting for status text ${JSON.stringify(text)} (actual=${status?.text})`);
+		};
+		try {
+			registerTrackLengthStatus(context, () => client, output);
+			await waitForText('$(music) A: 96 ticks');
+			editor.selection = new vscode.Selection(0, 2, 0, 5);
+			await waitForText('$(music) Selection: 48 ticks (loop)');
+			const rangeRequest = requests.at(-1);
+			assert.strictEqual(rangeRequest?.method, 'mmlx/trackLengthInRange');
+			assert.deepStrictEqual(rangeRequest?.params, {
+				textDocument: { uri: document.uri.toString() },
+				range: { start: { line: 0, character: 2 }, end: { line: 0, character: 5 } }
+			});
+			editor.selection = new vscode.Selection(0, 5, 0, 5);
+			await waitForText('$(music) A: 96 ticks');
+			assert.strictEqual(requests.at(-1)?.method, 'mmlx/trackLengthAtPosition');
+		} finally {
+			for (const subscription of context.subscriptions) { subscription.dispose(); }
+			output.dispose();
+			vscode.window.createStatusBarItem = createStatusBarItem;
+		}
 	});
 
 	test('FM Voice MML test plays through the connected WASM, finishes silently and reports MML errors', async function () {

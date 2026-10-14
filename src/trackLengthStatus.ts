@@ -5,7 +5,7 @@ import {
 import type { LanguageClient } from 'vscode-languageclient/node';
 
 interface TrackLength {
-	channel: string;
+	channel?: string;
 	ticks: number;
 	looping: boolean;
 }
@@ -17,7 +17,7 @@ export function registerTrackLengthStatus(
 ): void {
 	const status = window.createStatusBarItem(StatusBarAlignment.Right, 1001);
 	status.name = 'mmlx track length';
-	status.tooltip = 'Elapsed playback ticks at the cursor position.';
+	status.tooltip = 'Playback ticks at the cursor position or across the selected range.';
 	let sequence = 0;
 	let timer: ReturnType<typeof setTimeout> | undefined;
 
@@ -39,22 +39,36 @@ export function registerTrackLengthStatus(
 		if (!client?.isRunning()) { status.hide(); return; }
 		const document = editor.document;
 		const version = document.version;
+		const selection = editor.selection;
 		try {
-			const result = await client.sendRequest<TrackLength | null>(
-				'mmlx/trackLengthAtPosition',
-				client.code2ProtocolConverter.asTextDocumentPositionParams(document, editor.selection.active)
-			);
+			let result: TrackLength | null;
+			if (selection.isEmpty) {
+				result = await client.sendRequest<TrackLength | null>(
+					'mmlx/trackLengthAtPosition',
+					client.code2ProtocolConverter.asTextDocumentPositionParams(document, selection.active)
+				);
+			} else {
+				const start = client.code2ProtocolConverter.asTextDocumentPositionParams(document, selection.start);
+				const end = client.code2ProtocolConverter.asTextDocumentPositionParams(document, selection.end);
+				result = await client.sendRequest<TrackLength | null>('mmlx/trackLengthInRange', {
+					textDocument: start.textDocument,
+					range: { start: start.position, end: end.position }
+				});
+			}
 			if (requestSequence !== sequence || document.version !== version
 				|| document.isClosed
 				|| window.activeTextEditor?.document.uri.toString() !== document.uri.toString()) {
 				return;
 			}
-			if (!result || !Number.isSafeInteger(result.ticks) || result.ticks < 0) {
+			if (!result || !Number.isSafeInteger(result.ticks) || result.ticks < 0
+				|| (selection.isEmpty && typeof result.channel !== 'string')) {
 				status.hide();
 				return;
 			}
 			const loop = result.looping ? ' (loop)' : '';
-			status.text = `$(music) ${result.channel}: ${result.ticks.toLocaleString()} ticks${loop}`;
+			status.text = selection.isEmpty
+				? `$(music) ${result.channel}: ${result.ticks.toLocaleString()} ticks${loop}`
+				: `$(music) Selection: ${result.ticks.toLocaleString()} ticks${loop}`;
 			status.show();
 		} catch (error) {
 			if (requestSequence === sequence) {

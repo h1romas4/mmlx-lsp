@@ -4,6 +4,7 @@ All notable changes to the "mmlx-lsp" extension will be documented in this file.
 
 ## [Unreleased]
 
+- Show the total tick duration of a selected MML range in the status bar, using the longest selected track across parallel channels.
 - Parse inherited FM Voice selection-playback state from the Rust MML syntax tree instead of scanning source text in the extension.
 
 ## [0.19.1] - 2026-10-13

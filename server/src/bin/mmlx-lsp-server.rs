@@ -169,6 +169,22 @@ fn handle_request(
             ),
         };
     }
+    if request.method == "mmlx/trackLengthInRange" {
+        return match serde_json::from_value::<track_length::TrackLengthRangeParams>(request.params)
+        {
+            Ok(params) => {
+                let result = documents
+                    .get(params.text_document.uri.as_str())
+                    .and_then(|source| track_length::in_range(source, params.range));
+                Response::new_ok(request.id, result)
+            }
+            Err(error) => Response::new_err(
+                request.id,
+                ErrorCode::InvalidParams as i32,
+                error.to_string(),
+            ),
+        };
+    }
     if request.method == "textDocument/codeLens" {
         return match serde_json::from_value::<CodeLensParams>(request.params) {
             Ok(params) => {
@@ -784,6 +800,33 @@ mod tests {
         assert_eq!(
             response.response_result.unwrap(),
             serde_json::json!({ "channel": "A", "ticks": 0, "looping": false })
+        );
+    }
+
+    #[test]
+    fn track_length_range_request_returns_longest_selected_track_duration() {
+        let uri = "file:///length.mml".parse::<Uri>().unwrap();
+        let documents = HashMap::from([(uri.to_string(), "A c4 d4\nB c1\n".to_string())]);
+        let response = super::handle_request(
+            Request::new(
+                1.into(),
+                "mmlx/trackLengthInRange".into(),
+                serde_json::json!({
+                    "textDocument": { "uri": uri },
+                    "range": {
+                        "start": { "line": 0, "character": 0 },
+                        "end": { "line": 1, "character": 4 }
+                    }
+                }),
+            ),
+            &documents,
+            false,
+            i18n::Language::English,
+            Dialect::Mdx,
+        );
+        assert_eq!(
+            response.response_result.unwrap(),
+            serde_json::json!({ "ticks": 192, "looping": false })
         );
     }
 
