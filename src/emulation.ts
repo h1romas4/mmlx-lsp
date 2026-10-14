@@ -158,9 +158,9 @@ export class EmulationSession {
 	}
 
 	startVoiceTest(mml: string, voice: unknown, tempo?: string, ignoreVoiceSelect = false, length?: string, octave?: number,
-		volume?: string[], gate?: string, pan?: string): void {
+		volume?: string[], gate?: string, pan?: string, opmLfo?: string[]): void {
 		if (!this.connected) { return; }
-		this.setVoiceTesting(true); this.command({ type: 'voiceTest', mml, voice, tempo, length, octave, volume, gate, pan, ignoreVoiceSelect });
+		this.setVoiceTesting(true); this.command({ type: 'voiceTest', mml, voice, tempo, length, octave, volume, gate, pan, opmLfo, ignoreVoiceSelect });
 	}
 
 	stopVoiceTest(): void {

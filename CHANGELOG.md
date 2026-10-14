@@ -4,6 +4,8 @@ All notable changes to the "mmlx-lsp" extension will be documented in this file.
 
 ## [Unreleased]
 
+- Parse inherited FM Voice selection-playback state from the Rust MML syntax tree instead of scanning source text in the extension.
+
 ## [0.19.1] - 2026-10-13
 
 - Preserve MML volume and gate settings, including relative volume changes, across FM Voice selection playback; also inherit pan.

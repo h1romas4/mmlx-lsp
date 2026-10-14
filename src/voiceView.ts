@@ -12,7 +12,7 @@ import { NanoDriveConnection, openNanoDrivePort, type NanoDriveAdpcmMode, type N
 import { NanoDriveWorker } from './nanodriveWorker';
 import { NanoDriveThreadClient } from './nanodriveThreadClient';
 import { PlaybackSourceTracker, selectionTraceSource } from './playbackSource';
-import { mmlPlaybackStateAfter, mmlPlaybackStateBefore, type MmlPlaybackState } from './mmlTempo';
+import { requestMmlPlaybackState, type MmlPlaybackState, type MmlPlaybackStateScan } from './mmlPlaybackState';
 import type { McpServerController } from './mcpServer';
 import { findPdx, resolveUri } from './tasks';
 
@@ -128,6 +128,8 @@ export class VoiceViewProvider implements WebviewViewProvider {
 	private selectionTraceStarted = false;
 	private postResetMmlState?: MmlPlaybackState;
 	private pendingSelectionState?: { previous: MmlPlaybackState; next: MmlPlaybackState; committed: boolean };
+	private pendingInputState?: { previous: MmlPlaybackState | undefined; next: MmlPlaybackState; committed: boolean };
+	private selectionStateRequest = 0;
 	private playbackDocument?: TextDocument;
 	private playbackConnected = false;
 	private browserPlayback = false;
@@ -467,6 +469,7 @@ export class VoiceViewProvider implements WebviewViewProvider {
 		const id = this.outputId;
 		this.postResetMmlState = {};
 		this.pendingSelectionState = undefined;
+		this.pendingInputState = undefined;
 		this.sendEditorSelection(window.activeTextEditor);
 		this.resettingOutput = true;
 		clearTimeout(this.bendTimer); this.bendTimer = undefined; this.pendingBends.clear();
@@ -546,11 +549,18 @@ export class VoiceViewProvider implements WebviewViewProvider {
 					void this.selectionPlaybackSources?.setPosition((performance.now() - this.selectionPlaybackStartedAt) / 1000);
 				}, 33);
 			}
+		} else if (playing && this.pendingInputState) {
+			this.postResetMmlState = this.pendingInputState.next;
+			this.pendingInputState.committed = true;
 		} else if (!playing) {
 			if (error && this.pendingSelectionState?.committed) {
 				this.postResetMmlState = this.pendingSelectionState.previous;
 			}
+			if (error && this.pendingInputState?.committed) {
+				this.postResetMmlState = this.pendingInputState.previous;
+			}
 			this.pendingSelectionState = undefined;
+			this.pendingInputState = undefined;
 			clearInterval(this.selectionPlaybackTimer); this.selectionPlaybackTimer = undefined;
 			this.selectionTraceStarted = false;
 			this.selectionPlaybackSources?.stop();
@@ -574,58 +584,89 @@ export class VoiceViewProvider implements WebviewViewProvider {
 		}
 		const selection = message.action === 'playSelection';
 		this.voiceTestSource = selection ? 'selection' : 'input';
-		const messageTempo = selection && typeof message.tempo === 'string'
-			&& /^(?:t[0-9]+|@t[0-9]+)$/i.test(message.tempo) ? message.tempo : undefined;
-		const messageLength = selection && typeof message.length === 'string' && message.length.length <= 128
-			&& /^l(?:\s*%?\d+\.*(?:\s*[\^~]\s*%?\d+\.*)*)?$/i.test(message.length) ? message.length : undefined;
-		const messageOctave = selection && typeof message.octave === 'number' && Number.isInteger(message.octave)
-			&& message.octave >= 0 && message.octave <= 255 ? message.octave : undefined;
-		const messageVolume = selection && Array.isArray(message.volume) && message.volume.length <= 128
-			&& message.volume.every(command => typeof command === 'string' && /^(?:v[0-9]{1,3}|@v[0-9]{1,3}|[()])$/i.test(command)
-				&& (!/^(?:v|@v)/i.test(command) || Number(command.replace(/^@?v/i, '')) <= 255))
-			? message.volume as string[] : undefined;
-		const messageGate = selection && typeof message.gate === 'string'
-			&& /^(?:q[0-9]{1,3}|@q[0-9]{1,3})$/i.test(message.gate)
-			&& Number(message.gate.replace(/^@?q/i, '')) <= (message.gate.startsWith('@') ? 256 : 255)
-			? message.gate : undefined;
-		const messagePan = selection && typeof message.pan === 'string' && /^p[0-9]{1,3}$/i.test(message.pan)
-			&& Number(message.pan.slice(1)) <= 255
-			? message.pan : undefined;
-		const inheritedState = selection
-			? this.postResetMmlState ?? { tempo: messageTempo, length: messageLength, octave: messageOctave,
-				volume: messageVolume, gate: messageGate, pan: messagePan }
-			: {};
 		if ((!selection && message.action !== 'play') || !workspace.isTrusted || !this.snapshot.voice || this.snapshot.error
 			|| typeof message.mml !== 'string' || !message.mml.trim() || message.mml.length > 8192
 			|| !selection && /[\r\n]/.test(message.mml)) {
 			this.pendingSelectionState = undefined;
+			this.pendingInputState = undefined;
 			this.setVoiceTesting(false, true); return;
 		}
 		this.pendingSelectionState = undefined;
+		this.pendingInputState = undefined;
+		const editor = window.activeTextEditor;
+		const selectionMatchesEditor = selection && editor?.document.languageId === 'mmlx'
+			&& !editor.selection.isEmpty && editor.document.getText(editor.selection) === message.mml;
+		let inheritedState = this.postResetMmlState ?? {};
+		let selectionState: MmlPlaybackStateScan | null = null;
 		if (selection) {
-			if (this.postResetMmlState !== undefined) {
+			if (this.postResetMmlState === undefined && selectionMatchesEditor && editor) {
+				try {
+					const source = editor.document.getText();
+					const offset = editor.document.offsetAt(editor.selection.start);
+					const before = await this.requestPlaybackState(source, offset);
+					if (before) { inheritedState = before.state; }
+					else { this.playbackLog?.appendLine('Could not parse MML before the selection; playback will use default state.'); }
+				} catch (error) {
+					this.playbackLog?.appendLine(`Could not read MML state before the selection: ${String(error)}`);
+				}
+			}
+			if (selectionMatchesEditor || this.postResetMmlState !== undefined) {
+				try {
+					selectionState = await this.requestPlaybackState(message.mml, message.mml.length, inheritedState);
+					if (!selectionState) {
+						this.playbackLog?.appendLine('Could not parse selected MML state; playback will continue without state tracing.');
+					}
+				} catch (error) {
+					this.playbackLog?.appendLine(`Could not read selected MML state: ${String(error)}`);
+				}
+			}
+			if (this.postResetMmlState !== undefined && selectionState) {
 				this.pendingSelectionState = {
 					previous: this.postResetMmlState,
-					next: mmlPlaybackStateAfter(message.mml, inheritedState),
+					next: selectionState.state,
 					committed: false
 				};
 			}
-			const editor = window.activeTextEditor;
-			if (editor?.document.languageId === 'mmlx' && !editor.selection.isEmpty
-				&& editor.document.getText(editor.selection) === message.mml) {
-				const trace = selectionTraceSource(message.mml, inheritedState, editor.document.offsetAt(editor.selection.start));
+			if (selectionMatchesEditor && editor && selectionState) {
+				const trace = selectionTraceSource(message.mml, inheritedState, selectionState,
+					editor.document.offsetAt(editor.selection.start));
 				this.selectionTrace = { document: editor.document, source: trace.source, documentOffsets: trace.documentOffsets };
 				this.selectionTraceStarted = false;
 				this.selectionPlaybackSamples = 0;
 			} else { this.selectionTrace = undefined; this.selectionPlaybackSources?.stop(); }
-		} else { this.selectionTrace = undefined; this.selectionPlaybackSources?.stop(); }
+		} else {
+			this.selectionTrace = undefined;
+			this.selectionPlaybackSources?.stop();
+			try {
+				const inputState = await this.requestPlaybackState(message.mml, message.mml.length, this.postResetMmlState ?? {});
+				if (!inputState) {
+					this.playbackLog?.appendLine('Could not parse Chip State MML state; playback will continue without state tracking.');
+				} else if (this.postResetMmlState !== undefined || inputState.hasTempo || inputState.hasLength
+					|| inputState.hasOctave || inputState.hasVolume || inputState.hasGate || inputState.hasPan || inputState.hasOpmLfo) {
+					this.pendingInputState = {
+						previous: this.postResetMmlState,
+						next: inputState.state,
+						committed: false
+					};
+				}
+			} catch (error) {
+				this.playbackLog?.appendLine(`Could not read Chip State MML state: ${String(error)}`);
+			}
+		}
+		if (message.id !== this.outputId) {
+			this.pendingSelectionState = undefined;
+			this.pendingInputState = undefined;
+			return;
+		}
 		this.voiceTestVoice = JSON.stringify(this.snapshot.voice);
 		if (this.keyboardOutputMode === 'nanodrive8' && this.nanodrive.outputState.connected) {
 			await this.nanodrive.startVoiceTest(message.mml, this.snapshot.voice, inheritedState.tempo, selection,
-				inheritedState.length, inheritedState.octave, inheritedState.volume, inheritedState.gate, inheritedState.pan);
+				inheritedState.length, inheritedState.octave, inheritedState.volume, inheritedState.gate,
+				inheritedState.pan, inheritedState.opmLfo);
 		} else if (this.keyboardOutputMode === 'emulation' && this.emulationConnected) {
 			this.emulation?.startVoiceTest(message.mml, this.snapshot.voice, inheritedState.tempo, selection,
-				inheritedState.length, inheritedState.octave, inheritedState.volume, inheritedState.gate, inheritedState.pan);
+				inheritedState.length, inheritedState.octave, inheritedState.volume, inheritedState.gate,
+				inheritedState.pan, inheritedState.opmLfo);
 		} else { this.setVoiceTesting(false); }
 	}
 
@@ -1034,19 +1075,45 @@ export class VoiceViewProvider implements WebviewViewProvider {
 		this.schedule();
 	}
 
+	private async requestPlaybackState(
+		source: string, offset: number, initialState: MmlPlaybackState = {}
+	): Promise<MmlPlaybackStateScan | null> {
+		const client = this.getClient();
+		if (!client?.isRunning()) { throw new Error('mmlx language server is not running.'); }
+		return requestMmlPlaybackState(client, source, offset, initialState);
+	}
+
 	private sendEditorSelection(editor: TextEditor | undefined): void {
+		const request = ++this.selectionStateRequest;
 		const validEditor = editor?.document.languageId === 'mmlx' && !editor.selection.isEmpty;
 		const selection = validEditor ? editor.document.getText(editor.selection) : '';
-		let state = {};
-		if (validEditor) {
-			const source = editor.document.getText();
-			const offset = editor.document.offsetAt(editor.selection.start);
-			state = this.postResetMmlState !== undefined
-				? this.postResetMmlState
-				: mmlPlaybackStateBefore(source, offset);
+		const tooLong = selection.length > 8192;
+		const post = (state: MmlPlaybackState = {}) => {
+			if (request === this.selectionStateRequest) {
+				void this.view?.webview.postMessage({ type: 'editorSelection',
+					mml: tooLong ? '' : selection, ...state, tooLong });
+			}
+		};
+		if (!validEditor || tooLong || this.postResetMmlState !== undefined) {
+			post(this.postResetMmlState);
+			return;
 		}
-		void this.view?.webview.postMessage({ type: 'editorSelection',
-			mml: selection.length <= 8192 ? selection : '', ...state, tooLong: selection.length > 8192 });
+		const document = editor.document;
+		const version = document.version;
+		const source = document.getText();
+		const offset = document.offsetAt(editor.selection.start);
+		void this.requestPlaybackState(source, offset).then(scan => {
+			if (request !== this.selectionStateRequest || document.isClosed || document.version !== version
+				|| window.activeTextEditor?.document !== document
+				|| window.activeTextEditor.document.getText(window.activeTextEditor.selection) !== selection) { return; }
+			if (!scan) { this.playbackLog?.appendLine('Could not parse MML before the selection; inherited state is unavailable.'); }
+			post(scan?.state);
+		}).catch(error => {
+			if (request === this.selectionStateRequest) {
+				this.playbackLog?.appendLine(`Could not read MML state before the selection: ${String(error)}`);
+				post();
+			}
+		});
 	}
 
 	async playEditorSelection(): Promise<void> {
@@ -1062,12 +1129,7 @@ export class VoiceViewProvider implements WebviewViewProvider {
 			|| !this.snapshot.voice || this.snapshot.error) { return; }
 		const mml = editor.document.getText(editor.selection);
 		if (!mml.trim() || mml.length > 8192) { return; }
-		const source = editor.document.getText();
-		const offset = editor.document.offsetAt(editor.selection.start);
-		const state = this.postResetMmlState !== undefined
-			? this.postResetMmlState
-			: mmlPlaybackStateBefore(source, offset);
-		await this.voiceTestAction({ id: this.outputId, action: 'playSelection', mml, ...state });
+		await this.voiceTestAction({ id: this.outputId, action: 'playSelection', mml });
 	}
 
 	private schedule(): void {

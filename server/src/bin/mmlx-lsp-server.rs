@@ -6,6 +6,8 @@ mod dialect;
 mod formatter;
 #[path = "../i18n.rs"]
 mod i18n;
+#[path = "../playback_state.rs"]
+mod playback_state;
 #[path = "../selection_range.rs"]
 mod selection_range;
 #[path = "../semantic.rs"]
@@ -122,6 +124,20 @@ fn handle_request(
     language: i18n::Language,
     dialect: Dialect,
 ) -> Response {
+    if request.method == "mmlx/playbackState" {
+        return match serde_json::from_value::<playback_state::PlaybackStateRequest>(request.params)
+        {
+            Ok(params) => Response::new_ok(
+                request.id,
+                playback_state::scan(&params.source, params.offset, params.initial_state),
+            ),
+            Err(error) => Response::new_err(
+                request.id,
+                ErrorCode::InvalidParams as i32,
+                error.to_string(),
+            ),
+        };
+    }
     if request.method == "mmlx/voiceAtPosition" {
         return match serde_json::from_value::<TextDocumentPositionParams>(request.params) {
             Ok(params) => {
@@ -519,6 +535,45 @@ mod tests {
             response.response_result.unwrap_err().code,
             ErrorCode::InvalidParams as i32
         );
+    }
+
+    #[test]
+    fn playback_state_request_uses_the_mml_parser_and_returns_typed_state() {
+        let source = "#title \"🎵 t200\"\nA t120 l8 o5 c4 ; t130 l4 o3\nB /* @t42 l2 o2 */ d4\nC @t48 e4\nD t180 f4";
+        let offset = source.find("D t180").unwrap();
+        let response = handle_request(
+            Request::new(
+                1.into(),
+                "mmlx/playbackState".into(),
+                serde_json::json!({ "source": source, "offset": offset }),
+            ),
+            &HashMap::new(),
+            false,
+        );
+        assert_eq!(
+            response.response_result.unwrap(),
+            serde_json::json!({
+                "state": { "tempo": "@t48", "length": "l8", "octave": 5 },
+                "hasTempo": true,
+                "hasLength": true,
+                "hasOctave": true,
+                "hasVolume": false,
+                "hasGate": false,
+                "hasPan": false,
+                "hasOpmLfo": false
+            })
+        );
+
+        let invalid = handle_request(
+            Request::new(
+                2.into(),
+                "mmlx/playbackState".into(),
+                serde_json::json!({ "source": "A invalid???", "offset": 12 }),
+            ),
+            &HashMap::new(),
+            false,
+        );
+        assert_eq!(invalid.response_result.unwrap(), serde_json::Value::Null);
     }
 
     #[test]

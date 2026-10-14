@@ -18,11 +18,24 @@ import { NanoDriveWorker } from '../nanodriveWorker';
 import { NanoDriveRuntime } from '../nanodriveRuntime';
 import { NanoDriveThreadClient, type NanoDriveThreadEvent } from '../nanodriveThreadClient';
 import { PlaybackSourceTracker, selectionTraceSource } from '../playbackSource';
+import { requestMmlPlaybackState, type MmlPlaybackStateScan } from '../mmlPlaybackState';
 import { WasiMcpHttpBridge } from '../mcpServer';
 import type { NanoDriveConnection } from '../nanodrive';
 import { Port as NanoDriveTestPort, codec as nanoDriveTestCodec } from './nanodrive.test';
 
 const playbackSource = '@1 = {\n' + '31,0,0,15,0,32,0,1,0,0,0,\n'.repeat(4) + '7,0,15\n}\nA t120 @1 o4 l8 cdef\n';
+const lfoSelection = 'A @t199@3v15MD1MP2,6,2q8\nA r4o6d4.<f+4&f+8 r4>g4.a4&a8 r4b4.<c+4. e8f4g4&g4@0v11a16b16 d2';
+const lfoSelectionState = { tempo: '@t199', volume: ['v11'], gate: 'q8', octave: 5 };
+const firstStatefulLine = 'B v15t80o3l16q8 ab>cd eede8ede4 e8e8d4.dd2';
+const secondStatefulLine = 'B cc<b>c& c8<b>c4c8c8 f4&f8q4g8re8rq8e4';
+
+function playbackStateScan(
+	state: MmlPlaybackStateScan['state'],
+	flags: Partial<Omit<MmlPlaybackStateScan, 'state'>> = {}
+): MmlPlaybackStateScan {
+	return { state, hasTempo: false, hasLength: false, hasOctave: false, hasVolume: false, hasGate: false,
+		hasPan: false, hasOpmLfo: false, ...flags };
+}
 
 function pcm16MonoWav(samples: number[]): Uint8Array {
 	const dataLength = samples.length * 2;
@@ -193,24 +206,24 @@ function waitForDiagnostics(uri: vscode.Uri, count: number): Promise<void> {
 }
 
 suite('mmlx extension', () => {
-	test('MML playback state ignores comments and strings and respects the cursor position', async () => {
-		const extension = vscode.extensions.all.find(extension => extension.packageJSON.name === 'mmlx-lsp');
-		assert.ok(extension);
-		const { mmlPlaybackStateAfter, mmlPlaybackStateBefore, tempoBefore } = await import(path.join(extension.extensionUri.fsPath, 'out', 'mmlTempo.js'));
-		const source = '#title "t200 l2 o2"\nA t120 l8 o5 c4 ; t130 l4 o3\nB /* @t42 l2 o2 */ d4\nC @t48 e4\nD t180 f4';
-		assert.deepStrictEqual(mmlPlaybackStateBefore(source, source.indexOf('D t180')),
-			{ tempo: '@t48', length: 'l8', octave: 5 });
-		const firstSelectionState = mmlPlaybackStateAfter('A @1 t120 l8cdef grgr af>c<a g1');
-		assert.deepStrictEqual(firstSelectionState, { tempo: 't120', length: 'l8', octave: 4 });
-		assert.deepStrictEqual(mmlPlaybackStateAfter('A af>c<a g1 gfff feee eded cegr', firstSelectionState), firstSelectionState);
-		const bugFirst = mmlPlaybackStateAfter('B v15t80o3l16q8 ab>cd eede8ede4 e8e8d4.dd2');
-		assert.deepStrictEqual(bugFirst, { tempo: 't80', length: 'l16', octave: 4, volume: ['v15'], gate: 'q8' });
-		const bugSecond = mmlPlaybackStateAfter('B cc<b>c& c8<b>c4c8c8 f4&f8q4g8re8rq8e4', bugFirst);
-		assert.deepStrictEqual(bugSecond, { ...bugFirst, gate: 'q8' });
-		assert.deepStrictEqual(mmlPlaybackStateAfter('A v10))', {}).volume, ['v10', ')', ')']);
-		assert.strictEqual(tempoBefore(source, source.length), 't180');
-		assert.strictEqual(tempoBefore('A t0 c4\nB t4294967296 d4', 28), undefined);
-		assert.strictEqual(mmlPlaybackStateBefore('A o5 > l%192 c4', 17).octave, 6);
+	test('MML playback state requests use UTF-8 byte offsets for the Rust parser', async () => {
+		const source = '🎵 A t120';
+		let request: { method: string; params: { source: string; offset: number } } | undefined;
+		const response = playbackStateScan({ tempo: 't120' }, { hasTempo: true });
+		const client = {
+			sendRequest: async (method: string, params: { source: string; offset: number }) => {
+				request = { method, params };
+				return response;
+			}
+		} as unknown as LanguageClient;
+		const result = await requestMmlPlaybackState(client, source, source.length);
+		assert.strictEqual(request?.method, 'mmlx/playbackState');
+		assert.deepStrictEqual(request?.params, {
+			source,
+			offset: new TextEncoder().encode(source).length,
+			initialState: {}
+		});
+		assert.deepStrictEqual(result, response);
 	});
 
 	test('FM Voice MML test plays through the connected WASM, finishes silently and reports MML errors', async function () {
@@ -273,6 +286,18 @@ suite('mmlx extension', () => {
 			for (let count = 0; count < 30 && testing; count++) { selectionEnergy += energy(await render()); }
 			assert.ok(testing && !testError && state?.connected && selectionEnergy > 1,
 				'Editor selection ignores @n and produces audio');
+			session.stopVoiceTest();
+			session.startVoiceTest(lfoSelection, voice, undefined, true);
+			let lfoSelectionEnergy = 0;
+			for (let count = 0; count < 300 && testing; count++) { lfoSelectionEnergy += energy(await render()); }
+			assert.ok(lfoSelectionEnergy > 1 && !testError, 'The reported pitch-LFO selection plays initially');
+			session.stopVoiceTest();
+			session.startVoiceTest(lfoSelection, voice, lfoSelectionState.tempo, true, undefined,
+				lfoSelectionState.octave, lfoSelectionState.volume, lfoSelectionState.gate, undefined);
+			lfoSelectionEnergy = 0;
+			for (let count = 0; count < 300 && testing; count++) { lfoSelectionEnergy += energy(await render()); }
+			assert.ok(lfoSelectionEnergy > 1 && !testError,
+				`The reported pitch-LFO selection remains playable when its inherited state is applied again (testing=${testing}, error=${testError}, energy=${lfoSelectionEnergy})`);
 			session.stopVoiceTest();
 			const firstSelection = 'B v15t80o3l16q8 ab>cd eede8ede4 e8e8d4.dd2';
 			const secondSelection = 'B cc<b>c& c8<b>c4c8c8 f4&f8q4g8re8rq8e4';
@@ -857,13 +882,58 @@ suite('mmlx extension', () => {
 		const showWarningMessage = vscode.window.showWarningMessage;
 		type Update = { type: string; id?: number; connected?: boolean; connecting?: boolean; pcm?: ArrayBuffer;
 			voice?: unknown; name?: string | null; playing?: boolean; error?: boolean; mml?: string;
-			tempo?: string; length?: string; octave?: number; volume?: string[]; gate?: string; pan?: string; tooLong?: boolean };
+			tempo?: string; length?: string; octave?: number; volume?: string[]; gate?: string; pan?: string;
+			opmLfo?: string[]; tooLong?: boolean };
 		const updates: Update[] = [];
 		const changed = new vscode.EventEmitter<Update>();
 		const voice = { number: 0, name: 'Grand Piano', algorithm: 7, feedback: 0, operatorMask: 15, position: { line: 0, character: 0 },
 			parameterRanges: [], range: { start: { line: 0, character: 0 }, end: { line: 6, character: 1 } },
 			operators: Array.from({ length: 4 }, () => ({ ar: 31, d1r: 0, d2r: 0, rr: 15, d1l: 0, tl: 32, ks: 0, mul: 1, dt1: 0, dt2: 0, ame: 0 })) };
-		const client = { isRunning: () => true, sendRequest: async () => voice,
+		const chipStateMml = 'MH0,200,64,0,5,0,1 t180 l32 o6 v12 q6 p2 c8';
+		const chipState = { tempo: 't180', length: 'l32', octave: 6, volume: ['v12'], gate: 'q6', pan: 'p2',
+			opmLfo: ['MH0,200,64,0,5,0,1'] };
+		const stateRequests: { source: string; initialState?: MmlPlaybackStateScan['state'] }[] = [];
+		const client = { isRunning: () => true, sendRequest: async (method: string, params: {
+			source?: string; offset?: number; initialState?: MmlPlaybackStateScan['state']
+		}) => {
+			if (method !== 'mmlx/playbackState') { return voice; }
+			const source = params.source ?? '';
+			stateRequests.push({ source, initialState: params.initialState });
+			const initial = params.initialState ?? {};
+			const scan = (state: MmlPlaybackStateScan['state'], flags: Partial<Omit<MmlPlaybackStateScan, 'state'>> = {}) =>
+				playbackStateScan(state, flags);
+			if (source === 'invalid???') { return null; }
+			if (source === chipStateMml) {
+				return scan({ ...initial, ...chipState },
+					{ hasTempo: true, hasLength: true, hasOctave: true, hasVolume: true, hasGate: true, hasPan: true,
+						hasOpmLfo: true });
+			}
+			if (source === 'A @1 d4') { return scan(initial); }
+			if (source === 'A t120 l8 o5 c4') {
+				return scan({ ...initial, tempo: 't120', length: 'l8', octave: 5 },
+					{ hasTempo: true, hasLength: true, hasOctave: true });
+			}
+			if (source === 'A t140 l16 o3 f4') {
+				return scan({ ...initial, tempo: 't140', length: 'l16', octave: 3 },
+					{ hasTempo: true, hasLength: true, hasOctave: true });
+			}
+			if (source === 'A g4') { return scan(initial); }
+			if (source === firstStatefulLine) {
+				return scan({ ...initial, tempo: 't80', length: 'l16', octave: 4, volume: ['v15'], gate: 'q8' },
+					{ hasTempo: true, hasLength: true, hasOctave: true, hasVolume: true, hasGate: true });
+			}
+			if (source === secondStatefulLine) {
+				return scan({ ...initial, gate: 'q8' }, { hasGate: true });
+			}
+			if (source === lfoSelection) {
+				return scan(lfoSelectionState, { hasTempo: true, hasOctave: true, hasVolume: true, hasGate: true });
+			}
+			if (source === document.getText()) {
+				const before = source.slice(0, params.offset ?? 0);
+				return scan(before.includes('A t120 l8 o5 c4') ? { tempo: 't120', length: 'l8', octave: 5 } : {});
+			}
+			return scan(initial);
+		},
 			code2ProtocolConverter: { asTextDocumentPositionParams: () => ({}) } } as unknown as LanguageClient;
 		const provider = new VoiceViewProvider(context as unknown as vscode.ExtensionContext, () => client,
 			async () => [], async () => [], undefined, await Wasm.load());
@@ -1043,8 +1113,6 @@ suite('mmlx extension', () => {
 			assert.strictEqual(restoredSelectionState.tempo, 't140', 'Later playback updates tempo state');
 			assert.strictEqual(restoredSelectionState.length, 'l16', 'Later playback updates default-length state');
 			assert.strictEqual(restoredSelectionState.octave, 3, 'Later playback updates octave state');
-			const firstStatefulLine = 'B v15t80o3l16q8 ab>cd eede8ede4 e8e8d4.dd2';
-			const secondStatefulLine = 'B cc<b>c& c8<b>c4c8c8 f4&f8q4g8re8rq8e4';
 			const statefulOffset = document.getText().length;
 			const statefulAppend = new vscode.WorkspaceEdit();
 			statefulAppend.insert(document.uri, document.positionAt(statefulOffset), `${firstStatefulLine}\n${secondStatefulLine}\n`);
@@ -1083,6 +1151,51 @@ suite('mmlx extension', () => {
 			const secondStatefulStop = updates.length;
 			await provider.playEditorSelection();
 			await waitFor(message => message.type === 'voiceTest' && message.playing === false, secondStatefulStop);
+
+			const chipStateStart = updates.length;
+			messages.fire({ type: 'voiceTestAction', action: 'play', mml: chipStateMml, id: 1 });
+			await waitFor(message => message.type === 'voiceTest' && message.playing === true, chipStateStart);
+			const chipStateRequest = [...stateRequests].reverse().find(request => request.source === chipStateMml);
+			assert.deepStrictEqual(chipStateRequest?.initialState, {
+				tempo: 't80', length: 'l16', octave: 4, volume: ['v15'], gate: 'q8'
+			}, 'Chip State MML analysis starts with the state already retained by the output');
+			const chipStateStop = updates.length;
+			messages.fire({ type: 'voiceTestAction', action: 'stop', id: 1 });
+			await waitFor(message => message.type === 'voiceTest' && message.playing === false, chipStateStop);
+
+			editor.selection = new vscode.Selection(0, 0, 0, 0);
+			await waitFor(message => message.type === 'editorSelection' && !message.mml);
+			const chipInheritedStart = updates.length;
+			editor.selection = new vscode.Selection(secondStatefulPosition.line, 0, secondStatefulPosition.line,
+				document.lineAt(secondStatefulPosition.line).text.length);
+			const chipInheritedState = await waitFor(message => message.type === 'editorSelection'
+				&& message.mml === secondStatefulLine, chipInheritedStart);
+			assert.strictEqual(chipInheritedState.tempo, chipState.tempo);
+			assert.strictEqual(chipInheritedState.length, chipState.length);
+			assert.strictEqual(chipInheritedState.octave, chipState.octave);
+			assert.deepStrictEqual(chipInheritedState.volume, chipState.volume);
+			assert.strictEqual(chipInheritedState.gate, chipState.gate);
+			assert.strictEqual(chipInheritedState.pan, chipState.pan);
+			assert.deepStrictEqual(chipInheritedState.opmLfo, chipState.opmLfo);
+			const chipSelectionRequestStart = stateRequests.length;
+			const chipSelectionStart = updates.length;
+			await provider.playEditorSelection();
+			await waitFor(message => message.type === 'voiceTest' && message.playing === true, chipSelectionStart);
+			const chipSelectionRequest = stateRequests.slice(chipSelectionRequestStart)
+				.find(request => request.source === secondStatefulLine);
+			assert.deepStrictEqual(chipSelectionRequest?.initialState, chipState,
+				'Chip State MML state is passed to the Rust parser and selection-playback source');
+			const chipSelectionAudioStart = updates.length;
+			messages.fire({ type: 'emulationRender', blocks: 4, id: 1 });
+			const chipSelectionPcm = await waitFor(message => message.type === 'emulationPcm'
+				&& updates.slice(chipSelectionAudioStart).filter(update => update.type === 'emulationPcm').length === 4,
+			chipSelectionAudioStart);
+			assert.ok(chipSelectionPcm.pcm instanceof ArrayBuffer
+				&& new Float32Array(chipSelectionPcm.pcm).some(value => Math.abs(value) > 0.0001),
+			'Selection playback renders through the sound source with Chip State MML state');
+			const chipSelectionStop = updates.length;
+			await provider.playEditorSelection();
+			await waitFor(message => message.type === 'voiceTest' && message.playing === false, chipSelectionStop);
 			assert.strictEqual(view.title, 'mmlx [Connected]');
 			assert.ok(!updates.slice(invalidStart).some(message => message.type === 'outputConnection' && !message.connected));
 			messages.fire({ type: 'setOutputConnection', target: 'keyboard', connected: false, id: 1 });
@@ -1297,19 +1410,22 @@ suite('mmlx extension', () => {
 			assert.strictEqual(tracker.lineRanges.length, 0, 'Stop clears the line highlights together with the notes');
 			const selectedMml = '@1 o4 L c8 r8';
 			const selectedStart = document.offsetAt(document.positionAt(source.indexOf(selectedMml)));
-			const trace = selectionTraceSource(selectedMml, { tempo: 't120', length: 'l8', octave: 5 }, selectedStart);
-			assert.ok(trace.source.includes('@0 = {') && trace.source.includes('A @0 t120')
-				&& !trace.source.includes('l8') && !trace.source.includes('o5')
+			const trace = selectionTraceSource(selectedMml, { tempo: 't120', length: 'l8', octave: 5 },
+				playbackStateScan({}, { hasOctave: true }), selectedStart);
+			assert.ok(trace.source.includes('@0 = {') && trace.source.includes('A @0 t120 l8')
+				&& !trace.source.includes('o5')
 				&& trace.source.endsWith('o4 L c8 r8'),
 			`Selection trace supplies a voice definition, removes ignored voice selects and inherits only missing state: ${JSON.stringify(trace.source)}`);
-			const inheritedTrace = selectionTraceSource('@1 c4', { tempo: 't120', length: 'l8', octave: 5 }, selectedStart);
-			assert.ok(inheritedTrace.source.includes('A @0 t120 l8 o5 c4'),
+			const inheritedTrace = selectionTraceSource('@1 c4', { tempo: 't120', length: 'l8', octave: 5 },
+				playbackStateScan({}), selectedStart);
+			assert.ok(/A @0 t120 l8 o5\s+c4/.test(inheritedTrace.source),
 				'Selection trace inherits default length and octave when the selection does not set them');
 			const statefulTrace = selectionTraceSource('B cc<b>c& f4q4g8', {
-				tempo: 't80', length: 'l16', octave: 4, volume: ['v15'], gate: 'q8', pan: 'p0'
-			}, selectedStart);
-			assert.ok(statefulTrace.source.includes('B @0 t80 l16 o4 v15 q8 p0 cc<b>c& f4q4g8'),
-				'Selection trace restores volume, gate, and pan before the selected notes');
+				tempo: 't80', length: 'l16', octave: 4, volume: ['v15'], gate: 'q8', pan: 'p0',
+				opmLfo: ['MH0,200,64,0,5,0,1', 'MHON']
+			}, playbackStateScan({}, { hasOctave: true, hasGate: true }), selectedStart);
+			assert.ok(statefulTrace.source.includes('B @0 t80 l16 v15 q8 p0 MH0,200,64,0,5,0,1 MHON cc<b>c& f4q4g8'),
+				'Selection trace restores volume, gate, pan and hardware LFO state before the selected notes');
 			await tracker.start(document, false, trace.source, trace.documentOffsets);
 			await tracker.setPosition(0);
 			assert.ok(tokens().includes('c8'), `Selection trace maps its first note into the selected source range (${errors.join('; ')})`);

@@ -1,20 +1,23 @@
 import { Range, ThemeColor, window, workspace, type Disposable, type TextDocument, type TextEditor } from 'vscode';
 import type { NanoDriveWorker } from './nanodriveWorker';
-import { scanMmlPlaybackState, type MmlPlaybackState } from './mmlTempo';
+import type { MmlPlaybackState, MmlPlaybackStateScan } from './mmlPlaybackState';
 
 export interface SourceEvent { position: number; channel: number; start: number | null; end: number | null; }
 export interface SourceBatch { events: SourceEvent[]; position: number; finished: boolean; }
 export interface SelectionTraceSource { source: string; documentOffsets: number[]; }
 
-export function selectionTraceSource(mml: string, inheritedState: MmlPlaybackState, documentStart: number): SelectionTraceSource {
-	const selectionState = scanMmlPlaybackState(mml, mml.length);
+export function selectionTraceSource(
+	mml: string, inheritedState: MmlPlaybackState, selectionState: MmlPlaybackStateScan, documentStart: number
+): SelectionTraceSource {
 	const tempo = inheritedState.tempo && !selectionState.hasTempo ? inheritedState.tempo : undefined;
 	const length = inheritedState.length && !selectionState.hasLength ? inheritedState.length : undefined;
 	const octave = inheritedState.octave !== undefined && !selectionState.hasOctave ? `o${inheritedState.octave}` : undefined;
 	const volume = inheritedState.volume?.join(' ');
 	const gate = inheritedState.gate;
 	const pan = inheritedState.pan;
-	const commands = [tempo, length, octave, volume, gate, pan].filter((command): command is string => command !== undefined).join(' ');
+	const opmLfo = inheritedState.opmLfo?.join(' ');
+	const commands = [tempo, length, octave, volume, gate, pan, opmLfo]
+		.filter((command): command is string => command !== undefined).join(' ');
 	let body = '';
 	const bodyOffsets = [documentStart];
 	const appendBodyOriginal = (start: number, end: number) => {

@@ -93,6 +93,7 @@ impl Emulation {
             None,
             None,
             None,
+            None,
             ignore_voice_select,
         )
     }
@@ -107,6 +108,7 @@ impl Emulation {
         volume: Option<&[String]>,
         gate: Option<&str>,
         pan: Option<&str>,
+        opm_lfo: Option<&[String]>,
         ignore_voice_select: bool,
     ) -> Result<(), String> {
         self.stop_voice_test();
@@ -118,6 +120,7 @@ impl Emulation {
             volume,
             gate,
             pan,
+            opm_lfo,
             ignore_voice_select,
         )?;
         self.all_off(None, None);

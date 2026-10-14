@@ -43,6 +43,7 @@ impl Voice {
             None,
             None,
             None,
+            None,
             ignore_voice_select,
         )
     }
@@ -56,6 +57,7 @@ impl Voice {
         inherited_volume: Option<&[String]>,
         inherited_gate: Option<&str>,
         inherited_pan: Option<&str>,
+        inherited_opm_lfo: Option<&[String]>,
         ignore_voice_select: bool,
     ) -> Result<soundlog::mdx::document::MdxDocument, String> {
         use mmlx::mdx::{MmlCommand, MmlTrack};
@@ -191,6 +193,17 @@ impl Voice {
                 _ => Err("Invalid inherited MML state".into()),
             }
         }
+        fn parse_opm_lfo(value: &[String]) -> Result<Vec<MmlCommand>, String> {
+            value
+                .iter()
+                .map(|value| match parse_single_state_command(value)? {
+                    command @ (MmlCommand::OpmLfo { .. }
+                    | MmlCommand::OpmLfoOn
+                    | MmlCommand::OpmLfoOff) => Ok(command),
+                    _ => Err("Invalid inherited hardware LFO state".into()),
+                })
+                .collect()
+        }
         let source = self.test_source(mml)?;
         let mut parsed = mmlx::mdx::parse(&source).map_err(|error| error.to_string())?;
         let inherited_tempo = if inherited_tempo.is_some()
@@ -241,12 +254,14 @@ impl Voice {
                 }
             })
             .transpose()?;
+        let inherited_opm_lfo = inherited_opm_lfo.map(parse_opm_lfo).transpose()?;
         if inherited_tempo.is_some()
             || inherited_length.is_some()
             || inherited_octave.is_some()
             || inherited_volume.is_some()
             || inherited_gate.is_some()
             || inherited_pan.is_some()
+            || inherited_opm_lfo.is_some()
         {
             for track in &mut parsed.tracks {
                 if ('A'..='H').contains(&track.channel) {
@@ -278,6 +293,12 @@ impl Voice {
                     {
                         track.commands.insert(index, command);
                         index += 1;
+                    }
+                    if let Some(commands) = &inherited_opm_lfo {
+                        for command in commands {
+                            track.commands.insert(index, command.clone());
+                            index += 1;
+                        }
                     }
                 }
             }
@@ -595,7 +616,17 @@ mod tests {
         ));
 
         let inherited_state = voice
-            .test_document_with_state("A @1 c4", None, Some("l8"), Some(5), None, None, None, true)
+            .test_document_with_state(
+                "A @1 c4",
+                None,
+                Some("l8"),
+                Some(5),
+                None,
+                None,
+                None,
+                None,
+                true,
+            )
             .unwrap();
         let expected_state = voice
             .test_document_with_tempo("A l8 o5 c4", None, true)
@@ -611,6 +642,7 @@ mod tests {
                 None,
                 None,
                 None,
+                None,
                 true,
             )
             .unwrap();
@@ -620,7 +652,17 @@ mod tests {
         assert_eq!(selected_state, expected_selected_state);
 
         let shifted_octave = voice
-            .test_document_with_state("A @1 > c4", None, None, Some(5), None, None, None, true)
+            .test_document_with_state(
+                "A @1 > c4",
+                None,
+                None,
+                Some(5),
+                None,
+                None,
+                None,
+                None,
+                true,
+            )
             .unwrap();
         let expected_shifted_octave = voice
             .test_document_with_tempo("A o5 > c4", None, true)
@@ -647,6 +689,7 @@ mod tests {
                 Some(&example_state[..1]),
                 Some("q8"),
                 None,
+                None,
                 true,
             )
             .unwrap();
@@ -658,5 +701,24 @@ mod tests {
             )
             .unwrap();
         assert_eq!(selected_state, expected_selected);
+
+        let opm_lfo = vec!["MH0,200,64,0,5,0,1".to_string(), "MHON".to_string()];
+        let inherited_opm_lfo = voice
+            .test_document_with_state(
+                "A @1 c4",
+                None,
+                None,
+                None,
+                None,
+                None,
+                None,
+                Some(&opm_lfo),
+                true,
+            )
+            .unwrap();
+        let expected_opm_lfo = voice
+            .test_document_with_tempo("A MH0,200,64,0,5,0,1 MHON c4", None, true)
+            .unwrap();
+        assert_eq!(inherited_opm_lfo, expected_opm_lfo);
     }
 }

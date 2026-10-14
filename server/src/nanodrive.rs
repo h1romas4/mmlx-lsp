@@ -83,6 +83,8 @@ enum Operation {
         gate: Option<String>,
         #[serde(default)]
         pan: Option<String>,
+        #[serde(default, rename = "opmLfo")]
+        opm_lfo: Option<Vec<String>>,
         #[serde(default, rename = "ignoreVoiceSelect")]
         ignore_voice_select: bool,
     },
@@ -216,6 +218,7 @@ impl Bridge {
                 volume,
                 gate,
                 pan,
+                opm_lfo,
                 ignore_voice_select,
             } => {
                 self.voice_test = None;
@@ -234,6 +237,7 @@ impl Bridge {
                     volume.as_deref(),
                     gate.as_deref(),
                     pan.as_deref(),
+                    opm_lfo.as_deref(),
                     ignore_voice_select,
                 )?;
                 let registers = self.session.as_mut().unwrap().1.begin_voice_test();
