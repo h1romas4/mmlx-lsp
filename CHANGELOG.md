@@ -4,6 +4,8 @@ All notable changes to the "mmlx-lsp" extension will be documented in this file.
 
 ## [Unreleased]
 
+- Add MCP tools to parse MDX/VGM files and save VGM or MDX/MML stream logs to workspace files.
+
 ## [0.21.0] - 2026-10-15
 
 - Replace the NDSIF b-version wire format with the v1 draft protocol and migrate the NanoDrive worker; requires v1-compatible firmware.

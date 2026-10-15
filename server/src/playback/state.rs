@@ -99,9 +99,7 @@ pub fn scan(
         if span.end() > offset {
             continue;
         }
-        let Some(text) = span.text(source) else {
-            return None;
-        };
+        let text = span.text(source)?;
         match command {
             MmlCommand::Tempo(_) | MmlCommand::OpmTempo(_) => {
                 scan.state.tempo = Some(text.to_owned());

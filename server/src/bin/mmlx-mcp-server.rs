@@ -22,16 +22,20 @@ use rmcp::{
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use soundlog::{
-    VgmCommand, VgmDocument,
+    VgmCallbackStream, VgmCommand, VgmDocument, VgmHeader, VgmStream,
+    chip::event::StateEvent,
     mdx::{
         command::MdxCommand,
         convert::{
-            MdxPlaybackCheckLimits, MdxToVgmOptions, check_playback, to_vgm_stream_generator,
+            AdpcmMode, MdxPlaybackCheckLimits, MdxToVgmOptions, check_playback,
+            to_vgm_stream_generator,
         },
         document::MdxDocument,
         package::MdxPackage,
         pdx::{PdxBuilder, PdxDocument},
     },
+    vgm::detail::{DataBlockType, parse_data_block},
+    vgm::{command::Instance, stream::StreamResult},
 };
 use tokio::{
     io::{AsyncRead, AsyncWrite, ReadBuf},
@@ -44,27 +48,64 @@ const MAX_COMMANDS: usize = 500;
 const MAX_TRACE_TICK: u64 = 100_000;
 const MAX_VGM_OUTPUT_BYTES: usize = 64 * 1024 * 1024;
 const MAX_VGM_TICKS: u32 = 1_000_000;
+const MAX_STREAM_LOOP_COUNT: u32 = 1_000;
 
 #[derive(Deserialize, JsonSchema)]
 struct VgmParseRequest {
-    /// VGM file bytes encoded as standard Base64 (maximum 32 MiB decoded).
-    data_base64: String,
-    /// Required zero-based command index to start returning.
-    start_command: usize,
-    /// Required number of commands to return (1-500).
-    max_commands: usize,
+    /// Workspace identifier returned by mmlx_workspaces.
+    workspace: String,
+    /// Workspace-relative VGM input path (maximum 32 MiB).
+    input_path: String,
+    /// Workspace-relative text output path. Existing files are not overwritten.
+    output_path: String,
 }
 
 #[derive(Deserialize, JsonSchema)]
 struct MdxParseRequest {
-    /// MDX file bytes encoded as standard Base64 (maximum 32 MiB decoded).
-    data_base64: String,
-    /// Optional zero-based track to inspect; omitted selects all tracks.
-    track: Option<usize>,
-    /// Required zero-based command index within each selected track to start returning.
-    start_command: usize,
-    /// Required number of commands returned across the selected tracks (1-500).
-    max_commands: usize,
+    /// Workspace identifier returned by mmlx_workspaces.
+    workspace: String,
+    /// Workspace-relative MDX input path (maximum 32 MiB).
+    input_path: String,
+    /// Workspace-relative text output path. Existing files are not overwritten.
+    output_path: String,
+}
+
+#[derive(Deserialize, JsonSchema)]
+struct VgmStreamRequest {
+    /// Workspace identifier returned by mmlx_workspaces.
+    workspace: String,
+    /// Workspace-relative VGM input path (maximum 32 MiB).
+    input_path: String,
+    /// Workspace-relative text output path. Existing files are not overwritten.
+    output_path: String,
+    /// Number of loop playthroughs; defaults to one.
+    loop_count: Option<u32>,
+    /// Optional VGM loop modifier override.
+    loop_modifier: Option<u8>,
+    /// Optional VGM loop base override.
+    loop_base: Option<i8>,
+}
+
+#[derive(Deserialize, JsonSchema)]
+struct MdxStreamRequest {
+    /// Workspace identifier returned by mmlx_workspaces.
+    workspace: String,
+    /// Workspace-relative .mml or .mdx input path.
+    input_path: String,
+    /// Workspace-relative text output path. Existing files are not overwritten.
+    output_path: String,
+    /// Optional workspace-relative PDX file.
+    pdx_path: Option<String>,
+    /// YM2151 clock in Hz (defaults to 4 MHz).
+    ym2151_clock: Option<u32>,
+    /// OKIM6258 clock in Hz.
+    okim6258_clock: Option<u32>,
+    /// Number of whole-song playthroughs; defaults to one.
+    loop_count: Option<u32>,
+    /// ADPCM mode: through (default), resample, or lpf.
+    adpcm_mode: Option<String>,
+    /// Maximum playback ticks (defaults to 100000; maximum 1000000).
+    max_ticks: Option<u32>,
 }
 
 #[derive(Deserialize, JsonSchema)]
@@ -163,21 +204,6 @@ struct MmlCommandDescription {
     parameters: BTreeMap<String, String>,
 }
 
-#[derive(Serialize)]
-struct CommandReport {
-    index: usize,
-    offset: usize,
-    length: usize,
-    command: String,
-}
-
-#[derive(Serialize)]
-struct VgmCommandReport {
-    #[serde(flatten)]
-    command: CommandReport,
-    samples_at_issue: u64,
-}
-
 #[derive(Clone)]
 struct MmlxMcpServer;
 
@@ -268,7 +294,7 @@ impl AsyncWrite for Stdout {
 #[tool_router]
 impl MmlxMcpServer {
     #[tool(
-        description = "List the trusted VS Code workspace folders available for file-based MDX and PDX builds."
+        description = "List the trusted VS Code workspace folders available for file-based build and parse-output tools."
     )]
     fn mmlx_workspaces(&self) -> Result<CallToolResult, McpError> {
         let entries = match fs::read_dir("/workspaces") {
@@ -370,19 +396,20 @@ impl MmlxMcpServer {
             "purpose": "Build MDX, PDX, and VGM files from workspace sources, and analyze MML source and MDX/VGM music data. The server does not render audio.",
             "formats": {
                 "MML": "Human-readable music source. mmlx_build_mdx compiles a workspace .mml file into MDX, mmlx_build_vgm compiles it into VGM, mml_parse compiles it into MDX track commands with source locations, mml_check performs a bounded playback check, and mml_vgm_trace generates VGM commands around a source playback tick.",
-                "MDX": "A binary music format. mmlx_build_mdx compiles MML into an MDX file, mmlx_build_vgm converts MDX into VGM, and mdx_parse inspects an existing MDX file. MDX files can reference PDX sample data.",
+                "MDX": "A binary music format. mmlx_build_mdx compiles MML into an MDX file, mmlx_build_vgm converts MDX into VGM, mdx_parse writes all commands from a workspace-relative MDX file to a workspace text file, and mdx_stream lazily converts MML or MDX into a soundlog-style register/event stream. MDX files can reference PDX sample data.",
                 "PDX": "Sample data that can be used by MDX playback. mmlx_build_pdx builds a PDX file from a workspace .pdx.json manifest and relative WAV files. mml_vgm_trace accepts optional PDX bytes; without them it uses synthetic silence for PCM samples.",
-                "VGM": "A record of chip commands and timing. mmlx_build_vgm creates a VGM file from MML or MDX, vgm_parse inspects an existing VGM file, and mml_vgm_trace generates a VGM command trace from MML and maps commands to MML ticks."
+                "VGM": "A record of chip commands and timing. mmlx_build_vgm creates a VGM file from MML or MDX, vgm_parse writes the complete command table from a workspace-relative VGM file to a workspace text file, vgm_stream writes soundlog-style register writes and detected events, and mml_vgm_trace generates a VGM command trace from MML and maps commands to MML ticks."
             },
             "workflow": [
-                "Use mmlx_workspaces to find the trusted workspace id, then mmlx_build_mdx, mmlx_build_pdx, or mmlx_build_vgm to create an output file. Build paths are workspace-relative and existing output files are never overwritten.",
-                "Use mml_parse to inspect how MML compiles and where generated commands came from; request only the command window needed and advance start_command to fetch later commands.",
+                "Use mmlx_workspaces to find the trusted workspace id, then pass it with workspace-relative input_path and output_path values to mdx_parse or vgm_parse. Build tools also use workspace-relative paths; output files are created without overwriting existing files.",
+                "Use vgm_stream for an existing VGM file or mdx_stream for lazy MML/MDX playback; both save the complete soundlog-style stream to output_path.",
+                "Use mml_parse to inspect how MML compiles and where generated commands came from; request a command window and advance start_command to fetch later commands.",
                 "Use mml_check for a bounded playback check; it does not validate real PDX contents or audio output.",
                 "Use mml_vgm_trace to inspect generated chip commands around a zero-based MML tick. Tick mapping requires a single tempo set at the start of playback.",
-                "Use mdx_parse or vgm_parse to inspect existing binary files; request only the command window needed and advance start_command to fetch later commands. Binary inputs are standard Base64."
+                "Use mdx_parse or vgm_parse to save the complete text command table from a workspace-relative binary input_path to a workspace-relative output_path."
             ],
             "tools": [
-                {"name": "mmlx_workspaces", "purpose": "List workspace roots available to file-based build tools."},
+                {"name": "mmlx_workspaces", "purpose": "List workspace roots available to file-based build, parse, and stream-output tools."},
                 {"name": "mmlx_build_mdx", "purpose": "Build a workspace MML file into MDX."},
                 {"name": "mmlx_build_pdx", "purpose": "Build a PDX file from a workspace manifest and WAV samples."},
                 {"name": "mmlx_build_vgm", "purpose": "Build a VGM file from workspace MML or MDX, with optional PDX samples."},
@@ -392,21 +419,22 @@ impl MmlxMcpServer {
                 {"name": "mml_parse", "purpose": "Compile MML into MDX track commands with MML source locations."},
                 {"name": "mml_check", "purpose": "Run a bounded MML playback check."},
                 {"name": "mml_vgm_trace", "purpose": "Return generated VGM commands around an MML tick."},
-                {"name": "mdx_parse", "purpose": "Inspect an existing MDX file, optionally filtered by track."},
-                {"name": "vgm_parse", "purpose": "Inspect an existing VGM file."}
+                {"name": "mdx_parse", "purpose": "Write every track command from a workspace MDX file to a workspace text file."},
+                {"name": "vgm_parse", "purpose": "Write every command from a workspace VGM file to a workspace text file."},
+                {"name": "mdx_stream", "purpose": "Write soundlog-style register writes and detected events from lazy MML/MDX playback."},
+                {"name": "vgm_stream", "purpose": "Write soundlog-style register writes and detected events from a VGM file."}
             ],
             "limits": {
                 "mml_source_bytes": MAX_MML_BYTES,
                 "binary_file_bytes": MAX_BINARY_BYTES,
-                "parser_max_commands": MAX_COMMANDS,
+                "command_window_max_commands": MAX_COMMANDS,
                 "pdx_manifest_bytes": 1024 * 1024,
                 "pdx_wav_bytes_total": 32 * 1024 * 1024,
                 "vgm_output_bytes": 64 * 1024 * 1024,
-                "vgm_max_ticks": 1_000_000
+                "vgm_max_ticks": MAX_VGM_TICKS,
+                "stream_loop_count_max": MAX_STREAM_LOOP_COUNT
             },
             "range_requirements": {
-                "vgm_parse": "Requires start_command and max_commands.",
-                "mdx_parse": "Requires start_command and max_commands.",
                 "mml_parse": "Requires start_command and max_commands.",
                 "mml_vgm_trace": "Requires tick, radius, and max_commands."
             }
@@ -475,134 +503,179 @@ impl MmlxMcpServer {
             "format": "Pest grammar",
             "copied_from": "crates/mmlx/src/mdx/mml.pest",
             "note": "This is a copied grammar snapshot. It describes parser syntax, not all semantic validation or compilation constraints. Use mml_command_reference for command descriptions.",
-            "grammar": include_str!("../../mml.pest")
+            "grammar": include_str!("../../assets/grammar/mml.pest")
         }))
     }
 
     #[tool(
-        description = "Parse Base64-encoded VGM bytes and report header metadata, command offsets, lengths, and sample positions. Input is limited to 32 MiB. start_command and max_commands are required; choose the smallest useful command window and advance start_command to fetch later commands. max_commands is capped at 500."
+        description = "Parse a workspace-relative VGM file (up to 32 MiB) and write the complete command table in soundlog parse format to a new workspace-relative output_path. Call mmlx_workspaces first; existing output files are not overwritten."
     )]
     fn vgm_parse(&self, params: Parameters<VgmParseRequest>) -> Result<CallToolResult, McpError> {
         let request = params.0;
-        let bytes = decode_binary(&request.data_base64)?;
-        let max_commands = command_limit(request.max_commands)?;
-        let start_command = request.start_command;
+        let root = workspace_root(&request.workspace)?;
+        let bytes = read_binary_input(&root, &request.input_path)?;
         let document = VgmDocument::try_from(bytes.as_slice())
-            .map_err(|error| invalid_input(format!("failed to parse VGM: {error}")))?;
-        let offsets = document.sourcemap();
-        let start_command = start_command.min(document.commands.len());
-        let mut samples = document
-            .commands
-            .iter()
-            .take(start_command)
-            .map(vgm_wait_samples)
-            .fold(0u64, u64::saturating_add);
-        let commands_total = document.commands.len().saturating_sub(start_command);
-        let commands = document
-            .commands
-            .iter()
-            .zip(offsets)
-            .enumerate()
-            .skip(start_command)
-            .take(max_commands)
-            .map(|(index, (command, (offset, length)))| {
-                let samples_at_issue = samples;
-                samples = samples.saturating_add(vgm_wait_samples(command));
-                VgmCommandReport {
-                    command: CommandReport {
-                        index,
-                        offset,
-                        length,
-                        command: format_vgm_command(command),
-                    },
-                    samples_at_issue,
-                }
-            })
-            .collect::<Vec<_>>();
+            .map_err(|error| invalid_input(format!("failed to parse VGM file: {error}")))?;
+        let (command_count, byte_length) =
+            write_parse_output(&root, &request.output_path, "VGM parse output", |file| {
+                write_vgm_parse(&document, file)
+            })?;
         let report = serde_json::json!({
             "format": "VGM",
-            "file_bytes": bytes.len(),
-            "version": format!("{}.{:02x}", document.header.version >> 8, document.header.version & 0xff),
-            "total_samples": document.header.total_samples,
-            "duration_seconds": document.header.total_samples as f64 / 44_100.0,
-            "loop_samples": document.header.loop_samples,
-            "loop_command_index": document.loop_command_index(),
-            "ym2151_clock": document.header.ym2151_clock,
-            "ym2612_clock": document.header.ym2612_clock,
-            "start_command": start_command,
-            "commands_total": document.commands.len(),
-            "commands_in_selection": commands_total,
-            "commands_returned": commands.len(),
-            "truncated": commands.len() < commands_total,
-            "commands": commands
+            "workspace": request.workspace,
+            "input_path": request.input_path,
+            "output_path": request.output_path,
+            "command_count": command_count,
+            "byte_length": byte_length
         });
         json_result(&report)
     }
 
     #[tool(
-        description = "Parse Base64-encoded MDX bytes and report title, PDX reference, per-track commands, and command byte offsets. Input is limited to 32 MiB. start_command and max_commands are required; choose the smallest useful command window and advance start_command to fetch later commands. max_commands is capped at 500; track optionally selects one track to narrow the result."
+        description = "Parse a workspace-relative MDX file (up to 32 MiB) and write every track command in soundlog mdx parse format to a new workspace-relative output_path. Call mmlx_workspaces first; existing output files are not overwritten."
     )]
     fn mdx_parse(&self, params: Parameters<MdxParseRequest>) -> Result<CallToolResult, McpError> {
         let request = params.0;
-        let bytes = decode_binary(&request.data_base64)?;
-        let max_commands = command_limit(request.max_commands)?;
+        let root = workspace_root(&request.workspace)?;
+        let bytes = read_binary_input(&root, &request.input_path)?;
         let document = MdxDocument::parse(&bytes)
-            .map_err(|error| invalid_input(format!("failed to parse MDX: {error}")))?;
+            .map_err(|error| invalid_input(format!("failed to parse MDX file: {error}")))?;
         let source_map = document
             .sourcemap()
             .map_err(|error| invalid_input(format!("failed to map MDX commands: {error}")))?;
-        let start_command = request.start_command;
-        if request
-            .track
-            .is_some_and(|track| track >= document.tracks.len())
-        {
-            return Err(invalid_input(format!(
-                "track must be less than {}",
-                document.tracks.len()
-            )));
-        }
-        let total_commands = document
-            .tracks
-            .iter()
-            .enumerate()
-            .filter(|(track, _)| request.track.is_none_or(|selected| selected == *track))
-            .map(|(_, commands)| commands.len().saturating_sub(start_command))
-            .sum::<usize>();
-        let mut remaining = max_commands;
-        let tracks = document.tracks.iter().enumerate()
-            .filter(|(track, _)| request.track.is_none_or(|selected| selected == *track))
-            .map(|(track, commands)| {
-            let entries = commands.iter().zip(source_map[track].iter()).enumerate()
-                .skip(start_command)
-                .take(remaining)
-                .map(|(index, (command, (offset, length)))| CommandReport {
-                    index,
-                    offset: *offset,
-                    length: *length,
-                    command: format!("{command:?}"),
-                })
-                .collect::<Vec<_>>();
-            remaining = remaining.saturating_sub(entries.len());
-            serde_json::json!({ "track": track, "commands_total": commands.len(), "commands": entries })
-        }).collect::<Vec<_>>();
-        let returned = tracks
-            .iter()
-            .map(|track| track["commands"].as_array().map_or(0, Vec::len))
-            .sum::<usize>();
+        let track_count = document.tracks.len();
+        let (command_count, byte_length) =
+            write_parse_output(&root, &request.output_path, "MDX parse output", |file| {
+                write_mdx_parse(&document, &source_map, file)
+            })?;
         let report = serde_json::json!({
             "format": "MDX",
-            "file_bytes": bytes.len(),
-            "title": document.header.title,
-            "pdx_name": document.header.pdx_name,
-            "track_count": document.tracks.len(),
-            "commands_total": total_commands,
-            "commands_returned": returned,
-            "truncated": returned < total_commands,
-            "track": request.track,
-            "start_command": start_command,
-            "tracks": tracks
+            "workspace": request.workspace,
+            "input_path": request.input_path,
+            "output_path": request.output_path,
+            "track_count": track_count,
+            "command_count": command_count,
+            "byte_length": byte_length
         });
         json_result(&report)
+    }
+
+    #[tool(
+        description = "Stream a workspace-relative VGM file through soundlog's register/event tracker and write every stream row to a new workspace-relative output_path. Call mmlx_workspaces first. Input is limited to 32 MiB; loop_count defaults to one and is capped at 1000."
+    )]
+    fn vgm_stream(&self, params: Parameters<VgmStreamRequest>) -> Result<CallToolResult, McpError> {
+        let request = params.0;
+        let root = workspace_root(&request.workspace)?;
+        let bytes = read_binary_input(&root, &request.input_path)?;
+        let header = VgmHeader::from_bytes(&bytes)
+            .map_err(|error| invalid_input(format!("failed to parse VGM header: {error}")))?;
+        let loop_count = request.loop_count.unwrap_or(1).max(1);
+        if loop_count > MAX_STREAM_LOOP_COUNT {
+            return Err(invalid_input(format!(
+                "loop_count must be no greater than {MAX_STREAM_LOOP_COUNT}"
+            )));
+        }
+        let mut stream = VgmStream::from_vgm(bytes)
+            .map_err(|error| invalid_input(format!("failed to create VGM stream: {error}")))?;
+        stream.set_loop_count(Some(loop_count));
+        if let Some(modifier) = request.loop_modifier {
+            stream.set_loop_modifier(modifier);
+        }
+        if let Some(base) = request.loop_base {
+            stream.set_loop_base(base);
+        }
+        let instances = header.chip_instances();
+        let (command_count, byte_length) = write_stream_output(
+            &root,
+            &request.output_path,
+            "VGM stream output",
+            stream,
+            |callback_stream| callback_stream.track_chips(&instances),
+        )?;
+        json_result(&serde_json::json!({
+            "format": "VGM stream",
+            "workspace": request.workspace,
+            "input_path": request.input_path,
+            "output_path": request.output_path,
+            "command_count": command_count,
+            "byte_length": byte_length,
+            "loop_count": loop_count
+        }))
+    }
+
+    #[tool(
+        description = "Convert a workspace-relative .mml or .mdx file lazily to a VGM command stream and save soundlog-style register writes and detected events to a new workspace-relative output_path. Call mmlx_workspaces first. Input files are limited to 32 MiB, MML to 64 KiB, loop_count to 1000, and max_ticks to 1000000."
+    )]
+    fn mdx_stream(&self, params: Parameters<MdxStreamRequest>) -> Result<CallToolResult, McpError> {
+        let request = params.0;
+        let root = workspace_root(&request.workspace)?;
+        let (package, pdx_path) =
+            load_mdx_stream_package(&root, &request.input_path, request.pdx_path.as_deref())?;
+        let loop_count = request.loop_count.unwrap_or(1).max(1);
+        if loop_count > MAX_STREAM_LOOP_COUNT {
+            return Err(invalid_input(format!(
+                "loop_count must be no greater than {MAX_STREAM_LOOP_COUNT}"
+            )));
+        }
+        let adpcm_mode = match request.adpcm_mode.as_deref().unwrap_or("through") {
+            "through" => AdpcmMode::Through,
+            "resample" => AdpcmMode::Resample,
+            "lpf" => AdpcmMode::Lpf,
+            _ => {
+                return Err(invalid_input(
+                    "adpcm_mode must be through, resample, or lpf",
+                ));
+            }
+        };
+        let max_ticks = request.max_ticks.unwrap_or(100_000);
+        if !(1..=MAX_VGM_TICKS).contains(&max_ticks) {
+            return Err(invalid_input(format!(
+                "max_ticks must be between 1 and {MAX_VGM_TICKS}"
+            )));
+        }
+        let options = MdxToVgmOptions {
+            ym2151_clock: request.ym2151_clock.unwrap_or(4_000_000),
+            okim6258_clock: request
+                .okim6258_clock
+                .unwrap_or(soundlog::mdx::pcm_mixer::PCM8_RECOMMENDED_OKIM6258_CLOCK_HZ),
+            loop_count: Some(loop_count),
+            adpcm_mode,
+            max_ticks: Some(max_ticks),
+            ..Default::default()
+        };
+        let has_pcm = package.drives_okim6258();
+        let generator = to_vgm_stream_generator(package, options)
+            .map_err(|error| invalid_input(format!("MDX to VGM conversion failed: {error}")))?;
+        let stream = VgmStream::from_generator(generator);
+        let (command_count, byte_length) = write_stream_output(
+            &root,
+            &request.output_path,
+            "MDX stream output",
+            stream,
+            |callback_stream| {
+                use soundlog::chip::state::{Okim6258State, Ym2151State};
+
+                callback_stream
+                    .track_state::<Ym2151State>(Instance::Primary, options.ym2151_clock as f32);
+                if has_pcm {
+                    callback_stream.track_state::<Okim6258State>(
+                        Instance::Primary,
+                        options.okim6258_clock as f32,
+                    );
+                }
+            },
+        )?;
+        json_result(&serde_json::json!({
+            "format": "MDX stream",
+            "workspace": request.workspace,
+            "input_path": request.input_path,
+            "pdx_path": pdx_path,
+            "output_path": request.output_path,
+            "command_count": command_count,
+            "byte_length": byte_length,
+            "loop_count": loop_count,
+            "max_ticks": max_ticks
+        }))
     }
 
     #[tool(
@@ -972,6 +1045,34 @@ fn workspace_input(root: &Path, relative: &str) -> Result<PathBuf, McpError> {
     Ok(path)
 }
 
+fn read_binary_input(root: &Path, relative: &str) -> Result<Vec<u8>, McpError> {
+    let path = workspace_input(root, relative)?;
+    let size = fs::metadata(&path)
+        .map_err(|error| {
+            McpError::internal_error(format!("could not inspect input file: {error}"), None)
+        })?
+        .len();
+    if size > MAX_BINARY_BYTES as u64 {
+        return Err(invalid_input(format!(
+            "input file exceeds the {} MiB binary size limit",
+            MAX_BINARY_BYTES / (1024 * 1024)
+        )));
+    }
+    let bytes = fs::read(&path).map_err(|error| {
+        McpError::internal_error(
+            format!("could not read input file {}: {error}", path.display()),
+            None,
+        )
+    })?;
+    if bytes.len() > MAX_BINARY_BYTES {
+        return Err(invalid_input(format!(
+            "input file exceeds the {} MiB binary size limit",
+            MAX_BINARY_BYTES / (1024 * 1024)
+        )));
+    }
+    Ok(bytes)
+}
+
 fn workspace_output(root: &Path, relative: &str) -> Result<PathBuf, McpError> {
     let relative = workspace_relative_path(relative)?;
     let mut components = relative.components().peekable();
@@ -1012,34 +1113,91 @@ fn workspace_output(root: &Path, relative: &str) -> Result<PathBuf, McpError> {
     Err(invalid_input("output path must include a file name"))
 }
 
-fn write_build_output(path: &Path, bytes: &[u8]) -> Result<(), McpError> {
+fn write_output_file<T>(
+    path: &Path,
+    output_kind: &str,
+    write_output: impl FnOnce(&mut fs::File) -> Result<T, McpError>,
+) -> Result<(T, u64), McpError> {
     let mut file = fs::OpenOptions::new()
         .write(true)
         .create_new(true)
         .open(path)
         .map_err(|error| {
             McpError::internal_error(
-                format!("could not create build output {}: {error}", path.display()),
+                format!("could not create {output_kind} {}: {error}", path.display()),
                 None,
             )
         })?;
-    if let Err(error) = file.write_all(bytes).and_then(|()| file.flush()) {
-        drop(file);
-        return match fs::remove_file(path) {
-            Ok(()) => Err(McpError::internal_error(
-                format!("could not write build output {}: {error}", path.display()),
+    let result = write_output(&mut file).and_then(|value| {
+        file.flush().map_err(|error| {
+            McpError::internal_error(
+                format!("could not flush {output_kind} {}: {error}", path.display()),
                 None,
-            )),
-            Err(cleanup_error) => Err(McpError::internal_error(
+            )
+        })?;
+        let length = file.metadata().map_err(|error| {
+            McpError::internal_error(
                 format!(
-                    "could not write build output {}: {error}; could not remove the partial file: {cleanup_error}",
+                    "could not inspect {output_kind} {}: {error}",
                     path.display()
                 ),
                 None,
-            )),
-        };
+            )
+        })?;
+        Ok((value, length.len()))
+    });
+    match result {
+        Ok(result) => Ok(result),
+        Err(error) => {
+            drop(file);
+            match fs::remove_file(path) {
+                Ok(()) => Err(McpError::internal_error(
+                    format!("could not write {output_kind} {}: {error}", path.display()),
+                    None,
+                )),
+                Err(cleanup_error) => Err(McpError::internal_error(
+                    format!(
+                        "could not write {output_kind} {}: {error}; could not remove the partial file: {cleanup_error}",
+                        path.display()
+                    ),
+                    None,
+                )),
+            }
+        }
     }
-    Ok(())
+}
+
+fn write_build_output(path: &Path, bytes: &[u8]) -> Result<(), McpError> {
+    write_output_file(path, "build output", |file| {
+        file.write_all(bytes)
+            .map_err(|error| McpError::internal_error(error.to_string(), None))
+    })
+    .map(|_| ())
+}
+
+fn write_parse_output<T>(
+    root: &Path,
+    relative: &str,
+    output_kind: &str,
+    write_output: impl FnOnce(&mut fs::File) -> io::Result<T>,
+) -> Result<(T, u64), McpError> {
+    let path = workspace_output(root, relative)?;
+    write_output_file(&path, output_kind, |file| {
+        write_output(file).map_err(|error| McpError::internal_error(error.to_string(), None))
+    })
+}
+
+fn write_stream_output(
+    root: &Path,
+    relative: &str,
+    output_kind: &str,
+    stream: VgmStream,
+    track_state: impl FnOnce(&mut VgmCallbackStream<'_>),
+) -> Result<(usize, u64), McpError> {
+    let path = workspace_output(root, relative)?;
+    write_output_file(&path, output_kind, |file| {
+        write_callback_stream(stream, file, track_state)
+    })
 }
 
 fn build_mdx(
@@ -1173,6 +1331,61 @@ fn find_referenced_pdx(
         }
     }
     Ok(None)
+}
+
+fn load_mdx_stream_package(
+    root: &Path,
+    input_path: &str,
+    pdx_path: Option<&str>,
+) -> Result<(MdxPackage, Option<String>), McpError> {
+    let input = workspace_input(root, input_path)?;
+    let mdx_bytes = if input_path.to_ascii_lowercase().ends_with(".mml") {
+        let size = fs::metadata(&input)
+            .map_err(|error| McpError::internal_error(error.to_string(), None))?
+            .len();
+        if size > MAX_MML_BYTES as u64 {
+            return Err(invalid_input(format!(
+                "MML input exceeds the {MAX_MML_BYTES}-byte limit"
+            )));
+        }
+        let source = fs::read_to_string(&input)
+            .map_err(|error| invalid_input(format!("could not read MML source: {error}")))?;
+        validate_mml(&source)?;
+        let parsed = mmlx::mdx::frontend::parse(&source)
+            .map_err(|error| invalid_input(format!("failed to parse MML: {error}")))?;
+        let document = mmlx::mdx::frontend::compile(&parsed)
+            .map_err(|error| invalid_input(format!("failed to compile MML: {error}")))?
+            .into_document();
+        document
+            .to_bytes()
+            .map_err(|error| invalid_input(format!("failed to serialize compiled MDX: {error}")))?
+    } else if input_path.to_ascii_lowercase().ends_with(".mdx") {
+        read_binary_input(root, input_path)?
+    } else {
+        return Err(invalid_input(
+            "MDX stream input must be an .mml or .mdx file",
+        ));
+    };
+    let document = MdxDocument::parse(&mdx_bytes)
+        .map_err(|error| invalid_input(format!("failed to parse MDX file: {error}")))?;
+    let pdx_path = if let Some(pdx_path) = pdx_path {
+        if !pdx_path.to_ascii_lowercase().ends_with(".pdx") {
+            return Err(invalid_input("PDX input must end with .pdx"));
+        }
+        workspace_input(root, pdx_path)?;
+        Some(pdx_path.to_owned())
+    } else if let Some(name) = document.header.pdx_name.as_deref() {
+        find_referenced_pdx(root, input_path, name)?.map(|(relative_path, _)| relative_path)
+    } else {
+        None
+    };
+    let pdx_bytes = pdx_path
+        .as_deref()
+        .map(|path| read_binary_input(root, path))
+        .transpose()?;
+    let package = MdxPackage::parse_owned(mdx_bytes, pdx_bytes)
+        .map_err(|error| invalid_input(format!("failed to parse MDX package: {error}")))?;
+    Ok((package, pdx_path))
 }
 
 fn build_vgm(
@@ -1369,6 +1582,64 @@ fn vgm_wait_samples(command: &VgmCommand) -> u64 {
     }
 }
 
+fn write_vgm_parse(document: &VgmDocument, output: &mut impl io::Write) -> io::Result<usize> {
+    let offsets_and_lengths = document.command_offsets_and_lengths();
+    writeln!(
+        output,
+        "{:<12} {:<8} {:<8} {:<8} Command",
+        "Samples", "Index", "Offset", "Length"
+    )?;
+    let mut total_samples = 0u64;
+    for (index, (command, (offset, length))) in document
+        .commands
+        .iter()
+        .zip(offsets_and_lengths.iter())
+        .enumerate()
+    {
+        let samples_at_issue = total_samples;
+        total_samples += vgm_wait_samples(command);
+        writeln!(
+            output,
+            "{:<12} {:<8} 0x{:06X} {:<8} {:<80}",
+            samples_at_issue,
+            index,
+            offset,
+            length,
+            VgmCommandBrief(command)
+        )?;
+    }
+    Ok(document.commands.len())
+}
+
+fn write_mdx_parse(
+    document: &MdxDocument,
+    source_map: &[Vec<(usize, usize)>],
+    output: &mut impl io::Write,
+) -> io::Result<usize> {
+    writeln!(
+        output,
+        "{:<8} {:<8} {:<8} {:<8} Command",
+        "Track", "Index", "Offset", "Length"
+    )?;
+    let mut command_count = 0;
+    for (track, commands) in document.tracks.iter().enumerate() {
+        for (index, command) in commands.iter().enumerate() {
+            let (offset, length) = source_map
+                .get(track)
+                .and_then(|track_map| track_map.get(index))
+                .copied()
+                .unwrap_or((0, 0));
+            writeln!(
+                output,
+                "{:<8} {:<8} 0x{:06x} {:<8} {:?}",
+                track, index, offset, length, command
+            )?;
+            command_count += 1;
+        }
+    }
+    Ok(command_count)
+}
+
 fn format_vgm_command(command: &VgmCommand) -> String {
     match command {
         VgmCommand::DataBlock(block) => format!(
@@ -1381,6 +1652,520 @@ fn format_vgm_command(command: &VgmCommand) -> String {
         ),
         _ => format!("{command:?}"),
     }
+}
+
+struct VgmCommandBrief<'a>(&'a VgmCommand);
+
+impl std::fmt::Display for VgmCommandBrief<'_> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        use VgmCommand::*;
+
+        match self.0 {
+            AY8910StereoMask(mask) => write!(f, "AY8910StereoMask({:?})", mask),
+            WaitSamples(wait) => write!(f, "WaitSamples({})", wait.0),
+            Wait735Samples(_) => write!(f, "Wait735Samples"),
+            Wait882Samples(_) => write!(f, "Wait882Samples"),
+            WaitNSample(wait) => write!(f, "WaitNSample(n={}, wait={})", wait.0, wait.0 + 1),
+            EndOfData(_) => write!(f, "EndOfData"),
+            DataBlock(block) => match parse_data_block(*block.clone()) {
+                Ok(data_type) => write!(
+                    f,
+                    "DataBlock({}, size={})",
+                    DataBlockTypeBrief(&data_type),
+                    block.size
+                ),
+                Err((_, error)) => {
+                    write!(f, "DataBlock(parse_error={}, size={})", error, block.size)
+                }
+            },
+            PcmRamWrite(write) => write!(f, "PcmRamWrite({:?})", write),
+            YM2612Port0Address2AWriteAndWaitN(wait) => {
+                write!(f, "YM2612Port0Address2AWriteAndWaitN({:?})", wait)
+            }
+            SetupStreamControl(stream) => write!(
+                f,
+                "SetupStreamControl(id={}, chip={:?})",
+                stream.stream_id, stream.chip_type
+            ),
+            SetStreamData(stream) => write!(
+                f,
+                "SetStreamData(id={}, bank=0x{:02X})",
+                stream.stream_id, stream.data_bank_id
+            ),
+            SetStreamFrequency(stream) => write!(
+                f,
+                "SetStreamFrequency(id={}, freq={})",
+                stream.stream_id, stream.frequency
+            ),
+            StartStream(stream) => write!(
+                f,
+                "StartStream(id={}, offset=0x{:X})",
+                stream.stream_id, stream.data_start_offset
+            ),
+            StopStream(stream) => write!(f, "StopStream(id={})", stream.stream_id),
+            StartStreamFastCall(stream) => write!(f, "StartStreamFastCall({:?})", stream),
+            SeekOffset(seek) => write!(f, "SeekOffset({:?})", seek),
+            Sn76489Write(instance, spec) => {
+                write!(f, "Sn76489Write({:?}, 0x{:02X})", instance, spec.value)
+            }
+            Ym2413Write(instance, spec) => write!(
+                f,
+                "Ym2413Write({:?}, 0x{:02X}=0x{:02X})",
+                instance, spec.register, spec.value
+            ),
+            Ym2612Write(instance, spec) => write!(
+                f,
+                "Ym2612Write({:?}, 0x{:02X}=0x{:02X})",
+                instance, spec.register, spec.value
+            ),
+            Ym2151Write(instance, spec) => write!(
+                f,
+                "Ym2151Write({:?}, 0x{:02X}=0x{:02X})",
+                instance, spec.register, spec.value
+            ),
+            SegaPcmWrite(instance, spec) => write!(
+                f,
+                "SegaPcmWrite({:?}, 0x{:04X}=0x{:02X})",
+                instance, spec.offset, spec.value
+            ),
+            Rf5c68U8Write(instance, spec) => write!(
+                f,
+                "Rf5c68U8Write({:?}, 0x{:02X}=0x{:02X})",
+                instance, spec.offset, spec.value
+            ),
+            Rf5c68U16Write(instance, spec) => write!(
+                f,
+                "Rf5c68U16Write({:?}, 0x{:04X}=0x{:02X})",
+                instance, spec.offset, spec.value
+            ),
+            Ym2203Write(instance, spec) => write!(
+                f,
+                "Ym2203Write({:?}, 0x{:02X}=0x{:02X})",
+                instance, spec.register, spec.value
+            ),
+            Ym2608Write(instance, spec) => write!(
+                f,
+                "Ym2608Write({:?}, P0x{:02X}:0x{:02X}=0x{:02X})",
+                instance, spec.port, spec.register, spec.value
+            ),
+            Ym2610bWrite(instance, spec) => write!(
+                f,
+                "Ym2610bWrite({:?}, P0x{:02X}:0x{:02X}=0x{:02X})",
+                instance, spec.port, spec.register, spec.value
+            ),
+            Ym3812Write(instance, spec) => write!(
+                f,
+                "Ym3812Write({:?}, 0x{:02X}=0x{:02X})",
+                instance, spec.register, spec.value
+            ),
+            Ym3526Write(instance, spec) => write!(
+                f,
+                "Ym3526Write({:?}, 0x{:02X}=0x{:02X})",
+                instance, spec.register, spec.value
+            ),
+            Y8950Write(instance, spec) => write!(
+                f,
+                "Y8950Write({:?}, 0x{:02X}=0x{:02X})",
+                instance, spec.register, spec.value
+            ),
+            Ymf262Write(instance, spec) => write!(f, "Ymf262Write({:?}, {:?})", instance, spec),
+            Ymf278bWrite(instance, spec) => {
+                write!(f, "Ymf278bWrite({:?}, {:?})", instance, spec)
+            }
+            Ymf271Write(instance, spec) => write!(f, "Ymf271Write({:?}, {:?})", instance, spec),
+            Scc1Write(instance, spec) => write!(
+                f,
+                "Scc1Write({:?}, P0x{:02X}:0x{:02X}=0x{:02X})",
+                instance, spec.port, spec.register, spec.value
+            ),
+            Ymz280bWrite(instance, spec) => write!(
+                f,
+                "Ymz280bWrite({:?}, 0x{:02X}=0x{:02X})",
+                instance, spec.register, spec.value
+            ),
+            Rf5c164U8Write(instance, spec) => write!(
+                f,
+                "Rf5c164U8Write({:?}, 0x{:02X}=0x{:02X})",
+                instance, spec.offset, spec.value
+            ),
+            Rf5c164U16Write(instance, spec) => write!(
+                f,
+                "Rf5c164U16Write({:?}, 0x{:04X}=0x{:02X})",
+                instance, spec.offset, spec.value
+            ),
+            PwmWrite(instance, spec) => write!(
+                f,
+                "PwmWrite({:?}, reg=0x{:02X}=0x{:06X})",
+                instance,
+                spec.register,
+                spec.value & 0x00FF_FFFF
+            ),
+            Ay8910Write(instance, spec) => write!(
+                f,
+                "Ay8910Write({:?}, 0x{:02X}=0x{:02X})",
+                instance, spec.register, spec.value
+            ),
+            GbDmgWrite(instance, spec) => write!(
+                f,
+                "GbDmgWrite({:?}, 0x{:02X}=0x{:02X})",
+                instance, spec.register, spec.value
+            ),
+            NesApuWrite(instance, spec) => write!(
+                f,
+                "NesApuWrite({:?}, 0x{:02X}=0x{:02X})",
+                instance, spec.register, spec.value
+            ),
+            MultiPcmWrite(instance, spec) => write!(
+                f,
+                "MultiPcmWrite({:?}, 0x{:02X}=0x{:02X})",
+                instance, spec.register, spec.value
+            ),
+            MultiPcmBankWrite(instance, spec) => {
+                write!(f, "MultiPcmBankWrite({:?}, {:?})", instance, spec)
+            }
+            Upd7759Write(instance, spec) => write!(
+                f,
+                "Upd7759Write({:?}, 0x{:02X}=0x{:02X})",
+                instance, spec.register, spec.value
+            ),
+            Okim6258Write(instance, spec) => write!(
+                f,
+                "Okim6258Write({:?}, 0x{:02X}=0x{:02X})",
+                instance, spec.register, spec.value
+            ),
+            Okim6295Write(instance, spec) => write!(
+                f,
+                "Okim6295Write({:?}, 0x{:02X}=0x{:02X})",
+                instance, spec.register, spec.value
+            ),
+            K054539Write(instance, spec) => write!(
+                f,
+                "K054539Write({:?}, 0x{:04X}=0x{:02X})",
+                instance, spec.register, spec.value
+            ),
+            Huc6280Write(instance, spec) => write!(
+                f,
+                "Huc6280Write({:?}, 0x{:02X}=0x{:02X})",
+                instance, spec.register, spec.value
+            ),
+            C140Write(instance, spec) => write!(
+                f,
+                "C140Write({:?}, 0x{:04X}=0x{:02X})",
+                instance, spec.register, spec.value
+            ),
+            K053260Write(instance, spec) => write!(
+                f,
+                "K053260Write({:?}, 0x{:02X}=0x{:02X})",
+                instance, spec.register, spec.value
+            ),
+            PokeyWrite(instance, spec) => write!(
+                f,
+                "PokeyWrite({:?}, 0x{:02X}=0x{:02X})",
+                instance, spec.register, spec.value
+            ),
+            QsoundWrite(instance, spec) => write!(
+                f,
+                "QsoundWrite({:?}, 0x{:04X}=0x{:04X})",
+                instance, spec.register, spec.value
+            ),
+            ScspWrite(instance, spec) => write!(
+                f,
+                "ScspWrite({:?}, 0x{:04X}=0x{:02X})",
+                instance, spec.offset, spec.value
+            ),
+            WonderSwanWrite(instance, spec) => write!(
+                f,
+                "WonderSwanWrite({:?}, 0x{:04X}=0x{:02X})",
+                instance, spec.offset, spec.value
+            ),
+            WonderSwanRegWrite(instance, spec) => write!(
+                f,
+                "WonderSwanRegWrite({:?}, 0x{:02X}=0x{:02X})",
+                instance, spec.register, spec.value
+            ),
+            VsuWrite(instance, spec) => write!(
+                f,
+                "VsuWrite({:?}, 0x{:04X}=0x{:02X})",
+                instance, spec.offset, spec.value
+            ),
+            Saa1099Write(instance, spec) => write!(
+                f,
+                "Saa1099Write({:?}, 0x{:02X}=0x{:02X})",
+                instance, spec.register, spec.value
+            ),
+            Es5503Write(instance, spec) => write!(
+                f,
+                "Es5503Write({:?}, 0x{:04X}=0x{:02X})",
+                instance, spec.register, spec.value
+            ),
+            Es5506BEWrite(instance, spec) => write!(
+                f,
+                "Es5506BEWrite({:?}, 0x{:02X}=0x{:02X})",
+                instance, spec.register, spec.value
+            ),
+            Es5506D6Write(instance, spec) => write!(
+                f,
+                "Es5506D6Write({:?}, 0x{:02X}=0x{:02X})",
+                instance, spec.register, spec.value
+            ),
+            X1010Write(instance, spec) => write!(
+                f,
+                "X1010Write({:?}, 0x{:04X}=0x{:02X})",
+                instance, spec.offset, spec.value
+            ),
+            C352Write(instance, spec) => write!(
+                f,
+                "C352Write({:?}, 0x{:04X}=0x{:04X})",
+                instance, spec.register, spec.value
+            ),
+            Ga20Write(instance, spec) => write!(
+                f,
+                "Ga20Write({:?}, 0x{:02X}=0x{:02X})",
+                instance, spec.register, spec.value
+            ),
+            MikeyWrite(instance, spec) => write!(
+                f,
+                "MikeyWrite({:?}, 0x{:02X}=0x{:02X})",
+                instance, spec.register, spec.value
+            ),
+            GameGearPsgWrite(instance, spec) => {
+                write!(f, "GameGearPsgWrite({:?}, 0x{:02X})", instance, spec.value)
+            }
+            ReservedU8Write(reserved) => write!(f, "ReservedU8Write({:?})", reserved),
+            ReservedU16Write(reserved) => write!(f, "ReservedU16Write({:?})", reserved),
+            ReservedU24Write(reserved) => write!(f, "ReservedU24Write({:?})", reserved),
+            ReservedU32Write(reserved) => write!(f, "ReservedU32Write({:?})", reserved),
+            UnknownCommand(unknown) => write!(f, "UnknownCommand({:?})", unknown),
+        }
+    }
+}
+
+fn format_stream_command(command: &VgmCommand) -> String {
+    match command {
+        VgmCommand::PcmRamWrite(write) => format!("PcmRamWrite({write:?})"),
+        _ => format!("{}", VgmCommandBrief(command)),
+    }
+}
+
+struct DataBlockTypeBrief<'a>(&'a DataBlockType);
+
+impl std::fmt::Display for DataBlockTypeBrief<'_> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self.0 {
+            DataBlockType::UncompressedStream(stream) => {
+                write!(f, "UncompressedStream({:?})", stream.chip_type)
+            }
+            DataBlockType::CompressedStream(stream) => write!(
+                f,
+                "CompressedStream({:?}, {:?})",
+                stream.chip_type, stream.compression_type
+            ),
+            DataBlockType::DecompressionTable(table) => {
+                write!(f, "DecompressionTable({:?})", table.compression_type)
+            }
+            DataBlockType::RomRamDump(dump) => {
+                write!(f, "RomRamDump({:?})", dump.chip_type)
+            }
+            DataBlockType::RamWrite16(write) => {
+                write!(f, "RamWrite16({:?})", write.chip_type)
+            }
+            DataBlockType::RamWrite32(write) => {
+                write!(f, "RamWrite32({:?})", write.chip_type)
+            }
+        }
+    }
+}
+
+fn format_stream_event(event: &StateEvent) -> String {
+    match event {
+        StateEvent::KeyOn { channel, tone } => {
+            if let Some(freq) = tone.freq_hz {
+                format!(
+                    "KeyOn(ch={channel}, fnum=0x{:03X}({}), freq={freq:.2}Hz)",
+                    tone.fnum, tone.fnum
+                )
+            } else {
+                format!(
+                    "KeyOn(ch={channel}, fnum={}, block={})",
+                    tone.fnum, tone.block
+                )
+            }
+        }
+        StateEvent::KeyOff { channel } => format!("KeyOff(ch={channel})"),
+        StateEvent::ToneChange { channel, tone } => {
+            if let Some(freq) = tone.freq_hz {
+                format!(
+                    "ToneChange(ch={channel}, fnum=0x{:03X}({}), freq={freq:.2}Hz)",
+                    tone.fnum, tone.fnum
+                )
+            } else {
+                format!(
+                    "ToneChange(ch={channel}, fnum={}, block={})",
+                    tone.fnum, tone.block
+                )
+            }
+        }
+    }
+}
+
+fn write_stream_line(
+    output: &mut impl io::Write,
+    samples: u64,
+    command: &str,
+    events: &[StateEvent],
+) -> io::Result<()> {
+    write!(output, "{samples:<12} {command} ")?;
+    for (index, event) in events.iter().enumerate() {
+        if index > 0 {
+            write!(output, ", ")?;
+        }
+        write!(output, "{}", format_stream_event(event))?;
+    }
+    writeln!(output)
+}
+
+fn write_callback_stream(
+    stream: VgmStream,
+    output: &mut impl io::Write,
+    track_state: impl FnOnce(&mut VgmCallbackStream<'_>),
+) -> Result<usize, McpError> {
+    use std::{
+        cell::{Cell, RefCell},
+        rc::Rc,
+    };
+
+    let mut callback_stream = VgmCallbackStream::new(stream);
+    track_state(&mut callback_stream);
+    writeln!(output, "{:<12} {:<40} Events", "Samples", "Register Write")
+        .map_err(|error| McpError::internal_error(error.to_string(), None))?;
+
+    let writer = Rc::new(RefCell::new(output));
+    let pending_line = Rc::new(RefCell::new(None::<(u64, String)>));
+    let events = Rc::new(RefCell::new(Vec::<StateEvent>::new()));
+    let write_error = Rc::new(RefCell::new(None::<io::Error>));
+    let total_samples = Cell::new(0u64);
+    let command_count = Cell::new(0usize);
+
+    {
+        let writer = Rc::clone(&writer);
+        let pending_line = Rc::clone(&pending_line);
+        let events = Rc::clone(&events);
+        let write_error = Rc::clone(&write_error);
+        let total_samples = &total_samples;
+        let command_count = &command_count;
+        callback_stream.on_any_command(move |command, _sample| {
+            if let Some((sample, register_write)) = pending_line.borrow_mut().take() {
+                let pending_events = std::mem::take(&mut *events.borrow_mut());
+                if let Err(error) = write_stream_line(
+                    &mut **writer.borrow_mut(),
+                    sample,
+                    &register_write,
+                    &pending_events,
+                ) {
+                    *write_error.borrow_mut() = Some(error);
+                }
+            }
+            if write_error.borrow().is_none() {
+                let sample = total_samples.get();
+                *pending_line.borrow_mut() = Some((sample, format_stream_command(command)));
+                total_samples.set(sample.saturating_add(vgm_wait_samples(command)));
+                command_count.set(command_count.get().saturating_add(1));
+            }
+        });
+    }
+
+    macro_rules! collect_events {
+        ($($spec_type:ty),+ $(,)?) => {
+            $(
+                {
+                    let event_sink = Rc::clone(&events);
+                    callback_stream.on_write(move |_, _: $spec_type, _, event| {
+                        if let Some(event) = event {
+                            event_sink.borrow_mut().extend(event);
+                        }
+                    });
+                }
+            )+
+        };
+    }
+
+    collect_events!(
+        soundlog::chip::Ym2612Spec,
+        soundlog::chip::Ym2151Spec,
+        soundlog::chip::Ym2203Spec,
+        soundlog::chip::Ym2608Spec,
+        soundlog::chip::Ym2610Spec,
+        soundlog::chip::Ym2413Spec,
+        soundlog::chip::Ym3812Spec,
+        soundlog::chip::Ym3526Spec,
+        soundlog::chip::Y8950Spec,
+        soundlog::chip::PsgSpec,
+        soundlog::chip::Ay8910Spec,
+        soundlog::chip::Huc6280Spec,
+        soundlog::chip::PokeySpec,
+        soundlog::chip::Saa1099Spec,
+        soundlog::chip::WonderSwanSpec,
+        soundlog::chip::VsuSpec,
+        soundlog::chip::MikeySpec,
+        soundlog::chip::Ymf262Spec,
+        soundlog::chip::Ymf271Spec,
+        soundlog::chip::Ymf278bSpec,
+        soundlog::chip::GbDmgSpec,
+        soundlog::chip::NesApuSpec,
+        soundlog::chip::SegaPcmSpec,
+        soundlog::chip::Rf5c68U8Spec,
+        soundlog::chip::QsoundSpec,
+        soundlog::chip::ScspSpec,
+        soundlog::chip::Es5503Spec,
+        soundlog::chip::Es5506U8Spec,
+        soundlog::chip::X1010Spec,
+        soundlog::chip::C352Spec,
+        soundlog::chip::Ga20Spec,
+        soundlog::chip::Ymz280bSpec,
+        soundlog::chip::MultiPcmSpec,
+        soundlog::chip::Upd7759Spec,
+        soundlog::chip::Okim6258Spec,
+        soundlog::chip::Okim6295Spec,
+        soundlog::chip::K054539Spec,
+        soundlog::chip::C140Spec,
+        soundlog::chip::K053260Spec,
+        soundlog::chip::Scc1Spec,
+        soundlog::chip::Rf5c164U8Spec,
+        soundlog::chip::PwmSpec
+    );
+
+    for result in callback_stream {
+        match result {
+            Ok(StreamResult::Command(_)) => {}
+            Ok(StreamResult::EndOfStream) => break,
+            Ok(StreamResult::NeedsMoreData) => {
+                return Err(invalid_input(
+                    "stream ended while waiting for more input data",
+                ));
+            }
+            Err(error) => {
+                return Err(invalid_input(format!("stream processing failed: {error}")));
+            }
+        }
+        if let Some(error) = write_error.borrow_mut().take() {
+            return Err(McpError::internal_error(
+                format!("could not write stream output: {error}"),
+                None,
+            ));
+        }
+    }
+
+    if let Some((sample, register_write)) = pending_line.borrow_mut().take() {
+        let pending_events = std::mem::take(&mut *events.borrow_mut());
+        write_stream_line(
+            &mut **writer.borrow_mut(),
+            sample,
+            &register_write,
+            &pending_events,
+        )
+        .map_err(|error| McpError::internal_error(error.to_string(), None))?;
+    }
+    Ok(command_count.get())
 }
 
 fn synthetic_pdx(mdx: &MdxDocument) -> Result<Option<PdxDocument>, soundlog::ParseError> {
@@ -1414,7 +2199,7 @@ fn synthetic_pdx(mdx: &MdxDocument) -> Result<Option<PdxDocument>, soundlog::Par
 #[cfg(test)]
 mod tests {
     use super::*;
-    use soundlog::vgm::command::PcmRamWrite;
+    use soundlog::vgm::command::{PcmRamWrite, WaitSamples};
     use std::sync::atomic::{AtomicUsize, Ordering};
 
     fn result_text(result: CallToolResult) -> serde_json::Value {
@@ -1466,19 +2251,42 @@ mod tests {
                 .unwrap()
                 .contains("mml_vgm_trace")
         );
-        assert_eq!(report["limits"]["parser_max_commands"], MAX_COMMANDS);
+        assert_eq!(
+            report["limits"]["command_window_max_commands"],
+            MAX_COMMANDS
+        );
+        assert_eq!(
+            report["limits"]["stream_loop_count_max"],
+            MAX_STREAM_LOOP_COUNT
+        );
         assert!(
             report["range_requirements"]["mml_vgm_trace"]
                 .as_str()
                 .unwrap()
                 .contains("radius")
         );
+        assert!(report["range_requirements"].get("vgm_parse").is_none());
+        assert!(report["range_requirements"].get("mdx_parse").is_none());
         assert!(
             report["tools"]
                 .as_array()
                 .unwrap()
                 .iter()
                 .any(|tool| tool["name"] == "mmlx_build_vgm")
+        );
+        assert!(
+            report["tools"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|tool| tool["name"] == "vgm_stream")
+        );
+        assert!(
+            report["tools"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|tool| tool["name"] == "mdx_stream")
         );
     }
 
@@ -1630,50 +2438,162 @@ mod tests {
     }
 
     #[test]
-    fn vgm_tool_reports_offsets_and_sample_positions() {
-        let bytes: Vec<u8> = soundlog::VgmBuilder::new().finalize().into();
-        let result = MmlxMcpServer
-            .vgm_parse(Parameters(VgmParseRequest {
-                data_base64: STANDARD.encode(bytes),
-                start_command: 0,
-                max_commands: 10,
-            }))
-            .unwrap();
-        let report = result_text(result);
-        assert_eq!(report["format"], "VGM");
-        assert!(report["commands_total"].as_u64().unwrap() > 0);
-        assert!(report["commands"][0]["offset"].as_u64().unwrap() > 0);
-        assert_eq!(report["commands"][0]["samples_at_issue"], 0);
+    fn vgm_tool_writes_all_commands_in_soundlog_parse_format_without_overwriting() {
+        let mut builder = soundlog::VgmBuilder::new();
+        for _ in 0..=MAX_COMMANDS {
+            builder.add_vgm_command(WaitSamples(1));
+        }
+        let bytes: Vec<u8> = builder.finalize().into();
+        let root = test_workspace();
+        fs::write(root.join("input.vgm"), &bytes).unwrap();
+        let input = read_binary_input(&root, "input.vgm").unwrap();
+        let document = VgmDocument::try_from(input.as_slice()).unwrap();
+        let (command_count, byte_length) = write_parse_output(
+            &root,
+            "reports/full-vgm-parse.txt",
+            "VGM parse output",
+            |file| write_vgm_parse(&document, file),
+        )
+        .unwrap();
+        let output = fs::read_to_string(root.join("reports/full-vgm-parse.txt")).unwrap();
+        let lines = output.lines().collect::<Vec<_>>();
+        assert_eq!(
+            lines[0],
+            format!(
+                "{:<12} {:<8} {:<8} {:<8} Command",
+                "Samples", "Index", "Offset", "Length"
+            )
+        );
+        assert_eq!(lines.len(), document.commands.len() + 1);
+        assert_eq!(command_count, document.commands.len());
+        assert_eq!(byte_length as usize, output.len());
+        assert!(lines[1].ends_with("WaitSamples(1)"));
+        assert!(lines.last().unwrap().ends_with("EndOfData"));
+        assert!(
+            write_parse_output(
+                &root,
+                "reports/full-vgm-parse.txt",
+                "VGM parse output",
+                |file| file.write_all(b"replacement"),
+            )
+            .is_err()
+        );
+        fs::remove_dir_all(root).unwrap();
     }
 
     #[test]
-    fn mdx_tool_reports_track_commands_and_source_offsets() {
-        let parsed = mmlx::mdx::frontend::parse("A r4").unwrap();
+    fn mdx_tool_writes_all_tracks_in_soundlog_mdx_parse_format() {
+        let source = format!("A r4 {}\nB d4", vec!["c4"; MAX_COMMANDS + 1].join(" "));
+        let parsed = mmlx::mdx::frontend::parse(&source).unwrap();
         let mdx = mmlx::mdx::frontend::compile(&parsed)
             .unwrap()
             .into_document();
+        let command_count = mdx.tracks.iter().map(Vec::len).sum::<usize>();
         let bytes = mdx.to_bytes().unwrap();
-        let result = MmlxMcpServer
-            .mdx_parse(Parameters(MdxParseRequest {
-                data_base64: STANDARD.encode(bytes),
-                track: Some(0),
-                start_command: 0,
-                max_commands: 10,
-            }))
-            .unwrap();
-        let report = result_text(result);
-        assert_eq!(report["format"], "MDX");
-        assert!(
-            report["tracks"][0]["commands"][0]["command"]
-                .as_str()
-                .unwrap()
-                .starts_with("Rest(")
+        let root = test_workspace();
+        fs::write(root.join("input.mdx"), &bytes).unwrap();
+        let input = read_binary_input(&root, "input.mdx").unwrap();
+        let document = MdxDocument::parse(&input).unwrap();
+        let source_map = document.sourcemap().unwrap();
+        let (written_commands, byte_length) = write_parse_output(
+            &root,
+            "reports/full-mdx-parse.txt",
+            "MDX parse output",
+            |file| write_mdx_parse(&document, &source_map, file),
+        )
+        .unwrap();
+        let output = fs::read_to_string(root.join("reports/full-mdx-parse.txt")).unwrap();
+        let lines = output.lines().collect::<Vec<_>>();
+        assert_eq!(
+            lines[0],
+            format!(
+                "{:<8} {:<8} {:<8} {:<8} Command",
+                "Track", "Index", "Offset", "Length"
+            )
         );
-        assert!(
-            report["tracks"][0]["commands"][0]["offset"]
-                .as_u64()
-                .is_some()
+        assert_eq!(lines.len(), command_count + 1);
+        assert_eq!(written_commands, command_count);
+        assert_eq!(byte_length as usize, output.len());
+        assert!(lines.iter().any(|line| line.starts_with("1       ")));
+        assert!(lines[1].contains("Rest("));
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn vgm_stream_writes_soundlog_style_rows_to_a_new_file() {
+        let mut builder = soundlog::VgmBuilder::new();
+        builder.add_vgm_command(WaitSamples(12));
+        let bytes: Vec<u8> = builder.finalize().into();
+        let header = VgmHeader::from_bytes(&bytes).unwrap();
+        let stream = VgmStream::from_vgm(bytes.clone()).unwrap();
+        let root = test_workspace();
+        let (command_count, byte_length) = write_stream_output(
+            &root,
+            "reports/vgm-stream.txt",
+            "VGM stream output",
+            stream,
+            |callback_stream| callback_stream.track_chips(&header.chip_instances()),
+        )
+        .unwrap();
+        let output = fs::read_to_string(root.join("reports/vgm-stream.txt")).unwrap();
+        let lines = output.lines().collect::<Vec<_>>();
+        assert_eq!(
+            lines[0],
+            "Samples      Register Write                           Events"
         );
+        assert_eq!(lines.len(), command_count + 1);
+        assert!(lines.iter().any(|line| line.contains("WaitSamples(12)")));
+        assert_eq!(byte_length as usize, output.len());
+        assert!(
+            write_stream_output(
+                &root,
+                "reports/vgm-stream.txt",
+                "VGM stream output",
+                VgmStream::from_vgm(bytes).unwrap(),
+                |_| {},
+            )
+            .is_err()
+        );
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn mdx_stream_accepts_mml_and_writes_playback_register_rows() {
+        let root = test_workspace();
+        fs::write(root.join("song.mml"), "A t120 o4 c4").unwrap();
+        let (package, pdx_path) = load_mdx_stream_package(&root, "song.mml", None).unwrap();
+        assert!(pdx_path.is_none());
+        let options = MdxToVgmOptions {
+            loop_count: Some(1),
+            max_ticks: Some(100_000),
+            ..Default::default()
+        };
+        let generator = to_vgm_stream_generator(package, options).unwrap();
+        let stream = VgmStream::from_generator(generator);
+        let (command_count, byte_length) = write_stream_output(
+            &root,
+            "reports/mdx-stream.txt",
+            "MDX stream output",
+            stream,
+            |callback_stream| {
+                use soundlog::chip::state::Ym2151State;
+
+                callback_stream.track_state::<Ym2151State>(Instance::Primary, 4_000_000.0);
+            },
+        )
+        .unwrap();
+        let output = fs::read_to_string(root.join("reports/mdx-stream.txt")).unwrap();
+        let lines = output.lines().collect::<Vec<_>>();
+        assert_eq!(
+            lines[0],
+            "Samples      Register Write                           Events"
+        );
+        assert!(command_count > 0);
+        assert_eq!(lines.len(), command_count + 1);
+        assert!(output.contains("Ym2151Write"));
+        assert!(output.contains("KeyOn("));
+        assert_eq!(byte_length as usize, output.len());
+        fs::remove_dir_all(root).unwrap();
     }
 
     #[test]
