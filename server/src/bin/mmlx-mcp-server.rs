@@ -49,6 +49,7 @@ const MAX_TRACE_TICK: u64 = 100_000;
 const MAX_VGM_OUTPUT_BYTES: usize = 64 * 1024 * 1024;
 const MAX_VGM_TICKS: u32 = 1_000_000;
 const MAX_STREAM_LOOP_COUNT: u32 = 1_000;
+const TEXT_OUTPUT_BUFFER_SIZE: usize = 20 * 1024 * 1024;
 
 #[derive(Deserialize, JsonSchema)]
 struct VgmParseRequest {
@@ -294,7 +295,7 @@ impl AsyncWrite for Stdout {
 #[tool_router]
 impl MmlxMcpServer {
     #[tool(
-        description = "List the trusted VS Code workspace folders available for file-based build and parse-output tools."
+        description = "List the trusted VS Code workspace folders available for file-based build, parse, and stream-output tools."
     )]
     fn mmlx_workspaces(&self) -> Result<CallToolResult, McpError> {
         let entries = match fs::read_dir("/workspaces") {
@@ -341,7 +342,7 @@ impl MmlxMcpServer {
     }
 
     #[tool(
-        description = "Build a workspace-relative .mml file (up to 64 KiB) into an MDX file. Call mmlx_workspaces first; output files are created without overwriting existing files."
+        description = "Required: workspace, input_path (.mml), and output_path (.mdx). No optional arguments. Paths are workspace-relative; input is limited to 64 KiB. Call mmlx_workspaces first. Existing output files are not overwritten."
     )]
     fn mmlx_build_mdx(
         &self,
@@ -367,7 +368,7 @@ impl MmlxMcpServer {
     }
 
     #[tool(
-        description = "Build a workspace-relative .mml or .mdx file into VGM. Call mmlx_workspaces first. An optional PDX path can be supplied; otherwise a referenced PDX is searched for beside the input. Existing output files are not overwritten."
+        description = "Required: workspace, input_path (.mml or .mdx), and output_path (.vgm). Optional: pdx_path, adpcm_mode (through, resample, lpf; default through), loop_count (positive; omit to preserve native loop points), and max_ticks (1-1000000; default 100000). Paths are workspace-relative. If pdx_path is omitted, a referenced PDX is searched for beside the input. Call mmlx_workspaces first; existing output files are not overwritten."
     )]
     fn mmlx_build_vgm(
         &self,
@@ -393,7 +394,7 @@ impl MmlxMcpServer {
     fn mmlx_help(&self) -> Result<CallToolResult, McpError> {
         json_result(&serde_json::json!({
             "server": "mmlx",
-            "purpose": "Build MDX, PDX, and VGM files from workspace sources, and analyze MML source and MDX/VGM music data. The server does not render audio.",
+            "purpose": "Build MDX, PDX, and VGM files from workspace sources, and analyze MML source and MDX/VGM music data. MDX/VGM parse reports and stream logs are saved to workspace files; the server does not render audio.",
             "formats": {
                 "MML": "Human-readable music source. mmlx_build_mdx compiles a workspace .mml file into MDX, mmlx_build_vgm compiles it into VGM, mml_parse compiles it into MDX track commands with source locations, mml_check performs a bounded playback check, and mml_vgm_trace generates VGM commands around a source playback tick.",
                 "MDX": "A binary music format. mmlx_build_mdx compiles MML into an MDX file, mmlx_build_vgm converts MDX into VGM, mdx_parse writes all commands from a workspace-relative MDX file to a workspace text file, and mdx_stream lazily converts MML or MDX into a soundlog-style register/event stream. MDX files can reference PDX sample data.",
@@ -401,13 +402,56 @@ impl MmlxMcpServer {
                 "VGM": "A record of chip commands and timing. mmlx_build_vgm creates a VGM file from MML or MDX, vgm_parse writes the complete command table from a workspace-relative VGM file to a workspace text file, vgm_stream writes soundlog-style register writes and detected events, and mml_vgm_trace generates a VGM command trace from MML and maps commands to MML ticks."
             },
             "workflow": [
-                "Use mmlx_workspaces to find the trusted workspace id, then pass it with workspace-relative input_path and output_path values to mdx_parse or vgm_parse. Build tools also use workspace-relative paths; output files are created without overwriting existing files.",
+                "Call mmlx_workspaces first and use one returned id as workspace. Supply workspace-relative paths to all file tools; existing output files are never overwritten.",
+                "For a build-then-parse workflow, build an MDX or VGM with mmlx_build_mdx or mmlx_build_vgm, then pass that output as input_path to mdx_parse or vgm_parse.",
                 "Use vgm_stream for an existing VGM file or mdx_stream for lazy MML/MDX playback; both save the complete soundlog-style stream to output_path.",
                 "Use mml_parse to inspect how MML compiles and where generated commands came from; request a command window and advance start_command to fetch later commands.",
                 "Use mml_check for a bounded playback check; it does not validate real PDX contents or audio output.",
                 "Use mml_vgm_trace to inspect generated chip commands around a zero-based MML tick. Tick mapping requires a single tempo set at the start of playback.",
                 "Use mdx_parse or vgm_parse to save the complete text command table from a workspace-relative binary input_path to a workspace-relative output_path."
             ],
+            "workspace_file_tools": {
+                "path_rules": "workspace must be an id returned by mmlx_workspaces. Every input_path, output_path, and pdx_path is relative to that workspace; absolute paths and traversal are rejected.",
+                "output_rules": "Output files are created without overwriting existing files. mdx_parse and vgm_parse save the complete text report at output_path and return only a JSON summary in the MCP response.",
+                "arguments": {
+                    "mmlx_build_mdx": {
+                        "required": ["workspace", "input_path", "output_path"],
+                        "optional": [],
+                        "input_path": "MML source file (.mml), up to 64 KiB",
+                        "output_path": "MDX output file (.mdx)"
+                    },
+                    "mmlx_build_vgm": {
+                        "required": ["workspace", "input_path", "output_path"],
+                        "optional": {
+                            "pdx_path": "Workspace-relative PDX file; if omitted, a referenced PDX is searched for beside input_path",
+                            "adpcm_mode": "through (default), resample, or lpf",
+                            "loop_count": "Positive playthrough count; omit to preserve native loop points",
+                            "max_ticks": "1-1000000; defaults to 100000"
+                        },
+                        "input_path": "MML (.mml) or MDX (.mdx) source file",
+                        "output_path": "VGM output file (.vgm)"
+                    },
+                    "mdx_parse": {
+                        "required": ["workspace", "input_path", "output_path"],
+                        "optional": [],
+                        "input_path": "MDX file, up to 32 MiB",
+                        "output_path": "Text report path for the complete track-command table"
+                    },
+                    "vgm_parse": {
+                        "required": ["workspace", "input_path", "output_path"],
+                        "optional": [],
+                        "input_path": "VGM file, up to 32 MiB",
+                        "output_path": "Text report path for the complete command table"
+                    }
+                },
+                "build_then_parse_example": [
+                    {"tool": "mmlx_workspaces", "arguments": {}},
+                    {"tool": "mmlx_build_mdx", "arguments": {"workspace": "<workspace_id>", "input_path": "music/song.mml", "output_path": "build/song.mdx"}},
+                    {"tool": "mdx_parse", "arguments": {"workspace": "<workspace_id>", "input_path": "build/song.mdx", "output_path": "reports/song-mdx.txt"}},
+                    {"tool": "mmlx_build_vgm", "arguments": {"workspace": "<workspace_id>", "input_path": "music/song.mml", "output_path": "build/song.vgm"}},
+                    {"tool": "vgm_parse", "arguments": {"workspace": "<workspace_id>", "input_path": "build/song.vgm", "output_path": "reports/song-vgm.txt"}}
+                ]
+            },
             "tools": [
                 {"name": "mmlx_workspaces", "purpose": "List workspace roots available to file-based build, parse, and stream-output tools."},
                 {"name": "mmlx_build_mdx", "purpose": "Build a workspace MML file into MDX."},
@@ -508,7 +552,7 @@ impl MmlxMcpServer {
     }
 
     #[tool(
-        description = "Parse a workspace-relative VGM file (up to 32 MiB) and write the complete command table in soundlog parse format to a new workspace-relative output_path. Call mmlx_workspaces first; existing output files are not overwritten."
+        description = "Required: workspace, input_path (VGM), and output_path (text report). No optional arguments. Paths are workspace-relative; input is limited to 32 MiB. Writes the complete command table to output_path and returns a JSON summary. Call mmlx_workspaces first; existing output files are not overwritten."
     )]
     fn vgm_parse(&self, params: Parameters<VgmParseRequest>) -> Result<CallToolResult, McpError> {
         let request = params.0;
@@ -532,7 +576,7 @@ impl MmlxMcpServer {
     }
 
     #[tool(
-        description = "Parse a workspace-relative MDX file (up to 32 MiB) and write every track command in soundlog mdx parse format to a new workspace-relative output_path. Call mmlx_workspaces first; existing output files are not overwritten."
+        description = "Required: workspace, input_path (MDX), and output_path (text report). No optional arguments. Paths are workspace-relative; input is limited to 32 MiB. Writes every track command to output_path and returns a JSON summary. Call mmlx_workspaces first; existing output files are not overwritten."
     )]
     fn mdx_parse(&self, params: Parameters<MdxParseRequest>) -> Result<CallToolResult, McpError> {
         let request = params.0;
@@ -1116,9 +1160,10 @@ fn workspace_output(root: &Path, relative: &str) -> Result<PathBuf, McpError> {
 fn write_output_file<T>(
     path: &Path,
     output_kind: &str,
-    write_output: impl FnOnce(&mut fs::File) -> Result<T, McpError>,
+    buffer_capacity: Option<usize>,
+    write_output: impl FnOnce(&mut io::BufWriter<fs::File>) -> Result<T, McpError>,
 ) -> Result<(T, u64), McpError> {
-    let mut file = fs::OpenOptions::new()
+    let file = fs::OpenOptions::new()
         .write(true)
         .create_new(true)
         .open(path)
@@ -1128,14 +1173,18 @@ fn write_output_file<T>(
                 None,
             )
         })?;
-    let result = write_output(&mut file).and_then(|value| {
-        file.flush().map_err(|error| {
+    let mut writer = match buffer_capacity {
+        Some(capacity) => io::BufWriter::with_capacity(capacity, file),
+        None => io::BufWriter::new(file),
+    };
+    let result = write_output(&mut writer).and_then(|value| {
+        writer.flush().map_err(|error| {
             McpError::internal_error(
                 format!("could not flush {output_kind} {}: {error}", path.display()),
                 None,
             )
         })?;
-        let length = file.metadata().map_err(|error| {
+        let length = writer.get_ref().metadata().map_err(|error| {
             McpError::internal_error(
                 format!(
                     "could not inspect {output_kind} {}: {error}",
@@ -1149,7 +1198,7 @@ fn write_output_file<T>(
     match result {
         Ok(result) => Ok(result),
         Err(error) => {
-            drop(file);
+            drop(writer);
             match fs::remove_file(path) {
                 Ok(()) => Err(McpError::internal_error(
                     format!("could not write {output_kind} {}: {error}", path.display()),
@@ -1168,7 +1217,7 @@ fn write_output_file<T>(
 }
 
 fn write_build_output(path: &Path, bytes: &[u8]) -> Result<(), McpError> {
-    write_output_file(path, "build output", |file| {
+    write_output_file(path, "build output", None, |file| {
         file.write_all(bytes)
             .map_err(|error| McpError::internal_error(error.to_string(), None))
     })
@@ -1179,10 +1228,10 @@ fn write_parse_output<T>(
     root: &Path,
     relative: &str,
     output_kind: &str,
-    write_output: impl FnOnce(&mut fs::File) -> io::Result<T>,
+    write_output: impl FnOnce(&mut io::BufWriter<fs::File>) -> io::Result<T>,
 ) -> Result<(T, u64), McpError> {
     let path = workspace_output(root, relative)?;
-    write_output_file(&path, output_kind, |file| {
+    write_output_file(&path, output_kind, Some(TEXT_OUTPUT_BUFFER_SIZE), |file| {
         write_output(file).map_err(|error| McpError::internal_error(error.to_string(), None))
     })
 }
@@ -1195,7 +1244,7 @@ fn write_stream_output(
     track_state: impl FnOnce(&mut VgmCallbackStream<'_>),
 ) -> Result<(usize, u64), McpError> {
     let path = workspace_output(root, relative)?;
-    write_output_file(&path, output_kind, |file| {
+    write_output_file(&path, output_kind, Some(TEXT_OUTPUT_BUFFER_SIZE), |file| {
         write_callback_stream(stream, file, track_state)
     })
 }
@@ -2288,6 +2337,39 @@ mod tests {
                 .iter()
                 .any(|tool| tool["name"] == "mdx_stream")
         );
+        let file_tools = &report["workspace_file_tools"];
+        assert!(
+            file_tools["path_rules"]
+                .as_str()
+                .unwrap()
+                .contains("relative to that workspace")
+        );
+        assert!(
+            file_tools["output_rules"]
+                .as_str()
+                .unwrap()
+                .contains("JSON summary")
+        );
+        for tool_name in ["mmlx_build_mdx", "mmlx_build_vgm", "mdx_parse", "vgm_parse"] {
+            assert_eq!(
+                file_tools["arguments"][tool_name]["required"]
+                    .as_array()
+                    .unwrap()
+                    .len(),
+                3
+            );
+        }
+        assert!(
+            file_tools["arguments"]["mmlx_build_vgm"]["optional"]["adpcm_mode"]
+                .as_str()
+                .unwrap()
+                .contains("resample")
+        );
+        let example = file_tools["build_then_parse_example"].as_array().unwrap();
+        assert_eq!(example.len(), 5);
+        assert_eq!(example[0]["tool"], "mmlx_workspaces");
+        assert_eq!(example[2]["tool"], "mdx_parse");
+        assert_eq!(example[4]["tool"], "vgm_parse");
     }
 
     #[test]
