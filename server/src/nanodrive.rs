@@ -143,6 +143,11 @@ enum Input {
         channel: u8,
         note: u8,
     },
+    Sustain {
+        source: u8,
+        channel: u8,
+        pressed: bool,
+    },
     AllOff {
         source: Option<u8>,
         channel: Option<u8>,
@@ -573,6 +578,11 @@ impl Bridge {
                             channel,
                             note,
                         }),
+                        Input::Sustain {
+                            source,
+                            channel,
+                            pressed,
+                        } => audition.sustain(source, channel, pressed),
                         Input::AllOff { source, channel } => audition.all_off(source, channel),
                         Input::PitchBend {
                             source,
@@ -935,6 +945,35 @@ mod tests {
                 .collect::<Vec<_>>()
         );
         assert!(bridge.session.is_none());
+    }
+
+    #[test]
+    fn keyboard_sustain_defers_note_off_until_pedal_release() {
+        let mut bridge = Bridge::default();
+        audition(&mut bridge, json!({"type":"init", "voice":voice()}));
+        audition(
+            &mut bridge,
+            json!({"type":"noteOn", "source":1, "channel":2, "note":60, "velocity":127}),
+        );
+        assert!(
+            audition(
+                &mut bridge,
+                json!({"type":"sustain", "source":1, "channel":2, "pressed":true})
+            )
+            .is_empty()
+        );
+        assert!(
+            audition(
+                &mut bridge,
+                json!({"type":"noteOff", "source":1, "channel":2, "note":60})
+            )
+            .is_empty()
+        );
+        let frames = audition(
+            &mut bridge,
+            json!({"type":"sustain", "source":1, "channel":2, "pressed":false}),
+        );
+        assert_eq!(register_writes(&frames[0]), [(0x08, 0)]);
     }
 
     #[test]

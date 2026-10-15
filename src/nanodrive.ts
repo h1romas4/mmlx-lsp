@@ -13,6 +13,7 @@ export type NanoDriveCommand = 'ping' | 'getInfo' | 'getCapabilities' | 'reset' 
 export type NanoDriveInput = { type: 'init' | 'voice'; voice: unknown }
     | { type: 'noteOn'; source: number; channel: number; note: number; velocity: number }
     | { type: 'noteOff'; source: number; channel: number; note: number }
+    | { type: 'sustain'; source: number; channel: number; pressed: boolean }
     | { type: 'pitchBend'; source: number; channel: number; value: number }
     | { type: 'allOff'; source?: number; channel?: number } | { type: 'stop' };
 export interface NanoDriveOutputState { connected: boolean; connecting: boolean; error: string; }

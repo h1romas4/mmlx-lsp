@@ -15,6 +15,7 @@ export interface MidiInputState {
 export type MidiNoteEvent = { type: 'noteOn'; channel: number; note: number; velocity: number }
 	| { type: 'noteOff'; channel: number; note: number }
 	| { type: 'pitchBend'; channel: number; value: number }
+	| { type: 'sustain'; channel: number; pressed: boolean }
 	| { type: 'allOff'; channel?: number };
 
 export async function createMidiInput(): Promise<MidiInputPort> {
@@ -26,6 +27,8 @@ export class MidiInputConnection {
 	private input?: MidiInputPort;
 	private generation = 0;
 	private held = new Set<number>();
+	private sustain = new Set<number>();
+	private sustainKnown = new Set<number>();
 	private bends = Array<number>(16).fill(8192);
 	private snapshot: MidiInputState = { port: '', connected: false, connecting: false, error: '' };
 
@@ -70,7 +73,11 @@ export class MidiInputConnection {
 			});
 			input.on('cc', (parameter, _value, info) => {
 				if (this.input !== source || !Number.isInteger(info.channel) || info.channel < 0 || info.channel > 15) { return; }
+				if (parameter === 64 && Number.isInteger(_value) && _value >= 0 && _value <= 127) {
+					this.setSustain(info.channel, _value >= 64, true);
+				}
 				if (parameter === 121) { this.setPitchBend(info.channel, 8192); }
+				if (parameter === 121) { this.setSustain(info.channel, false, true); }
 				if (parameter === 120 || (parameter >= 123 && parameter <= 127)) {
 						this.onNoteEvent({ type: 'allOff', channel: info.channel });
 					for (const note of this.held) { if (Math.floor(note / 128) === info.channel) { this.held.delete(note); } }
@@ -97,6 +104,8 @@ export class MidiInputConnection {
 		this.generation++;
 		const input = this.input;
 		this.input = undefined;
+		for (const channel of this.sustain) { this.setSustain(channel, false); }
+		this.sustainKnown.clear();
 		this.held.clear();
 		for (let channel = 0; channel < 16; channel++) { this.setPitchBend(channel, 8192); }
 		this.onNoteEvent({ type: 'allOff' });
@@ -121,5 +130,13 @@ export class MidiInputConnection {
 		if (this.bends[channel] === value) { return; }
 		this.bends[channel] = value;
 		this.onNoteEvent({ type: 'pitchBend', channel, value });
+	}
+
+	private setSustain(channel: number, pressed: boolean, observe = false): void {
+		const changed = this.sustain.has(channel) !== pressed;
+		const firstObservation = !this.sustainKnown.has(channel);
+		if (pressed) { this.sustain.add(channel); } else { this.sustain.delete(channel); }
+		this.sustainKnown.add(channel);
+		if (changed || (observe && firstObservation)) { this.onNoteEvent({ type: 'sustain', channel, pressed }); }
 	}
 }

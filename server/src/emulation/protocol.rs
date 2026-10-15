@@ -27,6 +27,11 @@ enum Command {
         channel: u8,
         note: u8,
     },
+    Sustain {
+        source: u8,
+        channel: u8,
+        pressed: bool,
+    },
     AllOff {
         source: Option<u8>,
         channel: Option<u8>,
@@ -167,6 +172,11 @@ impl Session {
                 channel,
                 note,
             }),
+            Command::Sustain {
+                source,
+                channel,
+                pressed,
+            } => engine.sustain(source, channel, pressed),
             Command::AllOff { source, channel } => engine.all_off(source, channel),
             Command::PitchBend {
                 source,
@@ -350,6 +360,19 @@ mod tests {
         assert_eq!(output.len(), 14 + 4096);
         assert!(run(io::Cursor::new(b"{\"type\":\"render\"}\n"), Vec::new()).is_err());
         assert!(run(io::Cursor::new(vec![b'x'; 16385]), Vec::new()).is_err());
+    }
+
+    #[test]
+    fn sustain_commands_are_accepted_by_the_emulation_protocol() {
+        let mut output = Vec::new();
+        run(
+            io::Cursor::new(
+                b"{\"type\":\"init\",\"sampleRate\":48000}\n{\"type\":\"sustain\",\"source\":1,\"channel\":2,\"pressed\":true}\n{\"type\":\"sustain\",\"source\":1,\"channel\":2,\"pressed\":false}\n",
+            ),
+            &mut output,
+        )
+        .unwrap();
+        assert_eq!(output.len(), 9);
     }
 
     #[test]

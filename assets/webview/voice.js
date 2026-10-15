@@ -63,7 +63,7 @@ const keyboardControls = createKeyboardControls(document.getElementById('keyboar
 		if (action === 'play' || action === 'playSelection') { keyboardControls.setVoiceTest(true); }
 		saveState();
 		vscode.postMessage({ type: 'voiceTestAction', id: outputId, action, mml, ...state });
-	});
+	}, active => vscode.postMessage({ type: 'keyboardSustain', id: outputId, active }));
 const outputConnections = {
 	keyboard: createOutputConnection(document.querySelector('.keyboard-output'), async request => {
 		if (request.reset) {
@@ -285,6 +285,8 @@ window.addEventListener('message', event => {
 		audioMonitors.setNote(message.event, 'midi');
 	} else if (message?.type === 'pitchBend') {
 		keyboardControls.setPitchBend(message.value);
+	} else if (message?.type === 'sustainState') {
+		keyboardControls.setSustain(message.active);
 	} else if (message?.type === 'outputConnection' && message.target === 'keyboard'
 		&& typeof message.connected === 'boolean') {
 		if (message.target === 'keyboard') {

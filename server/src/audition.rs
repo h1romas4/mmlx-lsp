@@ -4,10 +4,60 @@ pub mod polyphony;
 pub mod voice;
 
 use polyphony::{Note, Polyphony};
-use std::{cell::RefCell, collections::BTreeMap, rc::Rc};
+use std::{
+    cell::RefCell,
+    collections::{BTreeMap, BTreeSet},
+    rc::Rc,
+};
 use voice::Voice;
 
 pub const CLOCK: u32 = 4_000_000;
+
+#[derive(Default)]
+struct SustainNotes {
+    active: BTreeSet<(u8, u8)>,
+    deferred: BTreeSet<Note>,
+}
+
+impl SustainNotes {
+    fn set(&mut self, source: u8, channel: u8, pressed: bool) -> Vec<Note> {
+        let key = (source, channel);
+        if pressed {
+            self.active.insert(key);
+            return Vec::new();
+        }
+        self.active.remove(&key);
+        let released: Vec<_> = self
+            .deferred
+            .iter()
+            .filter(|note| (note.source, note.channel) == key)
+            .copied()
+            .collect();
+        for note in &released {
+            self.deferred.remove(note);
+        }
+        released
+    }
+
+    fn defer(&mut self, note: Note) -> bool {
+        if !self.active.contains(&(note.source, note.channel)) {
+            return false;
+        }
+        self.deferred.insert(note);
+        true
+    }
+
+    fn retrigger(&mut self, note: Note) {
+        self.deferred.remove(&note);
+    }
+
+    fn clear(&mut self, source: Option<u8>, channel: Option<u8>) {
+        self.deferred.retain(|note| {
+            !source.is_none_or(|source| source == note.source)
+                || !channel.is_none_or(|channel| channel == note.channel)
+        });
+    }
+}
 
 #[derive(Default)]
 pub struct VoiceTestRegisters {
@@ -44,6 +94,7 @@ impl VoiceTestRegisters {
 #[derive(Default)]
 pub struct Audition {
     voices: Polyphony,
+    sustain: SustainNotes,
     voice: Option<Voice>,
     bends: BTreeMap<(u8, u8), i32>,
     test_registers: Rc<RefCell<VoiceTestRegisters>>,
@@ -118,6 +169,7 @@ impl Audition {
         let Some(voice) = &self.voice else {
             return Vec::new();
         };
+        self.sustain.retrigger(note);
         let channel = self.voices.allocate(note, velocity);
         let attenuation = self.voices.slots[channel].attenuation;
         let channel = channel as u8;
@@ -186,12 +238,35 @@ impl Audition {
     }
 
     pub fn note_off(&mut self, note: Note) -> Vec<(u8, u8)> {
+        if self.sustain.defer(note) {
+            return Vec::new();
+        }
+        self.release_note(note)
+    }
+
+    pub fn sustain(&mut self, source: u8, channel: u8, pressed: bool) -> Vec<(u8, u8)> {
+        if channel > 15 {
+            return Vec::new();
+        }
+        self.sustain
+            .set(source, channel, pressed)
+            .into_iter()
+            .filter_map(|note| {
+                self.voices
+                    .release(note)
+                    .map(|channel| (0x08, channel as u8))
+            })
+            .collect()
+    }
+
+    fn release_note(&mut self, note: Note) -> Vec<(u8, u8)> {
         self.voices
             .release(note)
             .map_or_else(Vec::new, |channel| vec![(0x08, channel as u8)])
     }
 
     pub fn all_off(&mut self, source: Option<u8>, midi_channel: Option<u8>) -> Vec<(u8, u8)> {
+        self.sustain.clear(source, midi_channel);
         let mut writes = Vec::new();
         for (channel, slot) in self.voices.slots.iter_mut().enumerate() {
             if slot.note.is_some_and(|note| {
@@ -209,6 +284,70 @@ impl Audition {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn audition_with_voice() -> Audition {
+        let mut audition = Audition::default();
+        audition
+            .set_voice(Some(Voice {
+                algorithm: 7,
+                feedback: 0,
+                operator_mask: 15,
+                operators: std::array::from_fn(|_| voice::Operator {
+                    ar: 31,
+                    d1r: 0,
+                    d2r: 0,
+                    rr: 15,
+                    d1l: 0,
+                    tl: 32,
+                    ks: 0,
+                    mul: 1,
+                    dt1: 0,
+                    dt2: 0,
+                    ame: 1,
+                }),
+            }))
+            .unwrap();
+        audition
+    }
+
+    #[test]
+    fn sustain_defers_note_offs_per_source_and_channel() {
+        let mut audition = audition_with_voice();
+        let sustained = Note {
+            source: 1,
+            channel: 2,
+            note: 60,
+        };
+        let released = Note {
+            source: 1,
+            channel: 3,
+            note: 60,
+        };
+        audition.sustain(1, 2, true);
+        audition.note_on(sustained, 127);
+        audition.note_on(released, 127);
+        assert!(audition.note_off(sustained).is_empty());
+        assert_eq!(audition.note_off(released), [(0x08, 1)]);
+        assert_eq!(audition.sustain(1, 2, false), [(0x08, 0)]);
+        assert!(audition.sustain(1, 2, false).is_empty());
+    }
+
+    #[test]
+    fn retrigger_and_all_off_cancel_deferred_note_offs() {
+        let mut audition = audition_with_voice();
+        let note = Note {
+            source: 1,
+            channel: 2,
+            note: 60,
+        };
+        audition.sustain(1, 2, true);
+        audition.note_on(note, 127);
+        assert!(audition.note_off(note).is_empty());
+        audition.note_on(note, 100);
+        assert!(audition.note_off(note).is_empty());
+        assert_eq!(audition.all_off(Some(1), Some(2)), [(0x08, 0)]);
+        assert!(audition.sustain(1, 2, false).is_empty());
+    }
 
     #[test]
     fn voice_test_settings_survive_restore_and_all_eight_keyboard_notes() {

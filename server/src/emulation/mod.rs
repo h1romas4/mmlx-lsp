@@ -57,6 +57,11 @@ impl Emulation {
         self.write(writes);
     }
 
+    pub fn sustain(&mut self, source: u8, channel: u8, pressed: bool) {
+        let writes = self.audition.sustain(source, channel, pressed);
+        self.write(writes);
+    }
+
     pub fn pitch_bend(&mut self, source: u8, channel: u8, value: u16) {
         let writes = self.audition.pitch_bend(source, channel, value);
         self.write(writes);

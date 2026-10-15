@@ -4,6 +4,8 @@ All notable changes to the "mmlx-lsp" extension will be documented in this file.
 
 ## [Unreleased]
 
+- Add sustain pedal support to FM Voice.
+
 ## [0.22.0] - 2026-10-15
 
 - Update NDSIF API revision 39 capability metadata and configure NanoDrive8 clocks according to reported fixed or variable clock support.

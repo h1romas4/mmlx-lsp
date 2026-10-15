@@ -1,9 +1,10 @@
-export function createKeyboardControls(root, onModeChange = () => {}, onNote = () => {}, onVoiceTest = () => {}) {
+export function createKeyboardControls(root, onModeChange = () => {}, onNote = () => {}, onVoiceTest = () => {}, onSustain = () => {}) {
 	const body = root.querySelector('.p-keyboard__body');
 	const wrapper = root.querySelector('.p-keyboard__wrapper');
 	const mode = root.querySelector('#keyboard-mode');
 	const midiStatus = root.querySelector('#keyboard-midi-status');
 	const bend = root.querySelector('#keyboard-pitch-bend');
+	const sustain = root.querySelector('#keyboard-sustain');
 	const testInput = root.querySelector('#voice-test-mml');
 	const selectionPlay = root.querySelector('#voice-test-selection');
 	const testPlay = root.querySelector('#voice-test-play');
@@ -66,6 +67,16 @@ export function createKeyboardControls(root, onModeChange = () => {}, onNote = (
 	});
 	let bendValue = 8192;
 	let bending = false;
+	let sustainActive = false;
+
+	function setSustain(active, notify = true) {
+		sustainActive = active === true;
+		sustain?.setAttribute('aria-pressed', String(sustainActive));
+		if (sustain) {
+			sustain.title = `Sustain pedal (${sustainActive ? 'on' : 'off'})`;
+		}
+		if (notify) { onSustain(sustainActive); }
+	}
 
 	function setBend(value, notify = true) {
 		value = Math.max(0, Math.min(16383, Math.round(value)));
@@ -112,6 +123,7 @@ export function createKeyboardControls(root, onModeChange = () => {}, onNote = (
 
 	function releaseAll() {
 		resetBend();
+		if (sustainActive) { setSustain(false); }
 		const keys = new Set([...pointers.values(), ...heldKeys]);
 		pointers.clear();
 		heldKeys.clear();
@@ -188,6 +200,9 @@ export function createKeyboardControls(root, onModeChange = () => {}, onNote = (
 		if (connected && event.button === 0) { bend.setPointerCapture(event.pointerId); }
 	});
 	bend.addEventListener('input', () => { if (connected) { setBend(Number(bend.value)); } });
+	sustain?.addEventListener('click', () => {
+		if (connected) { setSustain(!sustainActive); }
+	});
 	for (const type of ['pointerup', 'pointercancel', 'lostpointercapture', 'blur']) { bend.addEventListener(type, resetBend); }
 	bend.addEventListener('keydown', event => {
 		if (!connected || !['ArrowUp', 'ArrowDown', 'ArrowLeft', 'ArrowRight', 'PageUp', 'PageDown', 'Home', 'End'].includes(event.key)) { return; }
@@ -210,6 +225,7 @@ export function createKeyboardControls(root, onModeChange = () => {}, onNote = (
 			connected = outputConnected && !testPlaying && !resetting;
 			updateTestControls();
 			bend.disabled = !connected;
+			sustain.disabled = !connected;
 			if (!connected) { releaseAll(); setBend(8192, false); }
 			root.classList.toggle('is-disconnected', !outputConnected);
 			root.classList.toggle('is-busy', outputConnected && (testPlaying || resetting));
@@ -271,6 +287,7 @@ export function createKeyboardControls(root, onModeChange = () => {}, onNote = (
 		setPitchBend(value) {
 			if (Number.isInteger(value) && value >= 0 && value <= 16383) { setBend(value, false); }
 		},
+		setSustain(value) { setSustain(value, false); },
 		setMidiNotes(notes) {
 			midiNotes = new Set(Array.isArray(notes) ? notes.filter(note => Number.isInteger(note) && note >= 0 && note <= 127) : []);
 			for (const key of wrapper.children) { updateKey(key); }

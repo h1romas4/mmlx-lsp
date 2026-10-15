@@ -3544,6 +3544,7 @@ finally:
 							const mode = document.querySelector('.keyboard-output select');
 							const button = document.querySelector('.keyboard-output .output-connection');
 							const reset = document.getElementById('keyboard-reset');
+							const sustainPedal = document.getElementById('keyboard-sustain');
 							check(reset.disabled && reset.nextElementSibling === button, 'Reset is disabled before connection and sits to its left');
 							const key = document.querySelector('#keyboard [data-midi-note="69"]');
 							if (!key) { requestAnimationFrame(run); return; }
@@ -3563,6 +3564,7 @@ finally:
 							const cursor = document.getElementById('playback-cursor');
 							const volume = document.getElementById('playback-volume');
 							const serial = { type: 'serialSettings', folder: 'test', connection: '/dev/test', ports: [{ path: '/dev/test' }], connected: true, firmware: '1.0b8', model: 'NanoDrive 8' };
+							check(sustainPedal.disabled, 'Sustain pedal is disabled before keyboard output connects');
 							send(serial); check(!button.disabled, 'Settings connection must enable output');
 							check(playbackMode.value === 'nanodrive8' && !play.disabled && cursor.disabled && !volume.disabled, 'NanoDrive Playback auto-selection with output volume');
 							volume.focus();
@@ -3585,6 +3587,17 @@ finally:
 							check(request?.mode === 'nanodrive8' && request.connected && button.disabled && mode.disabled, 'Keyboard connect request and busy state');
 							send({ type: 'outputConnection', target: 'keyboard', id: request.id, mode: 'nanodrive8', connected: true, connecting: false });
 							check(key.getAttribute('aria-disabled') === 'false' && button.getAttribute('aria-pressed') === 'true', 'Connected keyboard');
+							check(!sustainPedal.disabled && sustainPedal.getAttribute('aria-pressed') === 'false', 'Connected sustain pedal starts released');
+							sustainPedal.click();
+							check(sustainPedal.getAttribute('aria-pressed') === 'true'
+								&& messages.at(-1).type === 'keyboardSustain' && messages.at(-1).active === true,
+							'Sustain pedal press is visible and routed');
+							send({ type: 'sustainState', active: true });
+							check(sustainPedal.title === 'Sustain pedal (on)', 'Sustain pedal displays its pressed state');
+							sustainPedal.click();
+							check(sustainPedal.getAttribute('aria-pressed') === 'false'
+								&& messages.at(-1).type === 'keyboardSustain' && messages.at(-1).active === false,
+							'Sustain pedal release is visible and routed');
 							check(!reset.disabled, 'Connected sound chip can be reset');
 							const keyboardBody = document.querySelector('.p-keyboard__body');
 							const mmlInput = document.getElementById('voice-test-mml');
@@ -3621,6 +3634,11 @@ finally:
 							const wheel = document.getElementById('keyboard-pitch-bend');
 							const firstKey = document.querySelector('#keyboard [data-midi-note]');
 							check(!wheel.disabled && wheel.getBoundingClientRect().right <= firstKey.getBoundingClientRect().left, 'Pitch wheel must be enabled to the left of the keys');
+							check(sustainPedal.getBoundingClientRect().bottom <= wheel.getBoundingClientRect().top,
+								'Sustain pedal occupies the space above the pitch wheel');
+							const chipState = document.querySelector('#keyboard .voice-test');
+							check(chipState.closest('.p-keyboard__main') && chipState.getBoundingClientRect().bottom <= firstKey.getBoundingClientRect().top,
+								'Chip State MML sits above the piano rather than above the pitch wheel');
 							wheel.focus();
 							check(getComputedStyle(wheel).outlineStyle === 'none', 'Wheel must not show a focus outline');
 							const beforeMidiBend = messages.length;
@@ -3694,7 +3712,9 @@ finally:
 							check(getComputedStyle(testPlay).backgroundColor === getComputedStyle(document.getElementById('playback-play')).backgroundColor,
 								'Chip State MML uses the Playback accent color');
 							check(testPlay.getBoundingClientRect().width === 28 && testPlay.getBoundingClientRect().height === 28, 'Compact voice test toggle');
-							check(testInput.getBoundingClientRect().bottom <= document.querySelector('.p-keyboard__body').getBoundingClientRect().top, 'Voice test sits immediately above the keyboard');
+							check(document.querySelector('.voice-test').closest('.p-keyboard__main')
+								&& testInput.getBoundingClientRect().bottom <= document.querySelector('.p-keyboard__wrapper').getBoundingClientRect().top,
+							'Chip State MML sits above the keyboard, beside the pitch wheel');
 							const beforeEnter = messages.length;
 							for (const options of [{ isComposing: true }, { keyCode: 229 }, { repeat: true }]) {
 								testInput.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true, cancelable: true, ...options }));

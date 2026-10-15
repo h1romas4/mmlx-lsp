@@ -148,6 +148,9 @@ export class VoiceViewProvider implements WebviewViewProvider {
 	private pitchBendValue = 8192;
 	private bendTimer: ReturnType<typeof setTimeout> | undefined;
 	private pendingBends = new Map<string, Extract<NanoDriveInput, { type: 'pitchBend' }>>();
+	private readonly sustainPedals = new Set<string>();
+	private readonly midiSustainChannels = new Set<number>();
+	private keyboardSustainActive = false;
 	private midiFolder = '';
 	private editTarget: { document: TextDocument; version: number; token: number; voice: VoiceDefinition } | undefined;
 	private snapshot: { voice: VoiceDefinition | null; name?: string | null; invalidNumber?: number | null; source: string; retained: boolean; error: boolean; warning?: string[] } = {
@@ -180,7 +183,7 @@ export class VoiceViewProvider implements WebviewViewProvider {
 				this.sendSerialSettings();
 			}, state => {
 			if (this.keyboardOutputMode !== 'nanodrive8') { return; }
-			if (state.connected) { this.nanodrive.setVoice(this.snapshot.voice); this.restorePitchBends(); }
+			if (state.connected) { this.nanodrive.setVoice(this.snapshot.voice); this.restoreInputState(); }
 			void this.view?.webview.postMessage({ type: 'outputConnection', target: 'keyboard', mode: 'nanodrive8', id: this.outputId, ...state });
 		}, state => {
 			void this.view?.webview.postMessage({ type: 'nanoDrivePlayback', busy: state.busy });
@@ -214,7 +217,7 @@ export class VoiceViewProvider implements WebviewViewProvider {
 				this.emulationConnected = state.connected;
 				this.updateConnectionMarker();
 				if (this.keyboardOutputMode === 'emulation') {
-					if (state.connected) { this.restorePitchBends(); }
+					if (state.connected) { this.restoreInputState(); }
 					void this.view?.webview.postMessage({ type: 'outputConnection', target: 'keyboard', mode: 'emulation', id: this.outputId, ...state });
 				}
 			},
@@ -251,16 +254,22 @@ export class VoiceViewProvider implements WebviewViewProvider {
 		this.midiInput = new MidiInputConnection(state => {
 			if (state.error) { this.notifySettingsError('midi', 'MIDI input', state.error); }
 			else { this.clearSettingsErrorNotification('midi'); }
+			if (!state.connected) { this.restoreKeyboardSustainForMidi(); }
 			this.sendMidiSettings();
 		}, createInput,
 			notes => { void this.view?.webview.postMessage({ type: 'midiNotes', notes }); },
 			event => {
-				this.note({ ...event, source: 1 });
-				if (event.type === 'pitchBend') {
+				if (event.type === 'sustain') {
+					this.setSustain(1, event.channel, event.pressed);
+				} else if (event.type === 'pitchBend') {
+					this.note({ ...event, source: 1 });
 					this.pitchBendValue = event.value;
 					this.note({ type: 'pitchBend', source: 0, channel: 0, value: event.value });
 					void this.view?.webview.postMessage({ type: 'pitchBend', value: event.value });
-				} else { void this.view?.webview.postMessage({ type: 'midiNote', event }); }
+				} else {
+					this.note({ ...event, source: 1 });
+					if (event.type !== 'allOff') { void this.view?.webview.postMessage({ type: 'midiNote', event }); }
+				}
 			});
 		context.subscriptions.push(
 			window.onDidChangeTextEditorSelection(event => this.follow(event.textEditor)),
@@ -308,6 +317,7 @@ export class VoiceViewProvider implements WebviewViewProvider {
 					this.sendEditorSelection(window.activeTextEditor);
 					void this.view?.webview.postMessage({ type: 'midiNotes', notes: this.midiInput.notes });
 					void this.view?.webview.postMessage({ type: 'pitchBend', value: this.pitchBendValue });
+					void this.view?.webview.postMessage({ type: 'sustainState', active: this.sustainPedals.size > 0 });
 					void this.refreshSerialPorts(); void this.refreshMidiInputPorts();
 				}
 				else if (message?.type === 'openStarter') { void this.openStarter(); }
@@ -388,6 +398,12 @@ export class VoiceViewProvider implements WebviewViewProvider {
 						&& message.velocity >= 0 && message.velocity <= 127) {
 						this.note({ type: message.event, source: 0, channel: 0, note: message.note, velocity: message.velocity });
 					}
+				}
+				else if (message?.type === 'keyboardSustain' && message.id === this.outputId
+					&& typeof message.active === 'boolean' && workspace.isTrusted
+					&& (this.keyboardOutputMode === 'nanodrive8' && this.nanodrive.outputState.connected
+						|| this.keyboardOutputMode === 'emulation' && this.emulationConnected)) {
+					this.setSustain(0, 0, message.active);
 				}
 			}),
 			view.onDidChangeVisibility(() => {
@@ -479,7 +495,7 @@ export class VoiceViewProvider implements WebviewViewProvider {
 		} finally {
 			this.resettingOutput = false;
 			if (id === this.outputId) {
-				this.setVoiceTesting(false); this.restorePitchBends();
+				this.setVoiceTesting(false); this.restoreInputState();
 				void this.view?.webview.postMessage({ type: 'outputReset', id, connected: this.keyboardOutputMode === 'nanodrive8' ? this.nanodrive.outputState.connected : this.emulationConnected });
 			}
 		}
@@ -505,17 +521,54 @@ export class VoiceViewProvider implements WebviewViewProvider {
 		this.sendNote(command);
 	}
 
+	private setSustain(source: number, channel: number, pressed: boolean): void {
+		if (source === 0) {
+			this.keyboardSustainActive = pressed;
+			this.applySustain(0, 0, pressed);
+			for (let midiChannel = 0; midiChannel < 16; midiChannel++) {
+				this.applySustain(1, midiChannel, this.midiSustainChannels.has(midiChannel) || pressed);
+			}
+			return;
+		}
+		this.keyboardSustainActive = false;
+		if (pressed) { this.midiSustainChannels.add(channel); } else { this.midiSustainChannels.delete(channel); }
+		this.applySustain(0, 0, false);
+		for (let midiChannel = 0; midiChannel < 16; midiChannel++) {
+			this.applySustain(1, midiChannel, this.midiSustainChannels.has(midiChannel));
+		}
+	}
+
+	private applySustain(source: number, channel: number, pressed: boolean): void {
+		const key = `${source}:${channel}`;
+		if (this.sustainPedals.has(key) === pressed) { return; }
+		if (pressed) { this.sustainPedals.add(key); } else { this.sustainPedals.delete(key); }
+		this.sendNote({ type: 'sustain', source, channel, pressed });
+		void this.view?.webview.postMessage({ type: 'sustainState', active: this.sustainPedals.size > 0 });
+	}
+
+	private restoreKeyboardSustainForMidi(): void {
+		if (!this.midiSustainChannels.size) { return; }
+		this.midiSustainChannels.clear();
+		for (let channel = 0; channel < 16; channel++) {
+			this.applySustain(1, channel, this.keyboardSustainActive);
+		}
+	}
+
 	private flushPitchBends(): void {
 		clearTimeout(this.bendTimer); this.bendTimer = undefined;
 		for (const command of this.pendingBends.values()) { this.sendNote(command); }
 		this.pendingBends.clear();
 	}
 
-	private restorePitchBends(): void {
+	private restoreInputState(): void {
 		if (this.pitchBendValue !== 8192) { this.note({ type: 'pitchBend', source: 0, channel: 0, value: this.pitchBendValue }); }
 		this.midiInput.pitchBends.forEach((value, channel) => {
 			if (value !== 8192) { this.note({ type: 'pitchBend', source: 1, channel, value }); }
 		});
+		for (const key of this.sustainPedals) {
+			const [source, channel] = key.split(':').map(Number);
+			this.sendNote({ type: 'sustain', source, channel, pressed: true });
+		}
 		void this.view?.webview.postMessage({ type: 'pitchBend', value: this.pitchBendValue });
 	}
 

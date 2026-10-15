@@ -49,7 +49,8 @@ suite('MIDI input connection', () => {
 		assert.ok(connection.pitchBends.every(value => value === 8192));
 		assert.deepStrictEqual(events, [
 			{ type: 'pitchBend', channel: 3, value: 16383 }, { type: 'pitchBend', channel: 4, value: 0 },
-			{ type: 'pitchBend', channel: 3, value: 8192 }, { type: 'pitchBend', channel: 4, value: 8192 }, { type: 'allOff' }
+			{ type: 'pitchBend', channel: 3, value: 8192 }, { type: 'sustain', channel: 3, pressed: false },
+			{ type: 'pitchBend', channel: 4, value: 8192 }, { type: 'allOff' }
 		]);
 	});
 	test('forwards velocity, retriggers and source channel releases independently of display changes', async () => {
@@ -101,6 +102,35 @@ suite('MIDI input connection', () => {
 		assert.deepStrictEqual(connection.notes, [64]);
 		input.emit('noteoff', 64, 0, { channel: 0 });
 		assert.deepStrictEqual(connection.notes, []);
+		connection.disconnect();
+	});
+	test('forwards MIDI sustain pedal changes by channel and releases them on disconnect', async () => {
+		const input = new FakeInput();
+		const events: MidiNoteEvent[] = [];
+		const connection = new MidiInputConnection(() => {}, async () => input, () => {}, event => events.push(event));
+		await connection.connect('Keyboard 2'); events.length = 0;
+		input.emit('cc', 64, 127, { channel: 2 });
+		input.emit('cc', 64, 96, { channel: 2 });
+		input.emit('cc', 64, 63, { channel: 2 });
+		input.emit('cc', 64, 128, { channel: 3 });
+		input.emit('cc', 64, 127, { channel: 3 });
+		connection.disconnect();
+		assert.deepStrictEqual(events, [
+			{ type: 'sustain', channel: 2, pressed: true },
+			{ type: 'sustain', channel: 2, pressed: false },
+			{ type: 'sustain', channel: 3, pressed: true },
+			{ type: 'sustain', channel: 3, pressed: false },
+			{ type: 'allOff' }
+		]);
+	});
+	test('reports the first released-pedal state so it can override a local pedal', async () => {
+		const input = new FakeInput();
+		const events: MidiNoteEvent[] = [];
+		const connection = new MidiInputConnection(() => {}, async () => input, () => {}, event => events.push(event));
+		await connection.connect('Keyboard 2'); events.length = 0;
+		input.emit('cc', 64, 0, { channel: 5 });
+		input.emit('cc', 64, 0, { channel: 5 });
+		assert.deepStrictEqual(events, [{ type: 'sustain', channel: 5, pressed: false }]);
 		connection.disconnect();
 	});
 
