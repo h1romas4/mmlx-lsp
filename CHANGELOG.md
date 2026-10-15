@@ -4,6 +4,8 @@ All notable changes to the "mmlx-lsp" extension will be documented in this file.
 
 ## [Unreleased]
 
+## [0.23.0] - 2026-10-16
+
 - Add sustain pedal support to FM Voice.
 
 ## [0.22.0] - 2026-10-15
