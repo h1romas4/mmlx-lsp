@@ -6,6 +6,7 @@ export class Port implements NanoDrivePort {
     isOpen = true;
     commands: { command: string; requestId: number; payload: number[]; input?: NanoDriveInput; session?: number }[] = [];
     firmware = '1.0b8'; model = 'NanoDrive 8'; ignore = ''; rejected = '';
+    clockMode: 'fixed' | 'variable' | 'unknown' = 'variable'; fixedClockHz = 0;
     drained: string[] = [];
     writes: { command: string; time: number }[] = [];
     audioFault = false;
@@ -43,6 +44,11 @@ export class Port implements NanoDrivePort {
                 running: this.audioStarted !== 0, ended: this.audioEnd && played === this.accepted, fault: this.audioStarted !== 0 && (this.audioFault || this.underflowed),
                 underflows: this.underflowed ? 1 : 0, overflows: 0, rejected: 0,
                 flags: this.underflowed ? 0x45 : this.audioStarted && this.audioFault ? this.audioFaultFlags : this.audioStarted ? 1 : 0 }
+            : request.command === 'getCapabilities'
+                ? { command: request.command, requestId: request.requestId, status: 0, nextOffset: 0xffff, entries: [
+                    { writeId: 0x54, instance: 0, page: 0, features: this.clockMode === 'variable' ? 0x07 : 0x03,
+                        clockMode: this.clockMode, fixedClockHz: this.fixedClockHz }
+                ] }
             : { ...request, status: request.command === this.rejected ? 1 : 0, model: this.model, firmware: this.firmware };
         const body = Buffer.from(JSON.stringify(response));
         this.chunks.push(Buffer.from('boot log'), Buffer.concat([Buffer.from([0]), body.subarray(0, 5)]), Buffer.concat([body.subarray(5), Buffer.from([0])]));
@@ -157,7 +163,7 @@ suite('NanoDrive8 connection', () => {
             await connection.startPlayback('#pcmfile "unused"\nA c4',false,async()=>{ throw new Error('FM-only must not load PDX'); });
             assert.strictEqual(connection.playbackState.error,''); assert.ok(connection.playbackState.finished);
             assert.ok(port.commands.every(request=>!request.command.startsWith('audio')));
-            assert.deepStrictEqual(port.commands.slice(5).map(request=>request.command),['reset','setOutputVolume','setPlaybackClock','fmBurst','ping','fmBurst','fmBurst','reset']);
+            assert.deepStrictEqual(port.commands.slice(6).map(request=>request.command),['reset','setOutputVolume','setPlaybackClock','fmBurst','ping','fmBurst','fmBurst','reset']);
             const bursts=port.writes.filter(write=>write.command==='fmBurst');
             assert.ok(bursts[2]!.time-bursts[1]!.time>=90,'Note-off must not be sent ahead of its scheduled time');
             assert.ok(!port.drained.includes('fmBurst')); assert.ok(port.isOpen && connection.state.connected);
@@ -630,12 +636,12 @@ suite('NanoDrive8 connection', () => {
         assert.strictEqual(port.commands.length, 0);
         await connection.connect('test'); await connection.connectOutput(null);
         assert.ok(connection.outputState.connected);
-        assert.deepStrictEqual(port.commands.slice(5).map(request => request.command), ['audition', 'ping']);
-        assert.strictEqual(port.commands[5].input?.type, 'init');
+        assert.deepStrictEqual(port.commands.slice(6).map(request => request.command), ['audition', 'ping']);
+        assert.strictEqual(port.commands[6].input?.type, 'init');
         const note = { type: 'noteOn' as const, source: 0, channel: 0, note: 69, velocity: 100 };
         connection.note(note); connection.note({ ...note, type: 'noteOff' });
         await new Promise<void>(resolve => setImmediate(resolve));
-        assert.deepStrictEqual(port.commands.slice(7).map(request => request.input?.type), ['noteOn', 'noteOff']);
+        assert.deepStrictEqual(port.commands.slice(8).map(request => request.input?.type), ['noteOn', 'noteOff']);
         await connection.disconnectOutput();
         assert.deepStrictEqual(port.commands.slice(-2).map(request => request.command), ['audition', 'ping']);
         assert.strictEqual(port.commands.at(-2)?.input?.type, 'stop');
@@ -644,7 +650,7 @@ suite('NanoDrive8 connection', () => {
         connection.note(note); await new Promise<void>(resolve => setImmediate(resolve));
         assert.strictEqual(port.commands.length, length);
         await connection.connectOutput(null);
-        assert.notStrictEqual(port.commands.at(-2)?.session, port.commands[5].session);
+        assert.notStrictEqual(port.commands.at(-2)?.session, port.commands[6].session);
         await connection.disconnect(); assert.ok(!connection.outputState.connected && !port.isOpen);
     });
 
@@ -727,16 +733,31 @@ suite('NanoDrive8 connection', () => {
         for (const value of ['1.0', '1.0b8', '1.0b9', '1.0-beta', '1.0.1']) { assert.ok(isSupportedNanoDriveFirmware(value)); }
         for (const value of ['1.01', '1.1', '2.0', '11.0', 'v1.0', '']) { assert.ok(!isSupportedNanoDriveFirmware(value)); }
     });
-    test('opens, probes, validates identity, resets, sets clock and synchronizes before ready', async () => {
+    test('opens, probes capabilities, sets only a variable clock, and synchronizes before ready', async () => {
         const port = new Port();
         const connection = new NanoDriveConnection(codec, () => {}, async () => port, 100);
         await connection.connect('test');
         assert.ok(connection.state.connected);
         assert.strictEqual(connection.state.firmware, '1.0b8');
-        assert.deepStrictEqual(port.commands.map(request => request.command), ['ping', 'getInfo', 'reset', 'setClock', 'ping']);
+        assert.deepStrictEqual(port.commands.map(request => request.command), ['ping', 'getInfo', 'getCapabilities', 'reset', 'setClock', 'ping']);
         await connection.disconnect();
         assert.strictEqual(port.commands.at(-1)?.command, 'reset'); assert.ok(!port.isOpen);
         assert.ok(!connection.state.connected); assert.strictEqual(connection.state.error, '');
+    });
+    test('fixed YM2151 clocks must match playback and are never reconfigured', async () => {
+        const port = new Port(); port.clockMode = 'fixed'; port.fixedClockHz = 4_000_000;
+        const connection = new NanoDriveConnection(codec, () => {}, async () => port, 100);
+        await connection.connect('test');
+        assert.ok(connection.state.connected);
+        assert.ok(!port.commands.some(request => ['setClock', 'setPlaybackClock'].includes(request.command)));
+        await connection.disconnect();
+
+        const incompatible = new Port(); incompatible.clockMode = 'fixed'; incompatible.fixedClockHz = 3_579_545;
+        const rejected = new NanoDriveConnection(codec, () => {}, async () => incompatible, 100);
+        await rejected.connect('test');
+        assert.ok(!rejected.state.connected);
+        assert.match(rejected.state.error, /fixed clock is 3579545 Hz/);
+        assert.ok(!incompatible.commands.some(request => ['reset', 'setClock'].includes(request.command)));
     });
     test('wrong models and firmware close without sending RESET or clock', async () => {
         for (const [model, firmware] of [['Other', '1.0b8'], ['NanoDrive 8', '1.1b1']]) {

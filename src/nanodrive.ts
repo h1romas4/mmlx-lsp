@@ -9,14 +9,19 @@ export interface NanoDrivePort {
     close(): Promise<void>;
 }
 
-export type NanoDriveCommand = 'ping' | 'getInfo' | 'reset' | 'setClock' | 'setPlaybackClock' | 'audioStart' | 'audioStatus' | 'setOutputVolume';
+export type NanoDriveCommand = 'ping' | 'getInfo' | 'getCapabilities' | 'reset' | 'setClock' | 'setPlaybackClock' | 'audioStart' | 'audioStatus' | 'setOutputVolume';
 export type NanoDriveInput = { type: 'init' | 'voice'; voice: unknown }
     | { type: 'noteOn'; source: number; channel: number; note: number; velocity: number }
     | { type: 'noteOff'; source: number; channel: number; note: number }
     | { type: 'pitchBend'; source: number; channel: number; value: number }
     | { type: 'allOff'; source?: number; channel?: number } | { type: 'stop' };
 export interface NanoDriveOutputState { connected: boolean; connecting: boolean; error: string; }
+export interface NanoDriveCapabilityEntry {
+    writeId: number; instance: number; page: number; features: number;
+    clockMode: 'unknown' | 'fixed' | 'variable'; fixedClockHz: number;
+}
 export interface NanoDriveReply { status: number; model?: string; firmware?: string;
+    nextOffset?: number; entries?: NanoDriveCapabilityEntry[];
     accepted?: number; played?: number; pending?: number; running?: boolean; ended?: boolean; fault?: boolean;
     underflows?: number; overflows?: number; rejected?: number;
     flags?: number; maxPending?: number; lateEvents?: number; maxEventLag?: number;
@@ -72,6 +77,7 @@ function playbackFaultReasons(status: NanoDriveReply): string {
 
 export class NanoDriveConnection {
     private snapshot = emptyState();
+    private ym2151ClockMode: 'fixed' | 'variable' | undefined;
     private port?: NanoDrivePort;
     private opening?: Promise<NanoDrivePort>;
     private closing?: Promise<void>;
@@ -292,13 +298,13 @@ export class NanoDriveConnection {
             await this.request('reset'); resetting = false; check();
             await this.setVolume(this.outputVolume); check();
             if (!prepared.audio) {
-                await this.send('setPlaybackClock'); check();
+                await this.setPlaybackClock(check);
                 await this.playFm(connection, token, check);
                 check(); await this.stopPlayback('', true); return;
             }
             const reset = await this.request('audioStatus'); check();
             if (reset.accepted !== 0 || reset.played !== 0 || reset.pending !== 0 || reset.running !== false || reset.fault !== false) { throw new Error('Invalid NanoDrive8 reset status.'); }
-            await this.send('setPlaybackClock'); check();
+            await this.setPlaybackClock(check);
             const preparedChunks = new Map<NanoDriveChunk, { version: number; parts: Uint8Array[] }>();
             const prepareOne = async (chunk: NanoDriveChunk) => {
                 check();
@@ -636,11 +642,24 @@ export class NanoDriveConnection {
                 throw new Error(`Unsupported NanoDrive8 firmware: ${info.firmware ?? 'unknown'} (requires 1.0)`);
             }
             this.snapshot.model = info.model; this.snapshot.firmware = info.firmware;
+            const capabilities = await this.getCapabilities();
+            const ym2151 = capabilities.find(entry => entry.writeId === 0x54 && entry.instance === 0 && entry.page === 0);
+            if (!ym2151) { throw new Error('NanoDrive8 does not report YM2151 instance 0 page 0.'); }
+            if (ym2151.clockMode === 'variable' && (ym2151.features & 0x04) !== 0 && ym2151.fixedClockHz === 0) {
+                this.ym2151ClockMode = 'variable';
+            } else if (ym2151.clockMode === 'fixed' && (ym2151.features & 0x04) === 0
+                && ym2151.fixedClockHz === 4_000_000) {
+                this.ym2151ClockMode = 'fixed';
+            } else if (ym2151.clockMode === 'fixed') {
+                throw new Error(`NanoDrive8 YM2151 fixed clock is ${ym2151.fixedClockHz} Hz; 4000000 Hz is required.`);
+            } else {
+                throw new Error('NanoDrive8 YM2151 clock capability is unknown or inconsistent.');
+            }
             this.phase('Initializing');
             if (generation !== this.generation) { return; }
             await this.request('reset');
             if (generation !== this.generation) { return; }
-            await this.send('setClock');
+            if (this.ym2151ClockMode === 'variable') { await this.send('setClock'); }
             if (generation !== this.generation) { return; }
             await this.request('ping', [...randomBytes(8)]);
             if (generation !== this.generation) { return; }
@@ -687,6 +706,7 @@ export class NanoDriveConnection {
             try { if (port?.isOpen) { await port.close(); } }
             catch (failure) { error ||= `Could not close NanoDrive8: ${String(failure)}`; }
             this.snapshot = { ...emptyState(), error }; this.emit();
+            this.ym2151ClockMode = undefined;
         })();
         this.closing = closing;
         return closing.finally(() => { if (this.closing === closing) { this.closing = undefined; } });
@@ -726,6 +746,57 @@ export class NanoDriveConnection {
         const generation = this.generation;
         const bytes = await this.encode(command, []);
         await this.write(bytes, generation);
+    }
+
+    private async getCapabilities(): Promise<NanoDriveCapabilityEntry[]> {
+        const entries: NanoDriveCapabilityEntry[] = [];
+        const pages = new Set<string>();
+        const offsets = new Set<number>();
+        let offset = 0;
+        for (;;) {
+            if (!Number.isInteger(offset) || offset < 0 || offset > 0xffff || offsets.has(offset)) {
+                throw new Error('NanoDrive8 returned an invalid capability page offset.');
+            }
+            offsets.add(offset);
+            const reply = await this.request('getCapabilities', [offset & 0xff, offset >>> 8]);
+            if (!Array.isArray(reply.entries) || !Number.isInteger(reply.nextOffset)) {
+                throw new Error('NanoDrive8 returned invalid capability metadata.');
+            }
+            for (const entry of reply.entries) {
+                if (!Number.isInteger(entry.writeId) || !Number.isInteger(entry.instance)
+                    || !Number.isInteger(entry.page) || !Number.isInteger(entry.features)
+                    || !Number.isInteger(entry.fixedClockHz)
+                    || !['unknown', 'fixed', 'variable'].includes(entry.clockMode)) {
+                    throw new Error('NanoDrive8 returned an invalid capability entry.');
+                }
+                const key = `${entry.writeId}:${entry.instance}`;
+                if (pages.has(`${key}:${entry.page}`)) {
+                    throw new Error('NanoDrive8 returned a duplicate capability page.');
+                }
+                const previous = entries.find(candidate =>
+                    candidate.writeId === entry.writeId && candidate.instance === entry.instance);
+                if (previous && (previous.clockMode !== entry.clockMode
+                    || previous.fixedClockHz !== entry.fixedClockHz)) {
+                    throw new Error('NanoDrive8 returned inconsistent clock metadata across pages.');
+                }
+                pages.add(`${key}:${entry.page}`);
+                entries.push(entry);
+            }
+            if (reply.nextOffset === 0xffff) { return entries; }
+            if (reply.nextOffset !== offset + reply.entries.length || reply.entries.length === 0) {
+                throw new Error('NanoDrive8 returned an invalid next capability page offset.');
+            }
+            offset = reply.nextOffset;
+        }
+    }
+
+    private async setPlaybackClock(check: () => void): Promise<void> {
+        check();
+        if (this.ym2151ClockMode === 'variable') { await this.send('setPlaybackClock'); }
+        else if (this.ym2151ClockMode !== 'fixed') {
+            throw new Error('NanoDrive8 YM2151 clock capability has not been validated.');
+        }
+        check();
     }
 
     private request(command: NanoDriveCommand, payload: number[] = [], check?: () => void): Promise<NanoDriveReply> {

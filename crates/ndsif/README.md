@@ -4,6 +4,8 @@ Allocation-free `no_std` Rust codec for the NDSIF v1 draft specification.
 The v1 draft is not wire-compatible with the previous
 b protocol even though both use wire version `01`; select the profile
 explicitly at the transport boundary.
+This codec implements API specification revision 39; the frame wire version
+remains `01`.
 
 ## Scope
 
@@ -70,9 +72,13 @@ assert_eq!(decoded.reply, Reply::Ping(b"ND8"));
 
 The crate provides typed codecs for RESET, PING, GET_INFO, SET_OUTPUT_VOLUME,
 SET_CHIP_CLOCK, GET_CAPABILITIES and AUDIO_STATUS. Capability pages expose
-their entries as a borrowing iterator. Device and capability support remain
-device-specific and must be read from GET_CAPABILITIES rather than inferred
-from a product name.
+their 9-byte entries as a borrowing iterator, including unknown, fixed and
+variable logical clock modes. Fixed entries provide their input frequency;
+variable entries advertise clock-setting support. Invalid modes, inconsistent
+clock metadata and duplicate pages are rejected. Device and capability support
+remain device-specific and must be read from GET_CAPABILITIES rather than
+inferred from a product name. API revision 39 is not wire-compatible with the
+previous 4-byte capability-entry format.
 
 ## Register and stream batching
 

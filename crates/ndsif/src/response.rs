@@ -13,12 +13,39 @@ pub struct DeviceInfo<'a> {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[repr(u8)]
+pub enum ClockMode {
+    Unknown = 0,
+    Fixed = 1,
+    Variable = 2,
+}
+
+impl TryFrom<u8> for ClockMode {
+    type Error = Error;
+
+    fn try_from(value: u8) -> Result<Self, Self::Error> {
+        match value {
+            0 => Ok(Self::Unknown),
+            1 => Ok(Self::Fixed),
+            2 => Ok(Self::Variable),
+            _ => Err(Error::InvalidArgument),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct CapabilityEntry {
     pub write_id: u8,
     pub instance: u8,
     pub page: u8,
     pub features: u8,
+    pub clock_mode: ClockMode,
+    pub fixed_clock_hz: u32,
 }
+
+pub const CAPABILITY_ENTRY_SIZE: usize = 9;
+pub const MAX_CAPABILITY_ENTRIES: usize = (MAX_PAYLOAD_SIZE - 14) / CAPABILITY_ENTRY_SIZE;
+const CONFIGURABLE_CLOCK_FEATURE: u8 = 1 << 2;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Capabilities<'a> {
@@ -39,10 +66,13 @@ impl<'a> Capabilities<'a> {
         next_offset: u16,
         entries: &'a [u8],
     ) -> Result<Self, Error> {
-        if max_payload as usize > MAX_PAYLOAD_SIZE || entries.len() % 4 != 0 || entries.len() > 240
+        if max_payload as usize > MAX_PAYLOAD_SIZE
+            || !entries.len().is_multiple_of(CAPABILITY_ENTRY_SIZE)
+            || entries.len() > MAX_CAPABILITY_ENTRIES * CAPABILITY_ENTRY_SIZE
         {
             return Err(Error::InvalidArgument);
         }
+        validate_capability_entries(entries)?;
         Ok(Self {
             max_payload,
             data_capacity,
@@ -54,13 +84,53 @@ impl<'a> Capabilities<'a> {
     }
 
     pub fn entries(self) -> impl ExactSizeIterator<Item = CapabilityEntry> + 'a {
-        self.entries.chunks_exact(4).map(|entry| CapabilityEntry {
-            write_id: entry[0],
-            instance: entry[1],
-            page: entry[2],
-            features: entry[3],
-        })
+        self.entries
+            .chunks_exact(CAPABILITY_ENTRY_SIZE)
+            .map(|entry| decode_capability_entry(entry).expect("validated capability entry"))
     }
+}
+
+fn decode_capability_entry(entry: &[u8]) -> Result<CapabilityEntry, Error> {
+    if entry.len() != CAPABILITY_ENTRY_SIZE {
+        return Err(Error::InvalidLength);
+    }
+    let clock_mode = ClockMode::try_from(entry[4])?;
+    let fixed_clock_hz = u32::from_le_bytes([entry[5], entry[6], entry[7], entry[8]]);
+    let configurable_clock = entry[3] & CONFIGURABLE_CLOCK_FEATURE != 0;
+    match clock_mode {
+        ClockMode::Unknown if fixed_clock_hz == 0 => {}
+        ClockMode::Fixed if fixed_clock_hz != 0 && !configurable_clock => {}
+        ClockMode::Variable if fixed_clock_hz == 0 && configurable_clock => {}
+        _ => return Err(Error::InvalidArgument),
+    }
+    Ok(CapabilityEntry {
+        write_id: entry[0],
+        instance: entry[1],
+        page: entry[2],
+        features: entry[3],
+        clock_mode,
+        fixed_clock_hz,
+    })
+}
+
+fn validate_capability_entries(entries: &[u8]) -> Result<(), Error> {
+    let mut previous_entries = entries.chunks_exact(CAPABILITY_ENTRY_SIZE);
+    for (index, entry) in previous_entries.by_ref().enumerate() {
+        let current = decode_capability_entry(entry)?;
+        for previous in entries[..index * CAPABILITY_ENTRY_SIZE].chunks_exact(CAPABILITY_ENTRY_SIZE)
+        {
+            let previous = decode_capability_entry(previous)?;
+            if current.write_id == previous.write_id
+                && current.instance == previous.instance
+                && (current.page == previous.page
+                    || current.clock_mode != previous.clock_mode
+                    || current.fixed_clock_hz != previous.fixed_clock_hz)
+            {
+                return Err(Error::InvalidArgument);
+            }
+        }
+    }
+    Ok(())
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -194,10 +264,10 @@ impl<'a> Response<'a> {
                     length
                 }
                 Reply::Capabilities(capabilities) => {
-                    let count = capabilities.entries.len() / 4;
-                    if capabilities.entries.len() % 4 != 0
-                        || count > 60
+                    let count = capabilities.entries.len() / CAPABILITY_ENTRY_SIZE;
+                    if count > MAX_CAPABILITY_ENTRIES
                         || capabilities.max_payload as usize > MAX_PAYLOAD_SIZE
+                        || validate_capability_entries(capabilities.entries).is_err()
                     {
                         return Err(Error::InvalidArgument);
                     }
@@ -337,15 +407,15 @@ fn decode_capabilities(body: &[u8]) -> Result<Capabilities<'_>, Error> {
     let next_offset = u16::from_le_bytes([body[10], body[11]]);
     let count = usize::from(body[12]);
     let entries = &body[13..];
-    if count > 60 || entries.len() != count * 4 {
+    if count > MAX_CAPABILITY_ENTRIES || entries.len() != count * CAPABILITY_ENTRY_SIZE {
         return Err(Error::InvalidLength);
     }
-    Ok(Capabilities {
+    Capabilities::new(
         max_payload,
         data_capacity,
         event_capacity,
         control_features,
         next_offset,
         entries,
-    })
+    )
 }

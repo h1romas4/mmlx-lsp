@@ -220,7 +220,9 @@ fn info_capabilities_and_audio_status_decode_the_draft_payload_shapes() {
     );
 
     let capabilities_request = Command::GetCapabilities { offset: 0 }.to_frame(43).unwrap();
-    let entries = [0x54, 0, 0, 1, 0xb7, 1, 2, 0x0b];
+    let entries = [
+        0x54, 0, 0, 0x07, 2, 0, 0, 0, 0, 0xb7, 0, 0, 0x0c, 2, 0, 0, 0, 0,
+    ];
     let capabilities = Capabilities::new(256, 4096, 128, 1, u16::MAX, &entries).unwrap();
     let response =
         Response::for_request(&capabilities_request, Reply::Capabilities(capabilities)).unwrap();
@@ -241,13 +243,17 @@ fn info_capabilities_and_audio_status_decode_the_draft_payload_shapes() {
                 write_id: 0x54,
                 instance: 0,
                 page: 0,
-                features: 1,
+                features: 0x07,
+                clock_mode: ndsif::ClockMode::Variable,
+                fixed_clock_hz: 0,
             },
             ndsif::CapabilityEntry {
                 write_id: 0xb7,
-                instance: 1,
-                page: 2,
-                features: 0x0b,
+                instance: 0,
+                page: 0,
+                features: 0x0c,
+                clock_mode: ndsif::ClockMode::Variable,
+                fixed_clock_hz: 0,
             }
         ]
     );
@@ -276,6 +282,47 @@ fn info_capabilities_and_audio_status_decode_the_draft_payload_shapes() {
             .unwrap()
             .reply,
         Reply::AudioStatus(status)
+    );
+}
+
+#[test]
+fn capability_entries_enforce_clock_modes_features_and_page_consistency() {
+    use ndsif::{ClockMode, MAX_CAPABILITY_ENTRIES, SPEC_REVISION};
+
+    assert_eq!(SPEC_REVISION, 39);
+    assert_eq!(MAX_CAPABILITY_ENTRIES, 26);
+    let fixed = [0x54, 0, 0, 0x03, 1, 0x99, 0x9e, 0x36, 0];
+    let capabilities = Capabilities::new(256, 0, 0, 0, u16::MAX, &fixed).unwrap();
+    assert_eq!(
+        capabilities.entries().next().unwrap(),
+        ndsif::CapabilityEntry {
+            write_id: 0x54,
+            instance: 0,
+            page: 0,
+            features: 0x03,
+            clock_mode: ClockMode::Fixed,
+            fixed_clock_hz: 3_579_545,
+        }
+    );
+
+    for invalid in [
+        [0x54, 0, 0, 0x07, 1, 0x99, 0x9e, 0x36, 0],
+        [0x54, 0, 0, 0x03, 1, 0, 0, 0, 0],
+        [0x54, 0, 0, 0x03, 2, 0, 0, 0, 0],
+        [0x54, 0, 0, 0x07, 2, 1, 0, 0, 0],
+    ] {
+        assert_eq!(
+            Capabilities::new(256, 0, 0, 0, u16::MAX, &invalid),
+            Err(Error::InvalidArgument)
+        );
+    }
+
+    let inconsistent_pages = [
+        0x54, 0, 0, 0x07, 2, 0, 0, 0, 0, 0x54, 0, 1, 0x03, 1, 0x99, 0x9e, 0x36, 0,
+    ];
+    assert_eq!(
+        Capabilities::new(256, 0, 0, 0, u16::MAX, &inconsistent_pages),
+        Err(Error::InvalidArgument)
     );
 }
 

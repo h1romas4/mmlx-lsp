@@ -114,6 +114,7 @@ enum Asset {
 enum Control {
     Ping,
     GetInfo,
+    GetCapabilities,
     Reset,
     SetClock,
     SetOutputVolume,
@@ -298,6 +299,14 @@ impl Bridge {
                 let command = match command {
                     Control::Ping => Command::Ping(&payload),
                     Control::GetInfo => Command::GetInfo,
+                    Control::GetCapabilities => {
+                        let [low, high] = payload.as_slice() else {
+                            return Err("Invalid capabilities offset payload".into());
+                        };
+                        Command::GetCapabilities {
+                            offset: u16::from_le_bytes([*low, *high]),
+                        }
+                    }
                     Control::Reset => Command::Reset,
                     Control::SetOutputVolume => {
                         let [attenuation] = payload.as_slice() else {
@@ -356,6 +365,31 @@ impl Bridge {
                 if let Reply::Info(info) = response.reply {
                     result["model"] = json!(info.model);
                     result["firmware"] = json!(info.firmware);
+                }
+                if let Reply::Capabilities(capabilities) = response.reply {
+                    let entries = capabilities
+                        .entries()
+                        .map(|entry| {
+                            json!({
+                                "writeId": entry.write_id,
+                                "instance": entry.instance,
+                                "page": entry.page,
+                                "features": entry.features,
+                                "clockMode": match entry.clock_mode {
+                                    ndsif::ClockMode::Unknown => "unknown",
+                                    ndsif::ClockMode::Fixed => "fixed",
+                                    ndsif::ClockMode::Variable => "variable",
+                                },
+                                "fixedClockHz": entry.fixed_clock_hz,
+                            })
+                        })
+                        .collect::<Vec<_>>();
+                    result["maxPayload"] = json!(capabilities.max_payload);
+                    result["dataCapacity"] = json!(capabilities.data_capacity);
+                    result["eventCapacity"] = json!(capabilities.event_capacity);
+                    result["controlFeatures"] = json!(capabilities.control_features);
+                    result["nextOffset"] = json!(capabilities.next_offset);
+                    result["entries"] = json!(entries);
                 }
                 if let Reply::AudioStatus(status) = response.reply {
                     result["accepted"] = json!(status.accepted);
@@ -977,6 +1011,58 @@ mod tests {
             let bytes: Vec<u8> = serde_json::from_value(result["bytes"].clone()).unwrap();
             assert_eq!(bytes, command.encode(42).unwrap().as_bytes());
         }
+    }
+
+    #[test]
+    fn capabilities_handshake_encodes_offsets_and_decodes_clock_metadata() {
+        let request = handle(json!({
+            "operation": "encode",
+            "command": "getCapabilities",
+            "requestId": 42,
+            "payload": [0x34, 0x12]
+        }))
+        .unwrap();
+        let bytes: Vec<u8> = serde_json::from_value(request["bytes"].clone()).unwrap();
+        let frame = Frame::decode(&bytes[1..bytes.len() - 1]).unwrap();
+        assert_eq!(
+            Request::decode(&frame).unwrap(),
+            Request::GetCapabilities { offset: 0x1234 }
+        );
+
+        let request = Command::GetCapabilities { offset: 0 }.to_frame(42).unwrap();
+        let entries = [
+            0x54, 0, 0, 0x07, 2, 0, 0, 0, 0, 0xb7, 0, 0, 0x0c, 2, 0, 0, 0, 0,
+        ];
+        let reply = Response::for_request(
+            &request,
+            Reply::Capabilities(
+                ndsif::Capabilities::new(256, 4096, 1024, 0, u16::MAX, &entries).unwrap(),
+            ),
+        )
+        .unwrap()
+        .encode()
+        .unwrap();
+        let bytes = reply.as_bytes();
+        assert_eq!(
+            handle(json!({
+                "operation": "decode",
+                "body": &bytes[1..bytes.len() - 1],
+                "request": request.encode().as_bytes()
+            }))
+            .unwrap(),
+            json!({
+                "status": 0,
+                "maxPayload": 256,
+                "dataCapacity": 4096,
+                "eventCapacity": 1024,
+                "controlFeatures": 0,
+                "nextOffset": 65535,
+                "entries": [
+                    {"writeId": 0x54, "instance": 0, "page": 0, "features": 7, "clockMode": "variable", "fixedClockHz": 0},
+                    {"writeId": 0xb7, "instance": 0, "page": 0, "features": 12, "clockMode": "variable", "fixedClockHz": 0}
+                ]
+            })
+        );
     }
 
     #[test]
