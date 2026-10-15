@@ -4,8 +4,8 @@ use super::{
     ym2151::Ym2151,
 };
 use crate::audition::VoiceTestRegisters;
-use crate::playback_events::{FmKeyEvent, fm_key_events};
-use crate::playback_mute::PlaybackMute;
+use crate::playback::event::{FmKeyEvent, fm_key_events};
+use crate::playback::mute::PlaybackMute;
 use mmlx::mdx::frontend::{self, MdxLocation};
 use soundlog::chip::{Okim6258Spec, Ym2151Spec, state::Ym2151State};
 use soundlog::mdx::command::MdxCommand;

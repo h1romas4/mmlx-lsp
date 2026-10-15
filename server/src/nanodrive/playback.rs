@@ -1,6 +1,6 @@
-use mmlx_lsp_server::audition::VoiceTestRegisters;
-use mmlx_lsp_server::playback_events::{FmKeyEvent, fm_key_events};
-use mmlx_lsp_server::playback_mute::PlaybackMute;
+use crate::audition::VoiceTestRegisters;
+use crate::playback::event::{FmKeyEvent, fm_key_events};
+use crate::playback::mute::PlaybackMute;
 use ndsif::{
     AudioEvent, AudioSampleConverter, AudioTiming, BytePosition, Command, CommandEncoder, Divider,
     Frame, MAX_REGISTER_EVENT_WRITES, OkiClock, Pan, RegisterWrite, Request, RequestEvent, WriteId,

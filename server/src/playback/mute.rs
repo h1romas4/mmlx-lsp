@@ -1,3 +1,5 @@
+//! Tracks playback mute state and rewrites affected FM/PCM pan values.
+
 #[derive(Clone, Default)]
 pub struct PlaybackMute {
     mask: u16,

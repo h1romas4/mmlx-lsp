@@ -1,5 +1,5 @@
-use mmlx_lsp_server::audition::{Audition, CLOCK, polyphony::Note, voice::Voice};
-use mmlx_lsp_server::playback_source::SourceTrace;
+use crate::audition::{Audition, CLOCK, polyphony::Note, voice::Voice};
+use crate::playback::source::SourceTrace;
 use ndsif::{
     Command, CommandEncoder, Divider, Frame, OkiClock, RegisterWrite, Reply, Response, Status,
     WriteId,
@@ -10,6 +10,7 @@ use soundlog::mdx::convert::AdpcmMode;
 
 #[path = "nanodrive/playback.rs"]
 mod playback;
+pub use playback::Chunk;
 
 #[derive(Deserialize)]
 #[serde(tag = "operation", rename_all = "camelCase")]
@@ -167,7 +168,7 @@ pub struct Bridge {
 pub enum Output {
     Json(Value),
     Bytes(Vec<u8>, Option<usize>),
-    Audio(playback::Chunk),
+    Audio(Chunk),
 }
 
 #[cfg(test)]

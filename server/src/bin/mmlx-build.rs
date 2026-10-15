@@ -1,11 +1,7 @@
 use std::io::{self, BufRead, Write};
 
+use mmlx_lsp_server::build::{mdx as mdx_build, pdx as pdx_build};
 use serde_json::{Value, json};
-
-#[path = "../build/mdx.rs"]
-mod mdx_build;
-#[path = "../build/pdx.rs"]
-mod pdx_build;
 
 fn failure(message: impl ToString) -> Value {
     json!({ "ok": false, "message": message.to_string() })

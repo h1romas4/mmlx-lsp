@@ -87,7 +87,7 @@ impl Dialect {
 
     pub fn diagnostics(self, source: &str) -> Vec<Diagnostic> {
         match self {
-            Self::Mdx => crate::mdx_diagnostics(source),
+            Self::Mdx => crate::diagnostics::mdx(source),
         }
     }
 

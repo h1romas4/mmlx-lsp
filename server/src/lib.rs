@@ -1,10 +1,19 @@
+rust_i18n::i18n!("locales", fallback = "ja");
+
 #[cfg(any(feature = "emulation", feature = "nanodrive"))]
 pub mod audition;
+pub mod build;
+pub mod completion;
+pub mod diagnostics;
+pub mod dialect;
 #[cfg(feature = "emulation")]
 pub mod emulation;
-#[cfg(any(feature = "emulation", feature = "nanodrive"))]
-pub mod playback_events;
-#[cfg(any(feature = "emulation", feature = "nanodrive"))]
-pub mod playback_mute;
-#[cfg(any(feature = "emulation", feature = "nanodrive"))]
-pub mod playback_source;
+pub mod formatter;
+pub mod i18n;
+#[cfg(feature = "nanodrive")]
+pub mod nanodrive;
+pub mod playback;
+pub mod selection_range;
+pub mod semantic;
+pub mod track_length;
+pub mod voice;

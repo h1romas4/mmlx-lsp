@@ -7,12 +7,8 @@ use std::{
     task::{Context, Poll},
 };
 
-#[path = "../build/mdx.rs"]
-mod mdx_build;
-#[path = "../build/pdx.rs"]
-mod pdx_build;
-
 use base64::{Engine, engine::general_purpose::STANDARD};
+use mmlx_lsp_server::build::{mdx as mdx_build, pdx as pdx_build};
 use rmcp::{
     ServiceExt,
     handler::server::ServerHandler,
@@ -48,10 +44,6 @@ const MAX_COMMANDS: usize = 500;
 const MAX_TRACE_TICK: u64 = 100_000;
 const MAX_VGM_OUTPUT_BYTES: usize = 64 * 1024 * 1024;
 const MAX_VGM_TICKS: u32 = 1_000_000;
-
-fn failure(message: impl ToString) -> serde_json::Value {
-    serde_json::json!({ "ok": false, "message": message.to_string() })
-}
 
 #[derive(Deserialize, JsonSchema)]
 struct VgmParseRequest {

@@ -1,3 +1,5 @@
+//! Scans MML playback settings active at a source offset.
+
 use mmlx::mdx::{
     MmlCommand,
     frontend::{CommandSource, parse},

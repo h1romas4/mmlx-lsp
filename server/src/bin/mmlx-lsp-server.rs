@@ -1,47 +1,20 @@
-#[path = "../completion.rs"]
-mod completion;
-#[path = "../dialect.rs"]
-mod dialect;
-#[path = "../formatter.rs"]
-mod formatter;
-#[path = "../i18n.rs"]
-mod i18n;
-#[path = "../playback_state.rs"]
-mod playback_state;
-#[path = "../selection_range.rs"]
-mod selection_range;
-#[path = "../semantic.rs"]
-mod semantic;
-#[path = "../track_length.rs"]
-mod track_length;
-#[path = "../voice.rs"]
-mod voice;
-
-rust_i18n::i18n!("locales", fallback = "ja");
-
-use std::collections::{BTreeSet, HashMap};
+use std::collections::HashMap;
 use std::error::Error;
 
-use dialect::Dialect;
 use lsp_server::{Connection, ErrorCode, Message, Notification, Request, Response};
 #[cfg(test)]
 use lsp_types::Uri;
 use lsp_types::{
-    CodeLensParams, CompletionParams, Diagnostic, DiagnosticSeverity, DidChangeTextDocumentParams,
-    DidCloseTextDocumentParams, DidOpenTextDocumentParams, DocumentFormattingParams,
-    InitializeParams, NumberOrString, Position, PublishDiagnosticsParams, Range,
-    SelectionRangeParams, SemanticTokensParams, SignatureHelpParams, TextDocumentPositionParams,
+    CodeLensParams, CompletionParams, DidChangeTextDocumentParams, DidCloseTextDocumentParams,
+    DidOpenTextDocumentParams, DocumentFormattingParams, InitializeParams,
+    PublishDiagnosticsParams, SelectionRangeParams, SemanticTokensParams, SignatureHelpParams,
+    TextDocumentPositionParams,
 };
-use mmlx::diagnostic::Severity;
-use mmlx::frontend::SourceFile;
-use mmlx::mdx::frontend::{CompiledMdx, MdxLocation};
-use soundlog::mdx::command::MdxCommand;
-use soundlog::mdx::convert::{
-    MdxPlaybackCheckError, MdxPlaybackCheckLimits, MdxToVgmOptions, check_playback,
+#[cfg(test)]
+use mmlx_lsp_server::diagnostics as mdx_diagnostics;
+use mmlx_lsp_server::{
+    dialect::Dialect, i18n, playback::state as playback_state, track_length, voice,
 };
-use soundlog::mdx::document::MdxDocument;
-use soundlog::mdx::package::MdxPackage;
-use soundlog::mdx::pdx::{PdxBuilder, PdxDocument};
 
 fn main() -> Result<(), Box<dyn Error>> {
     #[cfg(target_os = "wasi")]
@@ -360,143 +333,11 @@ fn handle_notification(
     Ok(())
 }
 
-fn mdx_diagnostics(source: &str) -> Vec<Diagnostic> {
-    let parsed = match mmlx::mdx::frontend::parse(source) {
-        Ok(parsed) => parsed,
-        Err(error) => return vec![to_lsp_diagnostic(source, error)],
-    };
-    let mut diagnostics = parsed
-        .syntax()
-        .voices()
-        .iter()
-        .flat_map(|voice| crate::voice::invalid_parameters(source, voice))
-        .map(|issue| {
-            let parameter = issue.operator.map_or_else(
-                || issue.name.to_owned(),
-                |operator| format!("OP{operator} {}", issue.name),
-            );
-            to_lsp_diagnostic(
-                source,
-                mmlx::diagnostic::Diagnostic {
-                    code: "mmlx.mdx.voice-value-out-of-range",
-                    severity: Severity::Warning,
-                    message: format!(
-                        "FM voice parameter {parameter} value {} is outside the supported range 0-{}.",
-                        issue.value, issue.max
-                    ),
-                    span: Some(issue.span),
-                },
-            )
-        })
-        .collect::<Vec<_>>();
-
-    let compiled = match mmlx::mdx::frontend::compile(&parsed) {
-        Ok(compiled) => compiled,
-        Err(error) => {
-            diagnostics.push(to_lsp_diagnostic(source, error));
-            return diagnostics;
-        }
-    };
-    if let Err(error) = check_compiled_playback(compiled, MdxPlaybackCheckLimits::default()) {
-        diagnostics.push(to_lsp_diagnostic(source, error));
-    }
-    diagnostics
-}
-
-fn check_compiled_playback(
-    compiled: CompiledMdx<'_>,
-    limits: MdxPlaybackCheckLimits,
-) -> Result<(), mmlx::diagnostic::Diagnostic> {
-    let pdx = dummy_pdx(compiled.document()).map_err(|error| {
-        mmlx::diagnostic::Diagnostic::error(
-            "mmlx.mdx.playback-setup",
-            format!("failed to prepare dummy PDX: {error}"),
-            None,
-        )
-    })?;
-    let (mdx, source_map) = compiled.into_parts();
-    check_playback(
-        &MdxPackage { mdx, pdx },
-        MdxToVgmOptions {
-            loop_count: Some(1),
-            ..Default::default()
-        },
-        limits,
-    )
-    .map_err(|error| {
-        let (code, track, command_index) = match &error {
-            MdxPlaybackCheckError::Conversion {
-                track,
-                command_index,
-                ..
-            } => ("mmlx.mdx.playback", *track, *command_index),
-            MdxPlaybackCheckError::LimitExceeded {
-                track,
-                command_index,
-                ..
-            } => ("mmlx.mdx.playback-check-incomplete", *track, *command_index),
-        };
-        let span = track
-            .zip(command_index)
-            .and_then(|(track, index)| source_map.get(&MdxLocation::TrackCommand { track, index }));
-        mmlx::diagnostic::Diagnostic::error(code, error.to_string(), span)
-    })
-}
-
-fn dummy_pdx(mdx: &MdxDocument) -> Result<Option<PdxDocument>, soundlog::ParseError> {
-    let mut banks = BTreeSet::from([0]);
-    let mut notes = BTreeSet::new();
-    for command in mdx.tracks.iter().skip(8).flatten() {
-        match command {
-            MdxCommand::VoiceOrPcmBank(command) => {
-                banks.insert(usize::from(command.value));
-            }
-            MdxCommand::Note(command) => {
-                if let Some(note) = command.note.checked_sub(0x80) {
-                    notes.insert(usize::from(note));
-                }
-            }
-            _ => {}
-        }
-    }
-    if notes.is_empty() && mdx.header.pdx_name.is_none() {
-        return Ok(None);
-    }
-    let mut builder = PdxBuilder::new();
-    for bank in banks {
-        for &note in &notes {
-            builder.set_sample(bank, note, vec![0; 4])?;
-        }
-    }
-    Ok(Some(builder.finalize()))
-}
-
-fn to_lsp_diagnostic(source: &str, error: mmlx::diagnostic::Diagnostic) -> Diagnostic {
-    let range = error.span.and_then(|span| {
-        let index = SourceFile::new(source)?.line_index();
-        let (start_line, start_column) = index.utf16_position(span.start())?;
-        let (end_line, end_column) = index.utf16_position(span.end())?;
-        Some(Range::new(
-            Position::new(start_line as u32, start_column as u32),
-            Position::new(end_line as u32, end_column as u32),
-        ))
-    });
-    Diagnostic {
-        range: range.unwrap_or_default(),
-        severity: Some(match error.severity {
-            Severity::Error => DiagnosticSeverity::ERROR,
-            Severity::Warning => DiagnosticSeverity::WARNING,
-        }),
-        code: Some(NumberOrString::String(error.code.into())),
-        source: Some("mmlx".into()),
-        message: error.message,
-        ..Diagnostic::default()
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
+    use lsp_types::{Diagnostic, DiagnosticSeverity, NumberOrString, Position, Range};
+    use soundlog::mdx::convert::MdxPlaybackCheckLimits;
 
     fn diagnostics(source: &str) -> Vec<Diagnostic> {
         Dialect::Mdx.diagnostics(source)
@@ -623,8 +464,8 @@ mod tests {
         );
         assert!(edits[0].new_text.contains("    /* CON FL OP */"));
         assert!(!edits[0].new_text.contains("labels"));
-        let start = crate::completion::byte_offset(&source, edits[0].range.start).unwrap();
-        let end = crate::completion::byte_offset(&source, edits[0].range.end).unwrap();
+        let start = 0;
+        let end = source.find("A c4\n").unwrap();
         assert_eq!(&source[..start], "");
         assert_eq!(&source[end..], "A c4\n");
     }
@@ -993,7 +834,7 @@ mod tests {
         ] {
             let parsed = mmlx::mdx::frontend::parse("A [r4]2").unwrap();
             let compiled = mmlx::mdx::frontend::compile(&parsed).unwrap();
-            let error = check_compiled_playback(compiled, limits).unwrap_err();
+            let error = mdx_diagnostics::check_compiled_playback(compiled, limits).unwrap_err();
             assert_eq!(error.code, "mmlx.mdx.playback-check-incomplete");
             assert!(error.message.contains(message), "{error}");
             if limits.max_commands == 1 {

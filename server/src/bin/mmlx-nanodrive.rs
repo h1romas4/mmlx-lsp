@@ -1,6 +1,4 @@
-#[path = "../nanodrive.rs"]
-mod nanodrive;
-
+use mmlx_lsp_server::nanodrive::{Bridge, Output};
 use serde::Deserialize;
 use serde_json::{Value, json};
 use std::io::{self, BufRead, Read, Write};
@@ -12,7 +10,7 @@ struct Request {
 }
 
 fn run(input: impl BufRead, mut output: impl Write) -> Result<(), String> {
-    let mut bridge = nanodrive::Bridge::default();
+    let mut bridge = Bridge::default();
     let mut reader = input;
     loop {
         let mut line = Vec::new();
@@ -29,7 +27,7 @@ fn run(input: impl BufRead, mut output: impl Write) -> Result<(), String> {
         }
         let request: Request = serde_json::from_slice(&line).map_err(|error| error.to_string())?;
         let (kind, bytes) = match bridge.handle(request.params) {
-            Ok(nanodrive::Output::Audio(chunk)) => {
+            Ok(Output::Audio(chunk)) => {
                 let keys = if chunk.keys.is_empty() {
                     None
                 } else {
@@ -68,7 +66,7 @@ fn run(input: impl BufRead, mut output: impl Write) -> Result<(), String> {
                     .map_err(|error| error.to_string())?;
                 continue;
             }
-            Ok(nanodrive::Output::Bytes(bytes, count)) => {
+            Ok(Output::Bytes(bytes, count)) => {
                 output
                     .write_all(&[2])
                     .and_then(|()| output.write_all(&((bytes.len() + 6) as u32).to_le_bytes()))
@@ -83,7 +81,7 @@ fn run(input: impl BufRead, mut output: impl Write) -> Result<(), String> {
                     .map_err(|error| error.to_string())?;
                 continue;
             }
-            Ok(nanodrive::Output::Json(result)) => (
+            Ok(Output::Json(result)) => (
                 1,
                 serde_json::to_vec(&json!({ "id": request.id, "result": result })),
             ),

@@ -1,3 +1,5 @@
+//! Converts YM2151 state changes into playback key events.
+
 use serde::Serialize;
 use soundlog::chip::event::StateEvent;
 

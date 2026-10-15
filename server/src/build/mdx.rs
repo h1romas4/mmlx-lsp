@@ -64,7 +64,7 @@ fn package(bytes: Vec<u8>, request: &Value) -> Result<MdxPackage, Value> {
     Ok(package)
 }
 
-pub(super) fn vgm(
+pub fn vgm(
     package: &MdxPackage,
     options: &MdxToVgmOptions,
 ) -> Result<Vec<u8>, MdxPlaybackCheckError> {
@@ -78,7 +78,7 @@ pub(super) fn vgm(
     Ok((&document).into())
 }
 
-pub(super) fn build(request: &Value) -> Result<Vec<u8>, Value> {
+pub fn build(request: &Value) -> Result<Vec<u8>, Value> {
     let format = request["format"].as_str().unwrap_or("mdx");
     if !matches!(format, "mdx" | "vgm") {
         return Err(super::failure("Unknown output format"));

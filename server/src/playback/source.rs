@@ -1,3 +1,5 @@
+//! Associates generated playback events with their original MML source ranges.
+
 use mmlx::mdx::frontend::{self, MdxLocation};
 use serde::Serialize;
 use soundlog::chip::Ym2151Spec;

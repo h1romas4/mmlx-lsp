@@ -31,15 +31,12 @@ struct Sample {
 }
 
 #[allow(dead_code)]
-pub(super) fn build_pdx(manifest_path: &Path) -> Result<Vec<u8>, String> {
+pub fn build_pdx(manifest_path: &Path) -> Result<Vec<u8>, String> {
     build_pdx_inner(manifest_path, None)
 }
 
 #[allow(dead_code)]
-pub(super) fn build_pdx_within(
-    manifest_path: &Path,
-    workspace_root: &Path,
-) -> Result<Vec<u8>, String> {
+pub fn build_pdx_within(manifest_path: &Path, workspace_root: &Path) -> Result<Vec<u8>, String> {
     build_pdx_inner(manifest_path, Some(workspace_root))
 }
 

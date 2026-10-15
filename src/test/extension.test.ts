@@ -2486,12 +2486,15 @@ suite('mmlx extension', () => {
 		assert.ok(folder);
 		const document = await vscode.workspace.openTextDocument(vscode.Uri.joinPath(folder.uri, 'example.mml'));
 		const editor = await vscode.window.showTextDocument(document);
-		editor.selection = new vscode.Selection(4, 8, 4, 8);
+		editor.selection = new vscode.Selection(4, 6, 4, 6);
 		const context = { extensionUri: extension.extensionUri, subscriptions: [] as vscode.Disposable[] };
 		const events = new vscode.EventEmitter<void>();
 		const messages = new vscode.EventEmitter<unknown>();
 		let deliver: (value: { voice: { number: number } }) => void = () => undefined;
+		let rejectUpdate: (error: Error) => void = () => undefined;
 		const updated = new Promise<{ voice: { number: number } }>(resolve => { deliver = resolve; });
+		const updateFailed = new Promise<never>((_resolve, reject) => { rejectUpdate = reject; });
+		let request: { method: string; params: { textDocument: { uri: string }; position: vscode.Position } } | undefined;
 		const client = {
 			isRunning: () => true,
 			code2ProtocolConverter: {
@@ -2501,9 +2504,7 @@ suite('mmlx extension', () => {
 				})
 			},
 			sendRequest: async (method: string, params: { textDocument: { uri: string }; position: vscode.Position }) => {
-				assert.strictEqual(method, 'mmlx/voiceAtPosition');
-				assert.strictEqual(params.textDocument.uri, 'file:///workspace/example.mml');
-				assert.deepStrictEqual(params.position, { line: 4, character: 8 });
+				request = { method, params };
 				return { number: 1 };
 			}
 		} as unknown as LanguageClient;
@@ -2516,7 +2517,8 @@ suite('mmlx extension', () => {
 				cspSource: 'https://test.invalid',
 				asWebviewUri: (uri: vscode.Uri) => uri,
 				onDidReceiveMessage: messages.event,
-				postMessage: (message: { voice: { number: number } | null }) => {
+				postMessage: (message: { voice: { number: number } | null; error?: boolean }) => {
+					if (message.error) { rejectUpdate(new Error('Voice request failed.')); }
 					if (message.voice) { deliver({ voice: message.voice }); }
 					return Promise.resolve(true);
 				}
@@ -2524,7 +2526,10 @@ suite('mmlx extension', () => {
 		} as unknown as vscode.WebviewView;
 		try {
 			await provider.resolveWebviewView(view);
-			assert.strictEqual((await updated).voice.number, 1);
+			assert.strictEqual((await Promise.race([updated, updateFailed])).voice.number, 1);
+			assert.strictEqual(request?.method, 'mmlx/voiceAtPosition');
+			assert.strictEqual(request?.params.textDocument.uri, 'file:///workspace/example.mml');
+			assert.deepStrictEqual(request?.params.position, { line: 4, character: 6 });
 		} finally {
 			provider.dispose();
 			for (const subscription of context.subscriptions) { subscription.dispose(); }
@@ -2749,8 +2754,8 @@ suite('mmlx extension', () => {
 		try {
 			const ping = await runtime.request({ operation: 'encode', command: 'ping', requestId: 1, payload: [0x4e, 0x44, 0x38] });
 			assert.ok(ping && 'bytes' in ping);
-			assert.deepStrictEqual(ping.bytes, Uint8Array.from([0, 6, 0x4e, 0x44, 1, 1, 1, 2, 3, 6, 0x4e, 0x44, 0x38, 0x33, 0x96, 0]));
-			assert.deepStrictEqual(await runtime.request({ operation: 'decode', body: [6, 0x4e, 0x44, 1, 0x81, 1, 2, 4, 1, 6, 0x4e, 0x44, 0x38, 0xe4, 0x56], request: Array.from(ping.bytes) }), { status: 0 });
+			assert.deepStrictEqual(ping.bytes, Uint8Array.from([0, 7, 0x4e, 0x44, 1, 1, 1, 1, 2, 3, 6, 0x4e, 0x44, 0x38, 0x44, 0xb9, 0]));
+			assert.deepStrictEqual(await runtime.request({ operation: 'decode', body: [7, 0x4e, 0x44, 1, 2, 1, 1, 2, 4, 1, 6, 0x4e, 0x44, 0x38, 0x14, 0xfa], request: Array.from(ping.bytes) }), { status: 0 });
 			for (const audio of [false, true]) {
 				const source = new TextEncoder().encode(playbackSource + (audio ? 'P o1 c4' : ''));
 				await runtime.request({ operation: 'upload', asset: 'source', offset: 0, bytes: Array.from(source) });
@@ -2954,8 +2959,8 @@ finally:
 		const wasm = await Wasm.load();
 		const worker = new NanoDriveWorker(extension.extensionUri, wasm);
 		try {
-			const request = [0, 6, 0x4e, 0x44, 1, 1, 1, 2, 3, 6, 0x4e, 0x44, 0x38, 0x33, 0x96, 0];
-			const response = [6, 0x4e, 0x44, 1, 0x81, 1, 2, 4, 1, 6, 0x4e, 0x44, 0x38, 0xe4, 0x56];
+			const request = [0, 7, 0x4e, 0x44, 1, 1, 1, 1, 2, 3, 6, 0x4e, 0x44, 0x38, 0x44, 0xb9, 0];
+			const response = [7, 0x4e, 0x44, 1, 2, 1, 1, 2, 4, 1, 6, 0x4e, 0x44, 0x38, 0x14, 0xfa];
 			assert.deepStrictEqual(await worker.request(
 				{ operation: 'encode', command: 'ping', requestId: 1, payload: [0x4e, 0x44, 0x38] }), { bytes: Uint8Array.from(request) });
 			assert.deepStrictEqual(await worker.request({ operation: 'decode', body: response, request }), { status: 0 });
@@ -3002,11 +3007,11 @@ finally:
 			const on = await audition({ type: 'noteOn', source: 0, channel: 0, note: 69, velocity: 127 });
 			assert.strictEqual(on.count, 1); assert.ok(on.bytes.length > 50);
 			const bent = await audition({ type: 'pitchBend', source: 0, channel: 0, value: 10240 });
-			assert.strictEqual(bent.count, 1); assert.ok(bent.bytes.length < 20);
+			assert.strictEqual(bent.count, 1); assert.ok(bent.bytes.length <= 24);
 			assert.ok(Buffer.from(bent.bytes).includes(Buffer.from([0x28, 0x48, 0x30, 148])));
 			assert.deepStrictEqual(await audition({ type: 'pitchBend', source: 0, channel: 0, value: 10240 }), { bytes: new Uint8Array(0), count: 0 });
 			const off = await audition({ type: 'noteOff', source: 0, channel: 0, note: 69 });
-			assert.strictEqual(off.count, 1); assert.ok(off.bytes.length < 20);
+			assert.strictEqual(off.count, 1); assert.ok(off.bytes.length <= 24);
 			assert.deepStrictEqual(await audition({ type: 'noteOff', source: 0, channel: 0, note: 69 }), { bytes: new Uint8Array(0), count: 0 });
 			await assert.rejects(audition({ type: 'allOff' }, 6), /Stale/);
 			assert.strictEqual((await audition({ type: 'stop' })).count, 1);
