@@ -288,6 +288,12 @@
         "configuration": "./language-configuration.json"
       }
     ],
+    "snippets": [
+      {
+        "language": "mmlx",
+        "path": "./snippets/mmlx.code-snippets"
+      }
+    ],
     "grammars": [
       {
         "language": "mmlx",
