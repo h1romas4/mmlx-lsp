@@ -339,13 +339,14 @@ impl Voice {
                 .is_some_and(|channel| ('A'..='H').contains(&channel))
                 && line[1..].chars().next().is_none_or(char::is_whitespace)
         };
+        let comment_line = |line: &str| line.trim_start().starts_with(';');
         let lines = mml.lines().collect::<Vec<_>>();
         let explicit_channels = lines.iter().any(|line| channel_line(line));
         if lines.iter().any(|line| line.contains('\r'))
             || (explicit_channels
-                && lines
-                    .iter()
-                    .any(|line| !line.trim().is_empty() && !channel_line(line)))
+                && lines.iter().any(|line| {
+                    !line.trim().is_empty() && !channel_line(line) && !comment_line(line)
+                }))
             || (!explicit_channels && lines.len() > 1)
         {
             return Err("Invalid voice test".into());
@@ -501,6 +502,17 @@ mod tests {
             })
             .collect::<Vec<_>>();
         assert_eq!(note_tracks, [0, 1, 2]);
+        let selected = voice
+            .test_document("A af>c<a g1 gfff feee eded cegr\n;\nA gfff feee edde c1")
+            .unwrap();
+        assert!(
+            selected.tracks[0]
+                .iter()
+                .filter(|command| matches!(command, MdxCommand::Note(_)))
+                .count()
+                > 0,
+            "comment-only lines between selected tracks must not prevent playback"
+        );
         let document = voice
             .test_document("MH0,200,64,0,5,0,1 p1 [c8 / n60,16.]2 c%24")
             .unwrap();

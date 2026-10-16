@@ -4,6 +4,7 @@ All notable changes to the "mmlx-lsp" extension will be documented in this file.
 
 ## [Unreleased]
 
+- Allow FM Voice selection playback across semicolon comment lines.
 - Reduce idle YMFM sample generation after FM Voice output becomes silent.
 - Clarify MCP guidance for MML production workflows and loading grammar and command references.
 
