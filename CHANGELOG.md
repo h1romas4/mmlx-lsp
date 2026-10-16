@@ -4,6 +4,8 @@ All notable changes to the "mmlx-lsp" extension will be documented in this file.
 
 ## [Unreleased]
 
+- Reduce idle YMFM sample generation after FM Voice output becomes silent.
+
 ## [0.23.0] - 2026-10-16
 
 - Add sustain pedal support to FM Voice.

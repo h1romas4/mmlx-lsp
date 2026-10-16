@@ -157,6 +157,9 @@ impl Emulation {
     }
 
     pub fn render(&mut self) -> Result<Vec<u8>, String> {
+        self.chip
+            .borrow_mut()
+            .set_keep_awake(self.voice_test.is_some());
         if let Some(test) = self.voice_test.as_mut() {
             let pcm = test.render();
             let failed = pcm.is_err();
