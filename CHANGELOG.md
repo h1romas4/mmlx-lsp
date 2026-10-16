@@ -4,6 +4,8 @@ All notable changes to the "mmlx-lsp" extension will be documented in this file.
 
 ## [Unreleased]
 
+## [0.24.0] - 2026-10-16
+
 - Show FM voice numbers and adjacent names in the VS Code outline.
 - Allow FM Voice selection playback across semicolon comment lines.
 - Reduce idle YMFM sample generation after FM Voice output becomes silent.
