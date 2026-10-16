@@ -128,12 +128,11 @@ MDX F1 loops are estimates.
 - `mmlx.language`: `auto` follows the editor language, falling back to Japanese.
     Use `ja` or `en` to select the language of completion descriptions and parameter hints.
 - `mmlx.serial.connection`: empty by default. Use **Settings > Connection > NanoDrive8**
-    in the [mmlx panel](#mmlx-panel) to select a serial port,
-    such as `/dev/ttyUSB0` or `COM3`. The selection is saved to the workspace settings;
-    it does not open the port or transmit data. In remote workspaces, the list shows
-    ports on the remote extension host.
-    Put NanoDrive8 in serial mode and use the connection button (firmware `1.0`, including betas).
-    Experimental Keyboard output is available after connecting; Playback is not supported.
+    in the [mmlx panel](#mmlx-panel) to select a serial port such as `/dev/ttyUSB0` or `COM3`.
+    Selection is saved to workspace settings but does not connect automatically. Put NanoDrive8
+    in serial mode and click Connect (firmware `1.0`, including betas). Once connected,
+    NanoDrive8 is available for Keyboard Output and Playback. In remote workspaces, the list
+    shows ports on the remote extension host.
 - `mmlx.midi.input`: empty by default. Select a port under **Settings > Connection > MIDI-IN**
     and use the connection button to connect or disconnect. Incoming notes highlight
     the FM Voice keyboard. The selected port is saved; connections are not restored
