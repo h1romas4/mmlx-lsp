@@ -1,9 +1,9 @@
 use crate::i18n::Language;
 use lsp_types::{
-    CodeLensOptions, CompletionItem, CompletionOptions, Diagnostic, InitializeParams, OneOf,
-    Position, PositionEncodingKind, SelectionRange, SemanticTokens, SemanticTokensFullOptions,
-    SemanticTokensOptions, ServerCapabilities, SignatureHelp, SignatureHelpOptions,
-    TextDocumentSyncCapability, TextDocumentSyncKind, TextEdit,
+    CodeLensOptions, CompletionItem, CompletionOptions, Diagnostic, DocumentSymbolOptions,
+    InitializeParams, OneOf, Position, PositionEncodingKind, SelectionRange, SemanticTokens,
+    SemanticTokensFullOptions, SemanticTokensOptions, ServerCapabilities, SignatureHelp,
+    SignatureHelpOptions, TextDocumentSyncCapability, TextDocumentSyncKind, TextEdit,
 };
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -76,6 +76,10 @@ impl Dialect {
                     .into(),
                 ),
                 selection_range_provider: Some(true.into()),
+                document_symbol_provider: Some(OneOf::Right(DocumentSymbolOptions {
+                    label: None,
+                    work_done_progress_options: Default::default(),
+                })),
                 code_lens_provider: Some(CodeLensOptions {
                     resolve_provider: Some(false),
                 }),
@@ -200,5 +204,15 @@ mod tests {
             .trigger_characters
             .unwrap();
         assert!(triggers.contains(&"#".to_string()));
+    }
+
+    #[test]
+    fn document_symbols_are_advertised() {
+        assert!(
+            Dialect::Mdx
+                .capabilities()
+                .document_symbol_provider
+                .is_some()
+        );
     }
 }

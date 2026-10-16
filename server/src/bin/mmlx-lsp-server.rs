@@ -6,7 +6,7 @@ use lsp_server::{Connection, ErrorCode, Message, Notification, Request, Response
 use lsp_types::Uri;
 use lsp_types::{
     CodeLensParams, CompletionParams, DidChangeTextDocumentParams, DidCloseTextDocumentParams,
-    DidOpenTextDocumentParams, DocumentFormattingParams, InitializeParams,
+    DidOpenTextDocumentParams, DocumentFormattingParams, DocumentSymbolParams, InitializeParams,
     PublishDiagnosticsParams, SelectionRangeParams, SemanticTokensParams, SignatureHelpParams,
     TextDocumentPositionParams,
 };
@@ -166,6 +166,22 @@ fn handle_request(
                     .map(|source| voice::code_lenses(source, params.text_document.uri, language))
                     .unwrap_or_default();
                 Response::new_ok(request.id, lenses)
+            }
+            Err(error) => Response::new_err(
+                request.id,
+                ErrorCode::InvalidParams as i32,
+                error.to_string(),
+            ),
+        };
+    }
+    if request.method == "textDocument/documentSymbol" {
+        return match serde_json::from_value::<DocumentSymbolParams>(request.params) {
+            Ok(params) => {
+                let symbols = documents
+                    .get(params.text_document.uri.as_str())
+                    .map(|source| voice::document_symbols(source))
+                    .unwrap_or_default();
+                Response::new_ok(request.id, symbols)
             }
             Err(error) => Response::new_err(
                 request.id,
@@ -392,6 +408,29 @@ mod tests {
             response.response_result.unwrap_err().code,
             ErrorCode::InvalidParams as i32
         );
+    }
+
+    #[test]
+    fn document_symbol_request_returns_named_voice_definitions() {
+        let source = format!(
+            "; Grand Piano\n@7 = {{\n{}\n5,3,15\n}}\n",
+            "31,12,4,8,6,20,1,2,3,1,0,\n".repeat(4)
+        );
+        let documents = HashMap::from([("file:///voice.mml".to_owned(), source)]);
+        let response = handle_request(
+            Request::new(
+                1.into(),
+                "textDocument/documentSymbol".into(),
+                serde_json::json!({
+                    "textDocument": { "uri": "file:///voice.mml" }
+                }),
+            ),
+            &documents,
+            false,
+        );
+        let symbols = response.response_result.unwrap();
+        assert_eq!(symbols[0]["name"], "@7 Grand Piano");
+        assert_eq!(symbols[0]["kind"], 19);
     }
 
     #[test]

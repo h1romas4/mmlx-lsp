@@ -1,4 +1,4 @@
-use lsp_types::{CodeLens, Command, Location, Position, Range, Uri};
+use lsp_types::{CodeLens, Command, DocumentSymbol, Location, Position, Range, SymbolKind, Uri};
 use mmlx::source::Span;
 use serde_json::{Value, json};
 
@@ -150,6 +150,35 @@ pub fn at_position(source: &str, position: Position) -> Option<Value> {
     }))
 }
 
+#[allow(deprecated)]
+pub fn document_symbols(source: &str) -> Vec<DocumentSymbol> {
+    let Some(parsed) = mmlx::mdx::frontend::parse(source).ok() else {
+        return Vec::new();
+    };
+    parsed
+        .syntax()
+        .voices()
+        .iter()
+        .filter_map(|voice| {
+            let number = voice.number.text(source)?.parse::<u8>().ok()?;
+            let range = span_range(source, voice.span)?;
+            let selection_range = span_range(source, voice.number)?;
+            let name = crate::completion::voice_name_before(source, voice.span.start())
+                .map_or_else(|| format!("@{number}"), |name| format!("@{number} {name}"));
+            Some(DocumentSymbol {
+                name,
+                detail: None,
+                kind: SymbolKind::OBJECT,
+                tags: None,
+                deprecated: None,
+                range,
+                selection_range,
+                children: None,
+            })
+        })
+        .collect()
+}
+
 pub fn code_lenses(source: &str, uri: Uri, language: Language) -> Vec<CodeLens> {
     let Some(parsed) = mmlx::mdx::frontend::parse(source).ok() else {
         return Vec::new();
@@ -282,6 +311,22 @@ mod tests {
         );
         let voice = at_position(&unnamed, position(&unnamed, unnamed.find("@7").unwrap())).unwrap();
         assert!(voice["name"].is_null());
+    }
+
+    #[test]
+    fn document_symbols_include_voice_numbers_and_adjacent_names() {
+        let source =
+            source().replacen("@7", "; Grand Piano\n@7", 1) + &source().replace("@7", "@8");
+        let symbols = document_symbols(&source);
+        assert_eq!(symbols.len(), 2);
+        assert_eq!(symbols[0].name, "@7 Grand Piano");
+        assert_eq!(symbols[0].kind, SymbolKind::OBJECT);
+        assert_eq!(symbols[1].name, "@8");
+        let number_start = source.find("@7").unwrap();
+        assert_eq!(
+            symbols[0].selection_range.start,
+            position(&source, number_start + 1)
+        );
     }
 
     #[test]

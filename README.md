@@ -18,6 +18,7 @@ Currently supports the MDX (MXDRV) dialect and `.mml` files.
 - **Command completion** with argument snippets and FM voice-definition templates.
 - **Parameter hints** while entering command arguments.
 - **Japanese and English** command descriptions and parameter hints.
+- **FM voice outlines** labeled with the voice number and adjacent semicolon name, when present.
 - **Built-in VS Code build tasks** for MML to MDX and MML/MDX to VGM.
 - **FM Voice panel** with cursor-linked operator envelopes and two-way parameter editing.
 - **MML playback** with editor highlighting that follows the playback position.
@@ -46,7 +47,7 @@ Dedicated bottom panel opened with **mmlx: Show mmlx Panel**.
 
 ### Get Started
 
-- **Get Started** opens an editable example `.mml` in a new, unsaved editor.
+- **Get Started** opens an editable example `.mml` in a new, unsaved editor. Start with `example.mml` and let your next tune find its rhythm.
 
 ### FM Voice
 
