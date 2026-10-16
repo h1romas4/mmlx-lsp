@@ -342,7 +342,7 @@ impl MmlxMcpServer {
     }
 
     #[tool(
-        description = "Required: workspace, input_path (.mml), and output_path (.mdx). No optional arguments. Paths are workspace-relative; input is limited to 64 KiB. Call mmlx_workspaces first. Existing output files are not overwritten."
+        description = "Required: workspace, input_path (.mml), and output_path (.mdx). No optional arguments. Paths are workspace-relative; input is limited to 64 KiB. Before handling MML, load mml_grammar and mml_command_reference into context. Call mmlx_workspaces first. Existing output files are not overwritten."
     )]
     fn mmlx_build_mdx(
         &self,
@@ -368,7 +368,7 @@ impl MmlxMcpServer {
     }
 
     #[tool(
-        description = "Required: workspace, input_path (.mml or .mdx), and output_path (.vgm). Optional: pdx_path, adpcm_mode (through, resample, lpf; default through), loop_count (positive; omit to preserve native loop points), and max_ticks (1-1000000; default 100000). Paths are workspace-relative. If pdx_path is omitted, a referenced PDX is searched for beside the input. Call mmlx_workspaces first; existing output files are not overwritten."
+        description = "Required: workspace, input_path (.mml or .mdx), and output_path (.vgm). Optional: pdx_path, adpcm_mode (through, resample, lpf; default through), loop_count (positive; omit to preserve native loop points), and max_ticks (1-1000000; default 100000). Before handling MML, load mml_grammar and mml_command_reference into context. Paths are workspace-relative. If pdx_path is omitted, a referenced PDX is searched for beside the input. Call mmlx_workspaces first; existing output files are not overwritten."
     )]
     fn mmlx_build_vgm(
         &self,
@@ -486,7 +486,7 @@ impl MmlxMcpServer {
     }
 
     #[tool(
-        description = "List MML commands with syntax and descriptions, or look up one exact command label. The reference is loaded from the server's English locale catalog."
+        description = "Load the complete MML command reference into context, or look up one exact command label. Call with no command before MML work to get syntax, command descriptions, and parameter explanations from the server's English locale catalog."
     )]
     fn mml_command_reference(
         &self,
@@ -539,7 +539,7 @@ impl MmlxMcpServer {
     }
 
     #[tool(
-        description = "Return the Pest grammar for the MXDRV MDX MML dialect as copied from crates/mmlx/src/mdx/mml.pest. This describes parser syntax; use mml_command_reference for command semantics and parameter explanations."
+        description = "Load the complete Pest grammar for the MXDRV MDX MML dialect into context. Call this together with mml_command_reference before MML work. The grammar describes parser syntax; the reference explains command semantics and parameters."
     )]
     fn mml_grammar(&self) -> Result<CallToolResult, McpError> {
         json_result(&serde_json::json!({
@@ -980,6 +980,14 @@ impl ServerHandler for MmlxMcpServer {
     fn get_info(&self) -> ServerConfig {
         ServerConfig::new(ServerCapabilities::builder().enable_tools().build()).with_server_info(
             Implementation::new("mmlx-mcp-server", env!("CARGO_PKG_VERSION")),
+        ).with_instructions(
+            "mmlx is an assistant for MML music-production workflows: it helps create, build, \
+            inspect, and validate MXDRV MML projects and their MDX/PDX/VGM assets. \
+            It does not render audio. \
+            When an MML task is discovered, first call mml_grammar and mml_command_reference with no arguments \
+            and keep both complete results in context for the task. The grammar gives MXDRV MDX syntax; \
+            the command reference gives command meanings and parameter details. \
+            For workspace file operations, call mmlx_workspaces first and use only its returned workspace id."
         )
     }
 }
@@ -2254,6 +2262,15 @@ mod tests {
     fn result_text(result: CallToolResult) -> serde_json::Value {
         let result = serde_json::to_value(result).unwrap();
         serde_json::from_str(result["content"][0]["text"].as_str().unwrap()).unwrap()
+    }
+
+    #[test]
+    fn initialize_instructions_direct_mml_tasks_to_load_grammar_and_commands() {
+        let info = MmlxMcpServer.get_info();
+        let instructions = info.instructions.unwrap();
+        assert!(instructions.contains("mml_grammar"));
+        assert!(instructions.contains("mml_command_reference"));
+        assert!(instructions.contains("keep both complete results in context"));
     }
 
     fn test_workspace() -> PathBuf {
