@@ -15,5 +15,6 @@ pub mod nanodrive;
 pub mod playback;
 pub mod selection_range;
 pub mod semantic;
+pub mod stepify;
 pub mod track_length;
 pub mod voice;

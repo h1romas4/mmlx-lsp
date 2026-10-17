@@ -127,6 +127,9 @@ document.getElementById('open-starter').addEventListener('click', () => vscode.p
 document.getElementById('open-pdx-starter').addEventListener('click', () => vscode.postMessage({ type: 'openPdxStarter' }));
 document.getElementById('build-pdx').addEventListener('click', () => vscode.postMessage({ type: 'buildPdx' }));
 document.getElementById('build-mdx').addEventListener('click', () => vscode.postMessage({ type: 'build' }));
+document.getElementById('stepify-selection').addEventListener('click', () => {
+	vscode.postMessage({ type: 'stepifySelection' });
+});
 const tabs = ['start', 'voice', 'playback', 'utils', 'settings'];
 const saved = vscode.getState();
 let snapshot = saved?.type === 'voice' ? { ...saved, editable: false, editToken: null, editing: false }
@@ -250,6 +253,7 @@ window.addEventListener('message', event => {
 		saveState();
 	} else if (message?.type === 'editorSelection') {
 		keyboardControls.setEditorSelection(message.mml, message.tooLong, message);
+		document.getElementById('stepify-selection').disabled = message.hasSelection !== true;
 	} else if (message?.type === 'voiceTest' && message.id === outputId) {
 		keyboardControls.setVoiceTest(message.playing, message.error);
 	} else if (message?.type === 'outputResetting' && message.id === outputId) {

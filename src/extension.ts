@@ -5,6 +5,7 @@ import { createStdioOptions, createUriConverters, startServer } from '@vscode/wa
 import { registerBuildTasks } from './tasks';
 import { registerMcpServerProvider } from './mcpServer';
 import { registerTrackLengthStatus } from './trackLengthStatus';
+import { registerStepifySelectionCommand } from './stepify';
 import { registerVoiceView, type VoiceViewProvider } from './voiceView';
 
 let client: LanguageClient | undefined;
@@ -67,6 +68,7 @@ export async function activate(context: ExtensionContext): Promise<void> {
 	});
 	await client.start();
 	registerTrackLengthStatus(context, () => client, channel);
+	registerStepifySelectionCommand(context, () => client);
 	voiceView = registerVoiceView(context, () => client, wasm, playbackLog, mcpServer);
 	context.subscriptions.push(commands.registerCommand('mmlx.showVoiceReferences', async (
 		documentUri: string | { scheme: string; authority?: string; path?: string; query?: string; fragment?: string },

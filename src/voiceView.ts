@@ -332,6 +332,10 @@ export class VoiceViewProvider implements WebviewViewProvider {
 					void commands.executeCommand('mmlx.build').then(undefined, error =>
 						window.showErrorMessage(`Could not start build: ${error instanceof Error ? error.message : String(error)}`));
 				}
+				else if (message?.type === 'stepifySelection') {
+					void commands.executeCommand('mmlx.stepifySelection').then(undefined, error =>
+						window.showErrorMessage(`Could not stepify the MML selection: ${error instanceof Error ? error.message : String(error)}`));
+				}
 				else if (message?.type === 'editVoice') { void this.edit(message); }
 				else if (message?.type === 'toggleVoiceLock') { this.toggleVoiceLock(); }
 				else if (message?.type === 'updateBuildSetting') { void this.updateBuildSetting(message); }
@@ -1144,11 +1148,12 @@ export class VoiceViewProvider implements WebviewViewProvider {
 		const request = ++this.selectionStateRequest;
 		const validEditor = editor?.document.languageId === 'mmlx' && !editor.selection.isEmpty;
 		const selection = validEditor ? editor.document.getText(editor.selection) : '';
+		const hasSelection = Boolean(validEditor && selection.trim());
 		const tooLong = selection.length > 8192;
 		const post = (state: MmlPlaybackState = {}) => {
 			if (request === this.selectionStateRequest) {
 				void this.view?.webview.postMessage({ type: 'editorSelection',
-					mml: tooLong ? '' : selection, ...state, tooLong });
+					mml: tooLong ? '' : selection, ...state, tooLong, hasSelection });
 			}
 		};
 		if (!validEditor || tooLong || this.postResetMmlState !== undefined) {

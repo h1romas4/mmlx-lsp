@@ -13,7 +13,7 @@ use lsp_types::{
 #[cfg(test)]
 use mmlx_lsp_server::diagnostics as mdx_diagnostics;
 use mmlx_lsp_server::{
-    dialect::Dialect, i18n, playback::state as playback_state, track_length, voice,
+    dialect::Dialect, i18n, playback::state as playback_state, stepify, track_length, voice,
 };
 
 fn main() -> Result<(), Box<dyn Error>> {
@@ -97,6 +97,19 @@ fn handle_request(
     language: i18n::Language,
     dialect: Dialect,
 ) -> Response {
+    if request.method == "mmlx/stepifySelection" {
+        return match serde_json::from_value::<stepify::StepifyRequest>(request.params) {
+            Ok(params) => match stepify::convert(&params.source) {
+                Ok(result) => Response::new_ok(request.id, result),
+                Err(error) => Response::new_err(request.id, ErrorCode::InvalidParams as i32, error),
+            },
+            Err(error) => Response::new_err(
+                request.id,
+                ErrorCode::InvalidParams as i32,
+                error.to_string(),
+            ),
+        };
+    }
     if request.method == "mmlx/playbackState" {
         return match serde_json::from_value::<playback_state::PlaybackStateRequest>(request.params)
         {
@@ -470,6 +483,23 @@ mod tests {
             false,
         );
         assert_eq!(invalid.response_result.unwrap(), serde_json::Value::Null);
+    }
+
+    #[test]
+    fn stepify_request_returns_normalized_selection() {
+        let response = handle_request(
+            Request::new(
+                1.into(),
+                "mmlx/stepifySelection".into(),
+                serde_json::json!({ "source": "A t120 o4 l8 ccccdeefff" }),
+            ),
+            &HashMap::new(),
+            false,
+        );
+        assert_eq!(
+            response.response_result.unwrap(),
+            serde_json::json!("A c4d16e8f8.")
+        );
     }
 
     #[test]

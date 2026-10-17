@@ -19,6 +19,7 @@ import { NanoDriveRuntime } from '../nanodriveRuntime';
 import { NanoDriveThreadClient, type NanoDriveThreadEvent } from '../nanodriveThreadClient';
 import { PlaybackSourceTracker, selectionTraceSource } from '../playbackSource';
 import { requestMmlPlaybackState, type MmlPlaybackStateScan } from '../mmlPlaybackState';
+import { registerStepifySelectionCommand } from '../stepify';
 import { registerTrackLengthStatus } from '../trackLengthStatus';
 import { WasiMcpHttpBridge } from '../mcpServer';
 import type { NanoDriveConnection } from '../nanodrive';
@@ -225,6 +226,29 @@ suite('mmlx extension', () => {
 			initialState: {}
 		});
 		assert.deepStrictEqual(result, response);
+	});
+
+	test('Stepify MML Selection replaces the selection with the language server result', async () => {
+		const source = 'A t120 o4 l8 ccccdeefff';
+		const document = await vscode.workspace.openTextDocument({ language: 'mmlx', content: source });
+		const editor = await vscode.window.showTextDocument(document);
+		editor.selection = new vscode.Selection(0, 0, 0, source.length);
+		const client = {
+			isRunning: () => true,
+			sendRequest: async (method: string, params: { source: string }) => {
+				assert.strictEqual(method, 'mmlx/stepifySelection');
+				assert.deepStrictEqual(params, { source });
+				return 'A c4d16e8f8.';
+			}
+		} as unknown as LanguageClient;
+		const context = { subscriptions: [] as vscode.Disposable[] } as unknown as vscode.ExtensionContext;
+		try {
+			registerStepifySelectionCommand(context, () => client);
+			await vscode.commands.executeCommand('mmlx.stepifySelection');
+			assert.strictEqual(document.getText(), 'A c4d16e8f8.');
+		} finally {
+			for (const subscription of context.subscriptions) { subscription.dispose(); }
+		}
 	});
 
 	test('track tick status shows selected-range duration instead of cursor ticks', async function () {
@@ -2071,6 +2095,8 @@ suite('mmlx extension', () => {
 					'Utilities must appear immediately to the left of Settings');
 					check(document.getElementById('utils-tab').textContent === 'Utilities',
 					'Utilities tab must use the correctly spelled full label');
+					check(document.querySelector('#utils-controls h1').textContent === 'Utilities',
+						'Utilities must use its concise section heading');
 					check(startTab.getAttribute('aria-selected') === 'true' && !document.getElementById('start-controls').hidden, 'Get Started must be selected initially');
 					check(document.querySelector('#start-controls h1').textContent === 'mmlx-lsp', 'Extension title must appear');
 					check(document.getElementById('start-tagline').textContent === 'Write MML. Hear it come alive—instantly.',
@@ -2084,6 +2110,19 @@ suite('mmlx extension', () => {
 					check(document.getElementById('pdx-utils-heading').textContent === 'Create PDX'
 						&& !!document.getElementById('open-pdx-starter') && !!document.getElementById('build-pdx'),
 					'Utils must provide the Create PDX steps and build actions');
+					const stepifyButton = document.getElementById('stepify-selection');
+					check(document.getElementById('stepify-heading').textContent === 'Stepify MML'
+						&& stepifyButton.disabled
+						&& document.querySelector('.stepify-example').textContent.includes('ccccdeefff')
+						&& document.querySelector('.stepify-example').textContent.includes('c4d16e8f8.'),
+					'Utils must explain Stepify MML and show its input/output example');
+					send({ type: 'editorSelection', mml: 'ccccdeefff', hasSelection: true });
+					check(!stepifyButton.disabled, 'Stepify MML must be available while MML is selected');
+					stepifyButton.click();
+					check(messages.some(message => message.type === 'stepifySelection'),
+						'Stepify MML must request the selection command');
+					send({ type: 'editorSelection', mml: '', hasSelection: false });
+					check(stepifyButton.disabled, 'Stepify MML must be disabled without a selection');
 					const icon = document.querySelector('#start-controls img');
 					check(icon.complete && icon.naturalWidth > 0, 'Extension icon must load');
 					document.getElementById('open-starter').click();
@@ -2359,8 +2398,9 @@ suite('mmlx extension', () => {
 			const document = await openExample();
 			const panelHtml = new TextDecoder().decode(await vscode.workspace.fs.readFile(
 				vscode.Uri.joinPath(extension.extensionUri, 'assets', 'webview', 'voice.html')));
-			assert.match(panelHtml, /<section id="utils-controls"[^>]*>\s*<header><h1>Utilities<\/h1><\/header>\s*<section class="build-settings"[^>]*>\s*<h2 id="pdx-utils-heading">Create PDX<\/h2>/);
-			assert.match(panelHtml, /<section id="utils-controls"[\s\S]*<h2 id="pdx-utils-heading">Create PDX<\/h2>[\s\S]*<hr class="build-divider">[\s\S]*<h2 id="build-settings-heading">Build MDX<\/h2>[\s\S]*<fieldset id="build-settings-fields"[\s\S]*<\/fieldset>\s*<button id="build-mdx"[^>]*>Build MDX<\/button>/);
+			assert.match(panelHtml, /<section id="utils-controls"[^>]*>\s*<header><h1>Utilities<\/h1><\/header>\s*<section class="build-settings utility-card mml-utilities"[^>]*>\s*<h2 id="stepify-heading">Stepify MML<\/h2>[\s\S]*<button id="stepify-selection"[^>]*>Stepify MML Selection<\/button>[\s\S]*<h2 id="pdx-utils-heading">Create PDX<\/h2>/);
+			assert.match(panelHtml, /<section id="utils-controls"[\s\S]*<section class="build-settings utility-card" aria-labelledby="pdx-utils-heading">[\s\S]*<section class="build-settings utility-card" aria-labelledby="build-settings-heading">[\s\S]*<h2 id="build-settings-heading">Build MDX<\/h2>[\s\S]*<fieldset id="build-settings-fields"[\s\S]*<\/fieldset>\s*<button id="build-mdx"[^>]*>Build MDX<\/button>/);
+			assert.doesNotMatch(panelHtml, /<hr\b/);
 			assert.doesNotMatch(panelHtml, /id="build-settings-source"/);
 			assert.doesNotMatch(panelHtml, /<section id="settings-controls"[\s\S]*id="build-settings-fields"/);
 			assert.match(panelHtml, /<pre class="pdx-example"[^>]*>#pcmfile "example\.pdx"\s+; P-W: ADPCM channels\s+; F4: 15 kHz \| @0: Bank 0 \| n0: Voice 0\s+P F4 @0 n0 n0 n0 n0<\/pre>/);

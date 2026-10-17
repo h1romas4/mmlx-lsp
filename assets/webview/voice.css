@@ -162,11 +162,14 @@ input:disabled, select:disabled { opacity: .6; }
 .build-settings-header h2 { margin-bottom: 0; }
 #build-settings-status { margin-left: 12px; color: var(--vscode-descriptionForeground, #666); overflow-wrap: anywhere; }
 .build-mdx-action { margin-top: 4px; }
-.build-divider { margin: 24px 0 16px; border: 0; border-top: 1px solid var(--vscode-panel-border, #ddd); }
+.utility-card { width: min(100%, 680px); margin-bottom: 12px; padding: 14px; border: 1px solid var(--vscode-widget-border, var(--vscode-panel-border, #d7dce1)); border-radius: 8px; background: var(--playback-surface); color: var(--playback-foreground); }
 .pdx-steps { max-width: 680px; margin: 0; padding-left: 24px; }
 .pdx-steps > li { margin-bottom: 16px; padding-left: 4px; }
 .pdx-steps > li > p { margin: 0 0 8px; }
 .pdx-example { max-width: 640px; margin: 12px 0; padding: 10px 12px; overflow-x: auto; border: 1px solid var(--vscode-widget-border, var(--vscode-panel-border, #d7dce1)); border-radius: 4px; background: var(--vscode-textCodeBlock-background, var(--vscode-editor-background, #fafafa)); color: var(--vscode-editor-foreground, #292929); font: 12px/1.5 var(--vscode-editor-font-family, monospace); }
+.mml-utility-content > p { margin: 0 0 8px; }
+.stepify-action:disabled { opacity: .55; cursor: default; }
+.stepify-example { margin-top: 12px; }
 .build-settings fieldset { border: 0; padding: 0; margin: 0; width: min(100%, 640px); }
 .build-field { display: grid; grid-template-columns: 160px minmax(0, 1fr); align-items: center; gap: 12px; margin-bottom: 12px; }
 .build-field input, .build-field select { width: 100%; }

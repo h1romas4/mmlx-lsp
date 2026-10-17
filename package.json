@@ -70,6 +70,10 @@
         "title": "mmlx: Play MML Selection"
       },
       {
+        "command": "mmlx.stepifySelection",
+        "title": "mmlx: Stepify MML Selection"
+      },
+      {
         "command": "mmlx.toggleVoiceLock",
         "title": "mmlx: Toggle FM Voice Lock"
       },
@@ -92,6 +96,12 @@
         "command": "mmlx.playSelection",
         "key": "ctrl+alt+p",
         "mac": "cmd+alt+p",
+        "when": "editorTextFocus && editorLangId == mmlx"
+      },
+      {
+        "command": "mmlx.stepifySelection",
+        "key": "ctrl+alt+q",
+        "mac": "cmd+alt+q",
         "when": "editorTextFocus && editorLangId == mmlx"
       },
       {

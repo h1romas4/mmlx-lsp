@@ -117,7 +117,17 @@
 		</section>
 		<section id="utils-controls" role="tabpanel" aria-labelledby="utils-tab" hidden>
 			<header><h1>Utilities</h1></header>
-			<section class="build-settings" aria-labelledby="pdx-utils-heading">
+			<section class="build-settings utility-card mml-utilities" aria-labelledby="stepify-heading">
+				<h2 id="stepify-heading">Stepify MML</h2>
+				<div class="mml-utility-content">
+					<p>Turn a selected note pattern into normalized 16th-note steps, grouped into 4/4 bars.</p>
+					<button id="stepify-selection" class="start-action stepify-action" type="button" disabled>Stepify MML Selection</button>
+					<pre class="pdx-example stepify-example" aria-label="Stepify MML example"><code>ccccdeefff
+→
+c4d16e8f8.</code></pre>
+				</div>
+			</section>
+			<section class="build-settings utility-card" aria-labelledby="pdx-utils-heading">
 				<h2 id="pdx-utils-heading">Create PDX</h2>
 				<ol class="pdx-steps">
 					<li>
@@ -137,8 +147,7 @@ P F4 @0 n0 n0 n0 n0</pre>
 					</li>
 				</ol>
 			</section>
-			<hr class="build-divider">
-			<section class="build-settings" aria-labelledby="build-settings-heading">
+			<section class="build-settings utility-card" aria-labelledby="build-settings-heading">
 				<header class="build-settings-header">
 					<h2 id="build-settings-heading">Build MDX</h2>
 					<span id="build-settings-status" role="status"></span>
