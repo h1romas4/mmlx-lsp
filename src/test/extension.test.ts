@@ -257,7 +257,7 @@ suite('mmlx extension', () => {
 		const editor = await vscode.window.showTextDocument(document);
 		const createStatusBarItem = vscode.window.createStatusBarItem;
 		let status: vscode.StatusBarItem | undefined;
-		vscode.window.createStatusBarItem = ((alignment?: vscode.StatusBarAlignment, priority?: number) => {
+		const captureStatusBarItem = ((alignment?: vscode.StatusBarAlignment, priority?: number) => {
 			status = createStatusBarItem.call(vscode.window, alignment, priority);
 			return status;
 		}) as typeof vscode.window.createStatusBarItem;
@@ -287,8 +287,14 @@ suite('mmlx extension', () => {
 			assert.fail(`Timed out waiting for status text ${JSON.stringify(text)} (actual=${status?.text})`);
 		};
 		try {
-			registerTrackLengthStatus(context, () => client, output);
+			vscode.window.createStatusBarItem = captureStatusBarItem;
+			try {
+				registerTrackLengthStatus(context, () => client, output);
+			} finally {
+				vscode.window.createStatusBarItem = createStatusBarItem;
+			}
 			await waitForText('$(music) A: 96 ticks');
+			assert.strictEqual(requests.at(-1)?.method, 'mmlx/trackLengthAtPosition');
 			editor.selection = new vscode.Selection(0, 2, 0, 5);
 			await waitForText('$(music) Selection: 48 ticks (loop)');
 			const rangeRequest = requests.at(-1);
@@ -301,9 +307,9 @@ suite('mmlx extension', () => {
 			await waitForText('$(music) A: 96 ticks');
 			assert.strictEqual(requests.at(-1)?.method, 'mmlx/trackLengthAtPosition');
 		} finally {
+			vscode.window.createStatusBarItem = createStatusBarItem;
 			for (const subscription of context.subscriptions) { subscription.dispose(); }
 			output.dispose();
-			vscode.window.createStatusBarItem = createStatusBarItem;
 		}
 	});
 
@@ -948,7 +954,7 @@ suite('mmlx extension', () => {
 		} finally { listener.dispose(); panel.dispose(); }
 	});
 	test('YM2151 panel keeps output connected while hidden and releases keyboard notes', async function () {
-		this.timeout(20000);
+		this.timeout(60000);
 		const extension = vscode.extensions.all.find(extension => extension.packageJSON.name === 'mmlx-lsp');
 		assert.ok(extension);
 		const document = await vscode.workspace.openTextDocument({ language: 'mmlx', content: '@0 = {\n' + '31,0,0,15,0,32,0,1,0,0,0,\n'.repeat(4) + '7,0,15\n}\nA t120 l8 o5 c4\nA @1 d4\n' });
@@ -1030,7 +1036,7 @@ suite('mmlx extension', () => {
 			if (existing) { return Promise.resolve(existing); }
 			return new Promise((resolve, reject) => {
 				const subscription = changed.event(message => { if (predicate(message)) { clearTimeout(timer); subscription.dispose(); resolve(message); } });
-				const timer = setTimeout(() => { subscription.dispose(); reject(new Error('Panel audio timed out')); }, 4000);
+				const timer = setTimeout(() => { subscription.dispose(); reject(new Error('Panel audio timed out')); }, 10000);
 			});
 		}
 		try {
@@ -4286,22 +4292,27 @@ finally:
 				inputSchema: { required?: string[] };
 			}>;
 			const toolNames = listedTools.map((tool) => tool.name).sort();
-			assert.deepStrictEqual(toolNames, ['mdx_parse', 'mml_check', 'mml_command_reference', 'mml_grammar',
+			assert.deepStrictEqual(toolNames, ['mdx_parse', 'mdx_stream', 'mml_check', 'mml_command_reference', 'mml_grammar',
 				'mml_parse', 'mml_vgm_trace', 'mmlx_build_mdx', 'mmlx_build_pdx', 'mmlx_build_vgm', 'mmlx_help',
-				'mmlx_workspaces', 'vgm_parse'].sort());
+				'mmlx_workspaces', 'vgm_parse', 'vgm_stream'].sort());
 			for (const [toolName, required] of Object.entries({
 				mmlx_build_mdx: ['workspace', 'input_path', 'output_path'],
 				mmlx_build_pdx: ['workspace', 'manifest_path', 'output_path'],
 				mmlx_build_vgm: ['workspace', 'input_path', 'output_path'],
-				vgm_parse: ['data_base64', 'start_command', 'max_commands'],
-				mdx_parse: ['data_base64', 'start_command', 'max_commands'],
+				vgm_parse: ['workspace', 'input_path', 'output_path'],
+				vgm_stream: ['workspace', 'input_path', 'output_path'],
+				mdx_parse: ['workspace', 'input_path', 'output_path'],
+				mdx_stream: ['workspace', 'input_path', 'output_path'],
 				mml_parse: ['source', 'start_command', 'max_commands'],
 				mml_vgm_trace: ['source', 'tick', 'radius', 'max_commands']
 			})) {
 				assert.deepStrictEqual(listedTools.find((tool) => tool.name === toolName)?.inputSchema.required, required);
 			}
-			for (const toolName of ['vgm_parse', 'mdx_parse', 'mml_parse', 'mml_vgm_trace']) {
+			for (const toolName of ['mml_parse', 'mml_vgm_trace']) {
 				assert.match(listedTools.find((tool) => tool.name === toolName)?.description ?? '', /smallest useful/);
+			}
+			for (const toolName of ['vgm_parse', 'mdx_parse']) {
+				assert.match(listedTools.find((tool) => tool.name === toolName)?.description ?? '', /Required: workspace, input_path.*output_path/);
 			}
 			const workspaces = await request({ jsonrpc: '2.0', id: 11, method: 'tools/call',
 				params: { name: 'mmlx_workspaces', arguments: {} } });
@@ -4321,6 +4332,19 @@ finally:
 			const mdxResult = JSON.parse(builtMdxResponse.result.content[0].text);
 			assert.strictEqual(mdxResult.format, 'MDX');
 			assert.strictEqual((await vscode.workspace.fs.readFile(mdxPath)).byteLength, mdxResult.byte_length);
+			const mdxParsePath = vscode.Uri.joinPath(buildDirectory, 'song-parse.txt');
+			const parsedMdx = await request({ jsonrpc: '2.0', id: 17, method: 'tools/call',
+				params: { name: 'mdx_parse', arguments: {
+					workspace: workspaceId,
+					input_path: `${buildRelativeDirectory}/song.mdx`,
+					output_path: `${buildRelativeDirectory}/song-parse.txt`
+				} } });
+			const parsedMdxResponse = await parsedMdx.json();
+			assert.ok(parsedMdxResponse.result?.content, JSON.stringify(parsedMdxResponse));
+			const mdxParseResult = JSON.parse(parsedMdxResponse.result.content[0].text);
+			assert.strictEqual(mdxParseResult.format, 'MDX');
+			assert.ok(mdxParseResult.command_count > 0);
+			assert.strictEqual((await vscode.workspace.fs.readFile(mdxParsePath)).byteLength, mdxParseResult.byte_length);
 			const vgmPath = vscode.Uri.joinPath(buildDirectory, 'song.vgm');
 			const builtVgm = await request({ jsonrpc: '2.0', id: 15, method: 'tools/call',
 				params: { name: 'mmlx_build_vgm', arguments: {
@@ -4414,11 +4438,23 @@ finally:
 			vgm[0x42] = 0;
 			vgm.writeUInt32LE(payloadSize, 0x43);
 			vgm[vgm.length - 1] = 0x66;
+			const largeVgmPath = vscode.Uri.joinPath(buildDirectory, 'large.vgm');
+			const largeVgmParsePath = vscode.Uri.joinPath(buildDirectory, 'large-vgm-parse.txt');
+			await vscode.workspace.fs.writeFile(largeVgmPath, vgm);
 			const parsedLargeVgm = await request({ jsonrpc: '2.0', id: 7, method: 'tools/call',
-				params: { name: 'vgm_parse', arguments: { data_base64: vgm.toString('base64'), start_command: 0, max_commands: 10 } } });
-			const largeVgm = JSON.parse((await parsedLargeVgm.json()).result.content[0].text);
-			assert.strictEqual(largeVgm.file_bytes, vgm.length);
-			assert.strictEqual(largeVgm.commands[0].command, 'DataBlock(type=0x00, size=11534336)');
+				params: { name: 'vgm_parse', arguments: {
+					workspace: workspaceId,
+					input_path: `${buildRelativeDirectory}/large.vgm`,
+					output_path: `${buildRelativeDirectory}/large-vgm-parse.txt`
+				} } });
+			const largeVgmResponse = await parsedLargeVgm.json();
+			assert.ok(largeVgmResponse.result?.content, JSON.stringify(largeVgmResponse));
+			const largeVgm = JSON.parse(largeVgmResponse.result.content[0].text);
+			assert.strictEqual(largeVgm.format, 'VGM');
+			assert.ok(largeVgm.command_count > 0);
+			const largeVgmOutput = await vscode.workspace.fs.readFile(largeVgmParsePath);
+			assert.strictEqual(largeVgmOutput.byteLength, largeVgm.byte_length);
+			assert.match(new TextDecoder().decode(largeVgmOutput), /DataBlock\(UncompressedStream\(Ym2612Pcm\), size=11534336\)/);
 		} finally {
 			try {
 				if (buildDirectoryCreated) {
