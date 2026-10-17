@@ -162,7 +162,7 @@ input:disabled, select:disabled { opacity: .6; }
 .build-settings-header h2 { margin-bottom: 0; }
 #build-settings-status { margin-left: 12px; color: var(--vscode-descriptionForeground, #666); overflow-wrap: anywhere; }
 .build-mdx-action { margin-top: 4px; }
-.utility-card { width: min(100%, 680px); margin-bottom: 12px; padding: 14px; border: 1px solid var(--vscode-widget-border, var(--vscode-panel-border, #d7dce1)); border-radius: 8px; background: var(--playback-surface); color: var(--playback-foreground); }
+.utility-card { width: 100%; margin-bottom: 12px; padding: 14px; border: 1px solid var(--vscode-widget-border, var(--vscode-panel-border, #d7dce1)); border-radius: 8px; background: var(--playback-surface); color: var(--playback-foreground); }
 .pdx-steps { max-width: 680px; margin: 0; padding-left: 24px; }
 .pdx-steps > li { margin-bottom: 16px; padding-left: 4px; }
 .pdx-steps > li > p { margin: 0 0 8px; }

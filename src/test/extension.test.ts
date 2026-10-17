@@ -313,6 +313,94 @@ suite('mmlx extension', () => {
 		}
 	});
 
+	test('FM Voice lock remains available after closing its source document', async function () {
+		this.timeout(10000);
+		const extension = vscode.extensions.all.find(item => item.packageJSON.name === 'mmlx-lsp');
+		assert.ok(extension);
+		const firstDocument = await vscode.workspace.openTextDocument({ language: 'mmlx', content: '@0 = {}\nA c4\n' });
+		const firstEditor = await vscode.window.showTextDocument(firstDocument);
+		const context = { extensionUri: extension.extensionUri, subscriptions: [] as vscode.Disposable[] };
+		const messages = new vscode.EventEmitter<unknown>();
+		const events = new vscode.EventEmitter<void>();
+		type VoiceUpdate = { type: string; voice?: unknown; name?: string | null; source?: string;
+			locked?: boolean; retained?: boolean };
+		const updates: VoiceUpdate[] = [];
+		const changed = new vscode.EventEmitter<VoiceUpdate>();
+		const voice = {
+			number: 0, algorithm: 7, feedback: 0, operatorMask: 15, position: { line: 0, character: 0 },
+			parameterRanges: [],
+			range: { start: { line: 0, character: 0 }, end: { line: 0, character: 6 } },
+			operators: Array.from({ length: 4 }, () => ({
+				ar: 31, d1r: 0, d2r: 0, rr: 15, d1l: 0, tl: 32, ks: 0, mul: 1, dt1: 0, dt2: 0, ame: 0
+			}))
+		};
+		const client = {
+			isRunning: () => true,
+			code2ProtocolConverter: { asTextDocumentPositionParams: (document: vscode.TextDocument) => ({
+				textDocument: { uri: document.uri.toString() }, position: { line: 0, character: 0 }
+			}) },
+			sendRequest: async (_method: string, params: { textDocument: { uri: string } }) => ({
+				...voice,
+				name: params.textDocument.uri === firstDocument.uri.toString() ? 'Voice A' : 'Voice B'
+			})
+		} as unknown as LanguageClient;
+		const provider = new VoiceViewProvider(context as unknown as vscode.ExtensionContext, () => client,
+			async () => [], async () => []);
+		const view = { visible: true, onDidChangeVisibility: events.event, onDidDispose: events.event,
+			webview: { cspSource: 'https://test.invalid', asWebviewUri: (uri: vscode.Uri) => uri,
+				onDidReceiveMessage: messages.event, postMessage: (message: VoiceUpdate) => {
+					updates.push(message); changed.fire(message); return Promise.resolve(true);
+				} } } as unknown as vscode.WebviewView;
+		const waitFor = (predicate: (message: VoiceUpdate) => boolean, after = 0): Promise<VoiceUpdate> => {
+			const existing = updates.slice(after).find(predicate);
+			if (existing) { return Promise.resolve(existing); }
+			return new Promise((resolve, reject) => {
+				const subscription = changed.event(message => {
+					if (predicate(message)) { clearTimeout(timer); subscription.dispose(); resolve(message); }
+				});
+				const timer = setTimeout(() => {
+					subscription.dispose();
+					reject(new Error('Timed out waiting for FM Voice update'));
+				}, 3000);
+			});
+		};
+		try {
+			await provider.resolveWebviewView(view);
+			const initial = await waitFor(message => message.type === 'voice' && message.name === 'Voice A');
+			assert.ok(initial.voice);
+			const lockStart = updates.length;
+			provider.toggleVoiceLock();
+			assert.strictEqual((provider as unknown as { voiceLocked: boolean }).voiceLocked, true);
+			assert.strictEqual(updates.at(-1)?.locked, true, 'Locking must publish the updated lock state');
+			await waitFor(message => message.type === 'voice' && message.locked === true, lockStart);
+
+			const closed = new Promise<void>((resolve, reject) => {
+				const subscription = vscode.workspace.onDidCloseTextDocument(document => {
+					if (document === firstDocument) { clearTimeout(timer); subscription.dispose(); resolve(); }
+				});
+				const timer = setTimeout(() => { subscription.dispose(); reject(new Error('Locked source document did not close')); }, 3000);
+			});
+			await vscode.commands.executeCommand('workbench.action.closeActiveEditor');
+			await closed;
+			assert.ok(firstEditor.document.isClosed);
+
+			const secondDocument = await vscode.workspace.openTextDocument({ language: 'mmlx', content: '@1 = {}\nA d4\n' });
+			await vscode.window.showTextDocument(secondDocument);
+			const secondVoice = await waitFor(message => message.type === 'voice' && message.locked === true);
+			assert.strictEqual(secondVoice.name, 'Voice A', 'The pinned voice remains visible after switching documents');
+			const unlockStart = updates.length;
+			provider.toggleVoiceLock();
+			const unlockedVoice = await waitFor(message => message.type === 'voice' && message.locked === false, unlockStart);
+			assert.strictEqual(unlockedVoice.retained, false);
+			assert.strictEqual(vscode.window.activeTextEditor?.document, secondDocument);
+		} finally {
+			provider.dispose();
+			for (const subscription of context.subscriptions) { subscription.dispose(); }
+			messages.dispose(); events.dispose(); changed.dispose();
+			if (!firstDocument.isClosed) { await vscode.commands.executeCommand('workbench.action.closeActiveEditor'); }
+		}
+	});
+
 	test('FM Voice MML test plays through the connected WASM, finishes silently and reports MML errors', async function () {
 		this.timeout(20000);
 		const extension = vscode.extensions.all.find(extension => extension.packageJSON.name === 'mmlx-lsp'); assert.ok(extension);

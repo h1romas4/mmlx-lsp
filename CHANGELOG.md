@@ -4,6 +4,8 @@ All notable changes to the "mmlx-lsp" extension will be documented in this file.
 
 ## [Unreleased]
 
+- Keep a locked FM Voice visible and unlockable after closing its source document.
+
 ## [0.25.0] - 2026-10-17
 
 - Add Stepify MML Selection to normalize selected note patterns into 16th-note steps.

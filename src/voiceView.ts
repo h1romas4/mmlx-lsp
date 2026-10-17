@@ -293,7 +293,9 @@ export class VoiceViewProvider implements WebviewViewProvider {
 					this.editor = undefined;
 					this.sequence++;
 					this.editTarget = undefined;
-					this.snapshot = { voice: null, name: null, source: '', retained: false, error: false };
+					if (!this.voiceLocked) {
+						this.snapshot = { voice: null, name: null, source: '', retained: false, error: false };
+					}
 					this.send();
 				}
 			})
