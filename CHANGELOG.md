@@ -4,7 +4,10 @@ All notable changes to the "mmlx-lsp" extension will be documented in this file.
 
 ## [Unreleased]
 
+## [0.25.1] - 2026-10-17
+
 - Keep a locked FM Voice visible and unlockable after closing its source document.
+- Let Utilities cards expand to the full panel width.
 
 ## [0.25.0] - 2026-10-17
 
