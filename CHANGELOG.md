@@ -4,8 +4,10 @@ All notable changes to the "mmlx-lsp" extension will be documented in this file.
 
 ## [Unreleased]
 
+## [0.25.0] - 2026-10-17
+
 - Add Stepify MML Selection to normalize selected note patterns into 16th-note steps.
-- Add a Stepify MML utility card with an example and a selection-aware action button.
+- Add a Stepify MML utility card with an example and a selection-aware action button, and group Utilities in rounded cards.
 - Add a lock button and command for pinning the FM Voice panel to its current voice.
 - Fix Chip State MML tempo and other playback state not being inherited when the input omits an explicit channel.
 
