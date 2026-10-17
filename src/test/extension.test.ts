@@ -938,8 +938,8 @@ suite('mmlx extension', () => {
 		const showErrorMessage = vscode.window.showErrorMessage;
 		const showWarningMessage = vscode.window.showWarningMessage;
 		type Update = { type: string; id?: number; connected?: boolean; connecting?: boolean; pcm?: ArrayBuffer;
-			voice?: unknown; name?: string | null; playing?: boolean; error?: boolean; mml?: string;
-			tempo?: string; length?: string; octave?: number; volume?: string[]; gate?: string; pan?: string;
+			voice?: unknown; name?: string | null; playing?: boolean; error?: boolean; retained?: boolean; mml?: string;
+			tempo?: string; length?: string; octave?: number; volume?: string[]; gate?: string; pan?: string; locked?: boolean;
 			opmLfo?: string[]; tooLong?: boolean };
 		const updates: Update[] = [];
 		const changed = new vscode.EventEmitter<Update>();
@@ -950,10 +950,11 @@ suite('mmlx extension', () => {
 		let chipState = { tempo: 't160', length: 'l32', octave: 6, volume: ['v12'], gate: 'q6', pan: 'p2',
 			opmLfo: ['MH0,200,64,0,5,0,1'] };
 		const stateRequests: { source: string; initialState?: MmlPlaybackStateScan['state'] }[] = [];
+		let voiceRequests = 0;
 		const client = { isRunning: () => true, sendRequest: async (method: string, params: {
 			source?: string; offset?: number; initialState?: MmlPlaybackStateScan['state']
 		}) => {
-			if (method !== 'mmlx/playbackState') { return voice; }
+			if (method !== 'mmlx/playbackState') { voiceRequests++; return voice; }
 			const source = params.source ?? '';
 			stateRequests.push({ source, initialState: params.initialState });
 			const initial = params.initialState ?? {};
@@ -1022,21 +1023,37 @@ suite('mmlx extension', () => {
 			assert.strictEqual(initialVoice.name, 'Grand Piano');
 			assert.strictEqual(typeof initialVoice.voice === 'object' && initialVoice.voice !== null
 				? Object.hasOwn(initialVoice.voice, 'name') : false, false);
+			const voiceRequestsBeforeLock = voiceRequests;
+			const lockStart = updates.length;
+			messages.fire({ type: 'toggleVoiceLock' });
+			const lockedVoice = await waitFor(message => message.type === 'voice' && message.locked === true, lockStart);
+			assert.strictEqual(lockedVoice.retained, true, 'Locking forces the displayed voice into Retained');
+			editor.selection = new vscode.Selection(8, 0, 8, document.lineAt(8).text.length);
+			await new Promise(resolve => setTimeout(resolve, 140));
+			assert.strictEqual(voiceRequests, voiceRequestsBeforeLock, 'Cursor movement must not replace a locked voice');
+			const unlockStart = updates.length;
+			provider.toggleVoiceLock();
+			await waitFor(message => message.type === 'voice' && message.locked === false, unlockStart);
+			await new Promise(resolve => setTimeout(resolve, 140));
+			assert.ok(voiceRequests > voiceRequestsBeforeLock, 'Unlocking resumes cursor-based voice updates');
+			const selectedMmlStart = updates.length;
 			editor.selection = new vscode.Selection(1, 0, 2, 3);
 			const selectedMml = document.getText(editor.selection);
-			assert.strictEqual((await waitFor(message => message.type === 'editorSelection' && !!message.mml)).mml, selectedMml,
+			assert.strictEqual((await waitFor(message => message.type === 'editorSelection' && !!message.mml, selectedMmlStart)).mml, selectedMml,
 				'Editor selection is synchronized exactly, including line breaks');
+			const selectedVoiceStart = updates.length;
 			editor.selection = new vscode.Selection(8, 0, 8, document.lineAt(8).text.length);
 			const selectedWithVoice = await waitFor(message => message.type === 'editorSelection'
-				&& message.mml === 'A @1 d4');
+				&& message.mml === 'A @1 d4', selectedVoiceStart);
 			assert.strictEqual(selectedWithVoice.tempo, 't120',
 				'Selection playback receives the last tempo set before its selection');
 			assert.strictEqual(selectedWithVoice.length, 'l8',
 				'Selection playback receives the last default length set before its selection');
 			assert.strictEqual(selectedWithVoice.octave, 5,
 				'Selection playback receives the current octave before its selection');
+			const clearSelectionStart = updates.length;
 			editor.selection = new vscode.Selection(0, 0, 0, 0);
-			assert.strictEqual((await waitFor(message => message.type === 'editorSelection' && !message.mml)).mml, '',
+			assert.strictEqual((await waitFor(message => message.type === 'editorSelection' && !message.mml, clearSelectionStart)).mml, '',
 				'Clearing the editor selection disables selection playback');
 			assert.strictEqual(view.title, 'mmlx');
 			assert.strictEqual(view.badge, undefined);
@@ -2124,6 +2141,18 @@ suite('mmlx extension', () => {
 				const renderVoice = (operatorMask = 15, values = {}, state = {}, name) => send({ type: 'voice', name, editable: true, editToken: 42, source: 'test.mml',
 					voice: { number: 1, algorithm: 2, feedback: 7, operatorMask, operators: Array.from({ length: 4 }, () => ({ ...operator, ...values })) }, ...state });
 				renderVoice();
+				const voiceLock = document.getElementById('voice-lock');
+				check(!voiceLock.disabled && voiceLock.getAttribute('aria-pressed') === 'false'
+					&& voiceLock.getAttribute('aria-label') === 'Lock FM voice', 'Voice lock must be available and announced when a voice is selected');
+				check(getComputedStyle(voiceLock, '::before').maskImage.includes('unlock.svg'), 'Unlocked voice must show the open-lock icon');
+				voiceLock.click();
+				check(messages.at(-1).type === 'toggleVoiceLock', 'Voice lock button must request a lock toggle');
+				renderVoice(15, {}, { retained: true, locked: true });
+				check(voiceLock.getAttribute('aria-pressed') === 'true'
+					&& voiceLock.getAttribute('aria-label') === 'Unlock FM voice'
+					&& getComputedStyle(voiceLock, '::before').maskImage.includes('lock.svg'),
+				'Locked voice must show the retained state and closed-lock icon');
+				renderVoice();
 				const voiceLabel = document.getElementById('voice-label');
 				check(voiceLabel.hidden && voiceLabel.textContent === '', 'Unnamed voices do not show a label');
 				send({ type: 'voice', voice: null, invalidNumber: 7, name: 'Grand Piano',
@@ -2368,9 +2397,13 @@ suite('mmlx extension', () => {
 		await extension.activate();
 		assert.ok((await vscode.commands.getCommands()).includes('mmlx.showVoicePanel'));
 		assert.ok((await vscode.commands.getCommands()).includes('mmlx.playSelection'));
+		assert.ok((await vscode.commands.getCommands()).includes('mmlx.toggleVoiceLock'));
 		assert.ok((await vscode.commands.getCommands()).includes('mmlx.resetSoundChip'));
 		assert.ok(extension.packageJSON.contributes.keybindings.some((binding: { command: string; key: string; mac?: string; when?: string }) =>
 			binding.command === 'mmlx.playSelection' && binding.key === 'ctrl+alt+p' && binding.mac === 'cmd+alt+p'
+				&& binding.when === 'editorTextFocus && editorLangId == mmlx'));
+		assert.ok(extension.packageJSON.contributes.keybindings.some((binding: { command: string; key: string; mac?: string; when?: string }) =>
+			binding.command === 'mmlx.toggleVoiceLock' && binding.key === 'ctrl+alt+l' && binding.mac === 'cmd+alt+l'
 				&& binding.when === 'editorTextFocus && editorLangId == mmlx'));
 		assert.ok(extension.packageJSON.contributes.keybindings.some((binding: { command: string; key: string; mac?: string; when?: string }) =>
 			binding.command === 'mmlx.resetSoundChip' && binding.key === 'ctrl+alt+r' && binding.mac === 'cmd+alt+r'

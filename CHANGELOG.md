@@ -4,6 +4,7 @@ All notable changes to the "mmlx-lsp" extension will be documented in this file.
 
 ## [Unreleased]
 
+- Add a lock button and command for pinning the FM Voice panel to its current voice.
 - Fix Chip State MML tempo and other playback state not being inherited when the input omits an explicit channel.
 
 ## [0.24.0] - 2026-10-16

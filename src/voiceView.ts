@@ -88,6 +88,7 @@ export function registerVoiceView(
 		window.registerWebviewViewProvider('mmlx.voice', provider, { webviewOptions: { retainContextWhenHidden: true } }),
 		commands.registerCommand('mmlx.showVoicePanel', () => commands.executeCommand('mmlx.voice.focus')),
 		commands.registerCommand('mmlx.playSelection', () => provider.playEditorSelection()),
+		commands.registerCommand('mmlx.toggleVoiceLock', () => provider.toggleVoiceLock()),
 		commands.registerCommand('mmlx.resetSoundChip', () => provider.resetSoundChip().catch(error => {
 			void window.showErrorMessage(`Sound chip reset failed: ${error instanceof Error ? error.message : String(error)}`);
 		})));
@@ -142,6 +143,7 @@ export class VoiceViewProvider implements WebviewViewProvider {
 	private outputId = 0;
 	private keyboardOutputMode = 'emulation';
 	private voiceTesting = false;
+	private voiceLocked = false;
 	private resettingOutput = false;
 	private voiceTestVoice = '';
 	private voiceTestSource: 'selection' | 'input' = 'input';
@@ -331,6 +333,7 @@ export class VoiceViewProvider implements WebviewViewProvider {
 						window.showErrorMessage(`Could not start build: ${error instanceof Error ? error.message : String(error)}`));
 				}
 				else if (message?.type === 'editVoice') { void this.edit(message); }
+				else if (message?.type === 'toggleVoiceLock') { this.toggleVoiceLock(); }
 				else if (message?.type === 'updateBuildSetting') { void this.updateBuildSetting(message); }
 				else if (message?.type === 'setMcpEnabled') { this.setMcpEnabled(message); }
 				else if (message?.type === 'getBuildSettings') { this.sendBuildSettings(); }
@@ -1194,7 +1197,23 @@ export class VoiceViewProvider implements WebviewViewProvider {
 		this.timer = setTimeout(() => { void this.update(sequence); }, 80);
 	}
 
+	toggleVoiceLock(): void {
+		if (!this.snapshot.voice || this.snapshot.error) { return; }
+		this.voiceLocked = !this.voiceLocked;
+		if (this.voiceLocked) {
+			clearTimeout(this.timer); this.timer = undefined;
+			this.sequence++;
+			this.editTarget = undefined;
+			this.snapshot = { ...this.snapshot, retained: true };
+			this.send();
+			return;
+		}
+		this.snapshot = { ...this.snapshot, retained: false };
+		this.schedule();
+	}
+
 	private async update(sequence: number, position?: Position): Promise<void> {
+		if (this.voiceLocked) { return; }
 		const editor = this.editor;
 		const client = this.getClient();
 		if (this.editing || !this.view?.visible || !editor || editor.document.languageId !== 'mmlx' || !client?.isRunning()) { return; }
@@ -1306,7 +1325,7 @@ export class VoiceViewProvider implements WebviewViewProvider {
 		const editable = !!target && !this.editing && !this.snapshot.retained && !this.snapshot.error
 			&& !target.document.isClosed && target.document.version === target.version;
 		void this.view?.webview.postMessage({ type: 'voice', ...this.snapshot, editing: this.editing,
-			editable, editToken: editable ? target.token : null });
+			editable, editToken: editable ? target.token : null, locked: this.voiceLocked });
 	}
 
 	async disconnectNanoDrive(): Promise<void> {

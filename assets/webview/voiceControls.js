@@ -90,10 +90,12 @@ export function createVoiceControls(root, onEdit = () => {}) {
 	const diagrams = [];
 	const inputs = [];
 	const voicePanel = root;
+	const voiceLock = root.querySelector('#voice-lock');
 	let snapshot;
 	let drag;
 	let pendingVoice;
 	const algorithm = root.querySelector('#algorithm');
+	voiceLock.addEventListener('click', () => onEdit({ type: 'toggleVoiceLock' }));
 	for (let index = 0; index < 8; index++) {
 		const option = document.createElement('option');
 		option.value = index;
@@ -530,6 +532,11 @@ export function createVoiceControls(root, onEdit = () => {}) {
 			: message.error ? 'Unavailable'
 				: voice ? (message.retained ? 'Retained' : '') : 'No voice selected';
 		status.classList.toggle('is-warning', !!message.warning);
+		const locked = message.locked === true;
+		voiceLock.disabled = !voice || !!message.error;
+		voiceLock.setAttribute('aria-pressed', String(locked));
+		voiceLock.setAttribute('aria-label', locked ? 'Unlock FM voice' : 'Lock FM voice');
+		voiceLock.title = locked ? 'Unlock FM voice' : 'Lock FM voice';
 		const warning = root.querySelector('#voice-warning');
 		warning.hidden = !Array.isArray(message.warning) || !message.warning.length;
 		warning.textContent = warning.hidden ? '' : `Out-of-range parameters: ${message.warning.join('; ')}`;

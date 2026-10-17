@@ -70,6 +70,10 @@
         "title": "mmlx: Play MML Selection"
       },
       {
+        "command": "mmlx.toggleVoiceLock",
+        "title": "mmlx: Toggle FM Voice Lock"
+      },
+      {
         "command": "mmlx.resetSoundChip",
         "title": "mmlx: Reset Sound Chip"
       },
@@ -88,6 +92,12 @@
         "command": "mmlx.playSelection",
         "key": "ctrl+alt+p",
         "mac": "cmd+alt+p",
+        "when": "editorTextFocus && editorLangId == mmlx"
+      },
+      {
+        "command": "mmlx.toggleVoiceLock",
+        "key": "ctrl+alt+l",
+        "mac": "cmd+alt+l",
         "when": "editorTextFocus && editorLangId == mmlx"
       },
       {
