@@ -946,8 +946,8 @@ suite('mmlx extension', () => {
 		const voice = { number: 0, name: 'Grand Piano', algorithm: 7, feedback: 0, operatorMask: 15, position: { line: 0, character: 0 },
 			parameterRanges: [], range: { start: { line: 0, character: 0 }, end: { line: 6, character: 1 } },
 			operators: Array.from({ length: 4 }, () => ({ ar: 31, d1r: 0, d2r: 0, rr: 15, d1l: 0, tl: 32, ks: 0, mul: 1, dt1: 0, dt2: 0, ame: 0 })) };
-		const chipStateMml = 'MH0,200,64,0,5,0,1 t180 l32 o6 v12 q6 p2 c8';
-		const chipState = { tempo: 't180', length: 'l32', octave: 6, volume: ['v12'], gate: 'q6', pan: 'p2',
+		let chipStateMml = 'MH0,200,64,0,5,0,1 t160 l32 o6 v12 q6 p2 c8';
+		let chipState = { tempo: 't160', length: 'l32', octave: 6, volume: ['v12'], gate: 'q6', pan: 'p2',
 			opmLfo: ['MH0,200,64,0,5,0,1'] };
 		const stateRequests: { source: string; initialState?: MmlPlaybackStateScan['state'] }[] = [];
 		const client = { isRunning: () => true, sendRequest: async (method: string, params: {
@@ -960,7 +960,7 @@ suite('mmlx extension', () => {
 			const scan = (state: MmlPlaybackStateScan['state'], flags: Partial<Omit<MmlPlaybackStateScan, 'state'>> = {}) =>
 				playbackStateScan(state, flags);
 			if (source === 'invalid???') { return null; }
-			if (source === chipStateMml) {
+			if (source === `A ${chipStateMml}`) {
 				return scan({ ...initial, ...chipState },
 					{ hasTempo: true, hasLength: true, hasOctave: true, hasVolume: true, hasGate: true, hasPan: true,
 						hasOpmLfo: true });
@@ -1212,13 +1212,36 @@ suite('mmlx extension', () => {
 			const chipStateStart = updates.length;
 			messages.fire({ type: 'voiceTestAction', action: 'play', mml: chipStateMml, id: 1 });
 			await waitFor(message => message.type === 'voiceTest' && message.playing === true, chipStateStart);
-			const chipStateRequest = [...stateRequests].reverse().find(request => request.source === chipStateMml);
+			const chipStateRequest = [...stateRequests].reverse().find(request => request.source === `A ${chipStateMml}`);
 			assert.deepStrictEqual(chipStateRequest?.initialState, {
 				tempo: 't80', length: 'l16', octave: 4, volume: ['v15'], gate: 'q8'
 			}, 'Chip State MML analysis starts with the state already retained by the output');
 			const chipStateStop = updates.length;
 			messages.fire({ type: 'voiceTestAction', action: 'stop', id: 1 });
 			await waitFor(message => message.type === 'voiceTest' && message.playing === false, chipStateStop);
+			chipStateMml = 'MH0,200,64,0,5,0,1 t180 l32 o6 v12 q6 p2 c8';
+			chipState = { ...chipState, tempo: 't180' };
+			const updatedChipStateStart = updates.length;
+			messages.fire({ type: 'voiceTestAction', action: 'play', mml: chipStateMml, id: 1 });
+			await waitFor(message => message.type === 'voiceTest' && message.playing === true, updatedChipStateStart);
+			const updatedChipStateRequest = [...stateRequests].reverse().find(request => request.source === `A ${chipStateMml}`);
+			assert.strictEqual(updatedChipStateRequest?.initialState?.tempo, 't160',
+				'Updated Chip State MML starts from the previously retained tempo');
+			const updatedChipStateStop = updates.length;
+			messages.fire({ type: 'voiceTestAction', action: 'stop', id: 1 });
+			await waitFor(message => message.type === 'voiceTest' && message.playing === false, updatedChipStateStop);
+			const updatedResetStart = updates.length;
+			await provider.resetSoundChip();
+			await waitFor(message => message.type === 'outputReset' && message.connected === true, updatedResetStart);
+			const resetChipStateStart = updates.length;
+			messages.fire({ type: 'voiceTestAction', action: 'play', mml: chipStateMml, id: 1 });
+			await waitFor(message => message.type === 'voiceTest' && message.playing === true, resetChipStateStart);
+			const resetChipStateRequest = [...stateRequests].reverse().find(request => request.source === `A ${chipStateMml}`);
+			assert.deepStrictEqual(resetChipStateRequest?.initialState, {},
+				'Chip State MML state is rebuilt after a sound-chip reset');
+			const resetChipStateStop = updates.length;
+			messages.fire({ type: 'voiceTestAction', action: 'stop', id: 1 });
+			await waitFor(message => message.type === 'voiceTest' && message.playing === false, resetChipStateStop);
 
 			editor.selection = new vscode.Selection(0, 0, 0, 0);
 			await waitFor(message => message.type === 'editorSelection' && !message.mml);

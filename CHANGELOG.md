@@ -4,6 +4,8 @@ All notable changes to the "mmlx-lsp" extension will be documented in this file.
 
 ## [Unreleased]
 
+- Fix Chip State MML tempo and other playback state not being inherited when the input omits an explicit channel.
+
 ## [0.24.0] - 2026-10-16
 
 - Show FM voice numbers and adjacent names in the VS Code outline.

@@ -691,7 +691,8 @@ export class VoiceViewProvider implements WebviewViewProvider {
 			this.selectionTrace = undefined;
 			this.selectionPlaybackSources?.stop();
 			try {
-				const inputState = await this.requestPlaybackState(message.mml, message.mml.length, this.postResetMmlState ?? {});
+				const inputMml = /^[A-H](?:\s|$)/.test(message.mml.trimStart()) ? message.mml : `A ${message.mml}`;
+				const inputState = await this.requestPlaybackState(inputMml, inputMml.length, this.postResetMmlState ?? {});
 				if (!inputState) {
 					this.playbackLog?.appendLine('Could not parse Chip State MML state; playback will continue without state tracking.');
 				} else if (this.postResetMmlState !== undefined || inputState.hasTempo || inputState.hasLength
