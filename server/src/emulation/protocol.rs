@@ -279,6 +279,10 @@ impl Session {
                 } else {
                     engine.render()?
                 };
+                if playback.is_none() {
+                    frame(&mut output, 8, &[u8::from(engine.dormant())])
+                        .map_err(|error| error.to_string())?;
+                }
                 frame(&mut output, 2, &pcm).map_err(|error| error.to_string())?;
                 if let Some(playback) = playback.as_mut() {
                     playback_state(&mut output, playback)?;
@@ -356,8 +360,9 @@ mod tests {
         )
         .unwrap();
         assert_eq!(&output[..5], &[1, 4, 0, 0, 0]);
-        assert_eq!(&output[9..14], &[2, 0, 16, 0, 0]);
-        assert_eq!(output.len(), 14 + 4096);
+        assert_eq!(&output[9..15], &[8, 1, 0, 0, 0, 1]);
+        assert_eq!(&output[15..20], &[2, 0, 16, 0, 0]);
+        assert_eq!(output.len(), 14 + 4096 + 6);
         assert!(run(io::Cursor::new(b"{\"type\":\"render\"}\n"), Vec::new()).is_err());
         assert!(run(io::Cursor::new(vec![b'x'; 16385]), Vec::new()).is_err());
     }

@@ -230,7 +230,9 @@ export class VoiceViewProvider implements WebviewViewProvider {
 				}
 				void this.view?.webview.postMessage({ type: 'emulationPcm', id: this.outputId, pcm });
 			}, undefined,
-			(playing, error) => { if (this.keyboardOutputMode === 'emulation') { this.setVoiceTesting(playing, error); } }) : undefined;
+			(playing, error) => { if (this.keyboardOutputMode === 'emulation') { this.setVoiceTesting(playing, error); } },
+			undefined,
+			dormant => { void this.view?.webview.postMessage({ type: 'emulationDormant', id: this.outputId, dormant }); }) : undefined;
 		this.playback = wasm ? new EmulationSession(context.extensionUri, wasm,
 			state => {
 				if (this.browserPlayback) { return; }

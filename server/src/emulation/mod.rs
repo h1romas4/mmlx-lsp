@@ -146,6 +146,10 @@ impl Emulation {
         self.voice_test_failed
     }
 
+    pub fn dormant(&self) -> bool {
+        self.chip.borrow().dormant()
+    }
+
     pub fn stop_voice_test(&mut self) {
         self.voice_test = None;
         self.voice_test_failed = false;

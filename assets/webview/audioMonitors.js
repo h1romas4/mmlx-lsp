@@ -56,6 +56,7 @@ export function createAudioMonitors(root, readAnalysis, onGainChange = () => {})
 	let gain = 4;
 	let previous;
 	let connected = false;
+	let dormant = false;
 	let frame;
 	let lastFrame = -Infinity;
 	let disposed = false;
@@ -106,7 +107,7 @@ export function createAudioMonitors(root, readAnalysis, onGainChange = () => {})
 	}
 	function paint() {
 		if (!visible() || !spectrumContext) { return; }
-		const data = connected ? readAnalysis() : null;
+		const data = connected && !dormant ? readAnalysis() : null;
 		const period = data ? data.sampleRate / noteFrequency(note) : 0;
 		const span = data ? Math.min(period * 2, data.samples.length - 3) : 0;
 		const duration = data ? span * 1000 / data.sampleRate : 2000 / noteFrequency(note);
@@ -161,12 +162,13 @@ export function createAudioMonitors(root, readAnalysis, onGainChange = () => {})
 			root.dataset.state = active ? 'active' : 'silent'; stateLabel.textContent = active ? 'dB / Hz' : 'Silent';
 		} else {
 			previous = undefined;
-			root.dataset.state = connected ? 'waiting' : 'disconnected'; stateLabel.textContent = connected ? 'Waiting' : 'Disconnected';
+			root.dataset.state = dormant ? 'dormant' : connected ? 'waiting' : 'disconnected';
+			stateLabel.textContent = dormant ? 'Sleeping' : connected ? 'Waiting' : 'Disconnected';
 		}
 	}
 	function tick(time) {
 		frame = undefined;
-		if (disposed || !connected || !visible()) { return; }
+		if (disposed || !connected || dormant || !visible()) { return; }
 		if (time - lastFrame >= 1000 / 30) { lastFrame = time; paint(); }
 		frame = requestAnimationFrame(tick);
 	}
@@ -174,7 +176,7 @@ export function createAudioMonitors(root, readAnalysis, onGainChange = () => {})
 		if (frame !== undefined) { cancelAnimationFrame(frame); frame = undefined; }
 		if (disposed || !visible()) { return; }
 		paint(); lastFrame = performance.now();
-		if (connected) { frame = requestAnimationFrame(tick); }
+		if (connected && !dormant) { frame = requestAnimationFrame(tick); }
 	}
 	function updateReference() {
 		const next = [...held.values()].at(-1);
@@ -191,6 +193,7 @@ export function createAudioMonitors(root, readAnalysis, onGainChange = () => {})
 		get gain() { return gain; },
 		setGain,
 		setConnected(value) { connected = value === true; if (!connected) { held.clear(); previous = undefined; } refresh(); },
+		setDormant(value) { dormant = value === true; previous = undefined; refresh(); },
 		setNote(event, source = 'local') {
 			const type = event.event ?? event.type;
 			const channel = event.channel ?? 0;

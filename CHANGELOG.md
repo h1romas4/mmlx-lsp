@@ -4,6 +4,8 @@ All notable changes to the "mmlx-lsp" extension will be documented in this file.
 
 ## [Unreleased]
 
+- Pause FM Voice oscilloscope and spectrum analysis while YM2151 is dormant, resuming when it wakes.
+
 ## [0.25.1] - 2026-10-17
 
 - Keep a locked FM Voice visible and unlockable after closing its source document.

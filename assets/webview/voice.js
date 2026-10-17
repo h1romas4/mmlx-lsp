@@ -303,6 +303,8 @@ window.addEventListener('message', event => {
 		outputConnections.keyboard.setState(message);
 	} else if (message?.type === 'emulationPcm' && message.id === outputId) {
 		emulationAudio.pcm(message.pcm);
+	} else if (message?.type === 'emulationDormant' && message.id === outputId) {
+		audioMonitors.setDormant(message.dormant);
 	} else if (message?.type === 'buildSettings' || message?.type === 'serialSettings' || message?.type === 'midiSettings') {
 		settingsControls.render(message);
 		if (message.type === 'serialSettings') {

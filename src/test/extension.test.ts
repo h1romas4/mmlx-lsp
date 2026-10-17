@@ -407,11 +407,12 @@ suite('mmlx extension', () => {
 		const voice = { algorithm: 7, feedback: 0, operatorMask: 15, operators: Array.from({ length: 4 }, () => ({
 			ar: 31, d1r: 0, d2r: 0, rr: 15, d1l: 0, tl: 32, ks: 0, mul: 1, dt1: 0, dt2: 0, ame: 1
 		})) };
-		let state: EmulationState | undefined; let testing = false; let testError = false;
+		let state: EmulationState | undefined; let testing = false; let testError = false; let dormant: boolean | undefined;
 		let receive!: (pcm: ArrayBuffer) => void;
 		const changed = new vscode.EventEmitter<boolean>();
 		const session = new EmulationSession(extension.extensionUri, await Wasm.load(), value => { state = value; }, pcm => receive(pcm), undefined,
-			(playing, error) => { testing = playing; testError = error; changed.fire(playing); });
+			(playing, error) => { testing = playing; testError = error; changed.fire(playing); }, undefined,
+			value => { dormant = value; });
 		const render = () => new Promise<ArrayBuffer>(resolve => { receive = resolve; session.request(); });
 		const energy = (pcm: ArrayBuffer) => new Float32Array(pcm).reduce((sum, value) => sum + Math.abs(value), 0);
 		try {
@@ -425,6 +426,12 @@ suite('mmlx extension', () => {
 			for (let count = 0; count < 10; count++) {
 				assert.ok(new Float32Array(await render()).every(value => Math.abs(value) < 0.0001), 'No extra tone after the MML test');
 			}
+			session.note({ type: 'noteOff', source: 0, channel: 0, note: 84 });
+			for (let count = 0; count < 20 && dormant !== true; count++) { await render(); }
+			assert.strictEqual(dormant, true, 'YM2151 must report its actual dormant transition after sustained silence');
+			session.note({ type: 'noteOn', source: 0, channel: 0, note: 84, velocity: 127 });
+			await render();
+			assert.strictEqual(dormant, false, 'A key-on must wake YM2151 and report the transition');
 			session.startVoiceTest('MH0,200,64,0,5,0,1 t240 o4 c16', voice);
 			for (let count = 0; count < 100 && testing; count++) { await render(); }
 			assert.ok(!testing && !testError);
@@ -962,6 +969,18 @@ suite('mmlx extension', () => {
 			check(reads === beforeDisconnected && root.dataset.state === 'disconnected', 'Disconnect must stop analysing');
 			monitors.setConnected(true); monitors.dispose(); const beforeDisposed = reads; await wait();
 			check(reads === beforeDisposed, 'Dispose must stop the animation');
+			const sleepingReads = reads;
+			const sleeping = createAudioMonitors(root, () => { reads++; return data; });
+			try {
+				sleeping.setConnected(true); sleeping.setDormant(true);
+				check(root.dataset.state === 'dormant' && document.getElementById('spectrum-state').textContent === 'Sleeping', 'Dormant YM2151 must show a sleeping state');
+				const beforeSleepWait = reads; await wait();
+				check(reads === beforeSleepWait, 'Dormant YM2151 must stop analysis reads and animation frames');
+				sleeping.setDormant(false);
+				check(reads > beforeSleepWait, 'Waking YM2151 must immediately resume analysis');
+				await wait(); check(reads > beforeSleepWait + 1, 'Waking YM2151 must resume the animation loop');
+			} finally { sleeping.dispose(); }
+			check(reads > sleepingReads, 'Monitor lifecycle test must execute reads');
 			section.hidden = true;
 			const playbackSection = document.getElementById('playback-controls'); playbackSection.hidden = false;
 			const playbackRoot = document.getElementById('playback-monitors');

@@ -18,6 +18,7 @@ export class EmulationSession {
 	private voice = '';
 	private voiceTesting = false;
 	private voiceTestError = false;
+	private dormant?: boolean;
 	private resetReady?: (ready: boolean) => void;
 	private resetting?: Promise<boolean>;
 
@@ -26,7 +27,8 @@ export class EmulationSession {
 		private readonly onPcm: (pcm: ArrayBuffer) => void,
 		private readonly onPlayback: (progress: PlaybackProgress) => void = () => {},
 		private readonly onVoiceTest: (playing: boolean, error: boolean) => void = () => {},
-		private readonly onPlaybackKeys: (keys: FmKeyEvent[]) => void = () => {}) {}
+		private readonly onPlaybackKeys: (keys: FmKeyEvent[]) => void = () => {},
+		private readonly onDormant: (dormant: boolean) => void = () => {}) {}
 
 	async connect(sampleRate: number, voice: unknown = null, playback?: {
 		source: string; looped: boolean; cursor?: number; adpcmMode?: 'through' | 'resample' | 'lpf';
@@ -86,6 +88,13 @@ export class EmulationSession {
 				} else if (kind === 6) {
 					if (!ready || !playback) { throw new Error('Unexpected FM keyboard events.'); }
 					this.onPlaybackKeys(decodeFmKeyEvents(JSON.parse(new TextDecoder().decode(bytes))));
+				} else if (kind === 8) {
+					if (!ready || playback || bytes[0] > 1) { throw new Error('Invalid YM2151 state.'); }
+					const dormant = bytes[0] === 1;
+					if (this.dormant !== dormant) {
+						this.dormant = dormant;
+						this.onDormant(dormant);
+					}
 				} else if (kind === 4) {
 					if (!ready || !this.resetReady) { throw new Error('Unexpected emulator reset.'); }
 					this.setVoiceTesting(false);
@@ -203,7 +212,7 @@ export class EmulationSession {
 		this.cancelReady?.(); this.cancelReady = undefined;
 		const process = this.process;
 		this.process = undefined;
-		this.connected = false; this.renders = 0; this.queued = 0; this.voice = '';
+		this.connected = false; this.renders = 0; this.queued = 0; this.voice = ''; this.dormant = undefined;
 		this.writes = Promise.resolve();
 		for (const subscription of this.subscriptions.splice(0)) { subscription.dispose(); }
 		void process?.terminate().catch(() => undefined);
