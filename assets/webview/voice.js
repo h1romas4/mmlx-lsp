@@ -60,7 +60,10 @@ const keyboardControls = createKeyboardControls(document.getElementById('keyboar
 	}, note => { if (note.event !== 'pitchBend') { audioMonitors.setNote(note); } vscode.postMessage({ type: 'emulationNote', id: outputId, ...note }); },
 	(action, mml, state) => {
 		keyboardControls.releaseAll();
-		if (action === 'play' || action === 'playSelection') { keyboardControls.setVoiceTest(true); }
+		if (action === 'play' || action === 'playSelection') {
+			emulationAudio.clear();
+			keyboardControls.setVoiceTest(true);
+		}
 		saveState();
 		vscode.postMessage({ type: 'voiceTestAction', id: outputId, action, mml, ...state });
 	}, active => vscode.postMessage({ type: 'keyboardSustain', id: outputId, active }));
