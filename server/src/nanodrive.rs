@@ -909,6 +909,42 @@ mod tests {
     }
 
     #[test]
+    fn four_midi_notes_keep_distinct_hardware_channels_until_their_note_offs() {
+        let mut bridge = Bridge::default();
+        audition(&mut bridge, json!({"type":"init", "voice":voice()}));
+        for (index, note) in [60, 64, 67, 69].into_iter().enumerate() {
+            let frames = audition(
+                &mut bridge,
+                json!({"type":"noteOn", "source":1, "channel":0, "note":note, "velocity":127}),
+            );
+            let writes: Vec<_> = frames.iter().flat_map(register_writes).collect();
+            assert_eq!(
+                writes.last(),
+                Some(&(0x08, 0x78 | index as u8)),
+                "MIDI note {note} must key on hardware channel {index}"
+            );
+        }
+        assert_eq!(
+            register_writes(
+                &audition(
+                    &mut bridge,
+                    json!({"type":"noteOff", "source":1, "channel":0, "note":60})
+                )[0]
+            ),
+            [(0x08, 0)]
+        );
+        assert_eq!(
+            register_writes(
+                &audition(
+                    &mut bridge,
+                    json!({"type":"noteOff", "source":1, "channel":0, "note":69})
+                )[0]
+            ),
+            [(0x08, 3)]
+        );
+    }
+
+    #[test]
     fn keyboard_source_releases_and_stop_are_isolated() {
         let mut bridge = Bridge::default();
         audition(&mut bridge, json!({"type":"init", "voice":voice()}));
