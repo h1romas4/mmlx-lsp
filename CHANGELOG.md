@@ -4,6 +4,8 @@ All notable changes to the "mmlx-lsp" extension will be documented in this file.
 
 ## [Unreleased]
 
+## [0.26.0] - 2026-10-18
+
 - Clear buffered FM Voice audio before starting a new test so previous notes do not carry into initial rests.
 - Pause FM Voice oscilloscope and spectrum analysis while YM2151 is dormant, resuming when it wakes.
 
