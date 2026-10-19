@@ -103,7 +103,7 @@ jobs:
       - run: npm ci
       - name: Cache WASI SDK
         id: wasi-sdk-cache
-        uses: actions/cache@v4
+        uses: actions/cache@v6
         with:
           path: toolchains/wasi-sdk/build/install
           key: wasi-sdk-${{ runner.os }}-${{ runner.arch }}-${{ env.WASI_SDK_VERSION }}-${{ env.WASI_SDK_SHA256 }}
