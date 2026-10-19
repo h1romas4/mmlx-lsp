@@ -16,6 +16,11 @@ concurrency:
 
 env:
   CARGO_TERM_COLOR: always
+  RUST_TOOLCHAIN: '1.99.1'
+  # Keep SDK 33 for wasm32-wasip1-threads: SDK 34's libc omits __wasi_init_tp and can shadow Rust's definition.
+  WASI_SDK_RELEASE: '33'
+  WASI_SDK_VERSION: '33.0'
+  WASI_SDK_SHA256: '0ba8b5bfaeb2adf3f29bab5841d76cf5318ab8e1642ea195f88baba1abd47bce'
 
 jobs:
   metadata:
@@ -53,6 +58,7 @@ jobs:
           cache: npm
       - uses: dtolnay/rust-toolchain@stable
         with:
+          toolchain: ${{ env.RUST_TOOLCHAIN }}
           targets: x86_64-pc-windows-msvc
       - uses: Swatinem/rust-cache@v2
         with:
@@ -88,6 +94,7 @@ jobs:
           cache: npm
       - uses: dtolnay/rust-toolchain@stable
         with:
+          toolchain: ${{ env.RUST_TOOLCHAIN }}
           targets: wasm32-wasip1-threads,wasm32-wasip1
       - uses: Swatinem/rust-cache@v2
         with:
@@ -99,14 +106,14 @@ jobs:
         uses: actions/cache@v4
         with:
           path: toolchains/wasi-sdk/build/install
-          key: wasi-sdk-${{ runner.os }}-${{ runner.arch }}-33.0-0ba8b5bfaeb2adf3f29bab5841d76cf5318ab8e1642ea195f88baba1abd47bce
+          key: wasi-sdk-${{ runner.os }}-${{ runner.arch }}-${{ env.WASI_SDK_VERSION }}-${{ env.WASI_SDK_SHA256 }}
       - name: Install WASI SDK for YM2151 emulation
         if: steps.wasi-sdk-cache.outputs.cache-hit != 'true'
         shell: bash
         run: |
           curl --fail --location --retry 3 -o "$RUNNER_TEMP/wasi-sdk.tar.gz" \
-            https://github.com/WebAssembly/wasi-sdk/releases/download/wasi-sdk-33/wasi-sdk-33.0-x86_64-linux.tar.gz
-          printf '%s  %s\n' '0ba8b5bfaeb2adf3f29bab5841d76cf5318ab8e1642ea195f88baba1abd47bce' "$RUNNER_TEMP/wasi-sdk.tar.gz" | sha256sum --check
+            "https://github.com/WebAssembly/wasi-sdk/releases/download/wasi-sdk-${WASI_SDK_RELEASE}/wasi-sdk-${WASI_SDK_VERSION}-x86_64-linux.tar.gz"
+          printf '%s  %s\n' "$WASI_SDK_SHA256" "$RUNNER_TEMP/wasi-sdk.tar.gz" | sha256sum --check
           mkdir -p toolchains/wasi-sdk/build/install
           tar -xzf "$RUNNER_TEMP/wasi-sdk.tar.gz" -C toolchains/wasi-sdk/build/install --strip-components=1
       - name: Prepare extension metadata
@@ -172,6 +179,7 @@ jobs:
           cache: npm
       - uses: dtolnay/rust-toolchain@stable
         with:
+          toolchain: ${{ env.RUST_TOOLCHAIN }}
           targets: ${{ matrix.target }}
       - uses: Swatinem/rust-cache@v2
         with:
