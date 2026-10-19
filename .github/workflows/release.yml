@@ -64,7 +64,7 @@ jobs:
         with:
           workspaces: server
           key: nanodrive-windows
-      - uses: ilammy/msvc-dev-cmd@v1
+      - uses: TheMrMilchmann/setup-msvc-dev@v4
         with:
           arch: x64
       - run: npm ci
@@ -184,7 +184,7 @@ jobs:
       - uses: Swatinem/rust-cache@v2
         with:
           workspaces: server
-      - uses: ilammy/msvc-dev-cmd@v1
+      - uses: TheMrMilchmann/setup-msvc-dev@v4
         if: runner.os == 'Windows'
         with:
           arch: x64
