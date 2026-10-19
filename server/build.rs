@@ -5,6 +5,8 @@ fn main() {
     if target != "wasm32-wasip1-threads" && target != "wasm32-wasip1" {
         return;
     }
+    // Only wasm32-wasip1-threads needs this: Rust's threaded WASI CRT references __wasi_init_tp.
+    // SDK 33's threaded libc defines it; SDK 34's does not and can shadow Rust's definition.
     let sdk = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
         .parent()
         .expect("Cannot locate the project directory")

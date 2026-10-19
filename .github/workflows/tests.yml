@@ -1,0 +1,87 @@
+name: Tests
+
+on:
+  push:
+    tags: ['v*.*.*']
+
+permissions:
+  contents: read
+
+concurrency:
+  group: tests-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  test:
+    runs-on: ubuntu-26.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+          cache: npm
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: wasm32-wasip1-threads,wasm32-wasip1
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: server
+          key: tests-wasm
+      - name: Install headless test dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y udev xvfb
+      - name: Cache WASI SDK
+        id: wasi-sdk-cache
+        uses: actions/cache@v4
+        with:
+          path: toolchains/wasi-sdk/build/install
+          key: wasi-sdk-${{ runner.os }}-${{ runner.arch }}-33.0-0ba8b5bfaeb2adf3f29bab5841d76cf5318ab8e1642ea195f88baba1abd47bce
+      - name: Install WASI SDK for YM2151 emulation
+        if: steps.wasi-sdk-cache.outputs.cache-hit != 'true'
+        shell: bash
+        run: |
+          curl --fail --location --retry 3 -o "$RUNNER_TEMP/wasi-sdk.tar.gz" \
+            https://github.com/WebAssembly/wasi-sdk/releases/download/wasi-sdk-33/wasi-sdk-33.0-x86_64-linux.tar.gz
+          printf '%s  %s\n' '0ba8b5bfaeb2adf3f29bab5841d76cf5318ab8e1642ea195f88baba1abd47bce' "$RUNNER_TEMP/wasi-sdk.tar.gz" | sha256sum --check
+          mkdir -p toolchains/wasi-sdk/build/install
+          tar -xzf "$RUNNER_TEMP/wasi-sdk.tar.gz" -C toolchains/wasi-sdk/build/install --strip-components=1
+      - run: npm ci
+      - name: Install WASM-WASI Core for the test profile
+        run: |
+          node <<'NODE'
+          const { spawnSync } = require('node:child_process');
+          const { downloadAndUnzipVSCode, resolveCliArgsFromVSCodeExecutablePath } = require('@vscode/test-electron');
+
+          (async () => {
+            const executable = await downloadAndUnzipVSCode('stable');
+            const [cli, ...args] = resolveCliArgsFromVSCodeExecutablePath(executable);
+            const result = spawnSync(cli, [...args, '--install-extension', 'ms-vscode.wasm-wasi-core'], { stdio: 'inherit' });
+            if (result.error) throw result.error;
+            if (result.status !== 0) process.exitCode = result.status ?? 1;
+          })().catch(error => {
+            console.error(error);
+            process.exitCode = 1;
+          });
+          NODE
+      - name: Test Rust language server and compiler
+        run: npm run test:server
+      - name: Test NanoDrive8 Rust protocol
+        run: npm run test:nanodrive
+      - name: Test NDSIF protocol crate
+        run: cargo test --locked --manifest-path crates/ndsif/Cargo.toml
+      - name: Test Helix grammar
+        run: npm run test:helix
+      - name: Test VS Code extension headlessly
+        shell: bash
+        run: |
+          # Excluded: FM Voice keyboard probe, which timed out under Xvfb in headless Codespaces.
+          # Excluded: Node MIDI enumeration and virtual-port receive, which require an ALSA MIDI device.
+          # Excluded: NanoDrive8 keyboard webview probe, which timed out under Xvfb in headless Codespaces.
+          # Serial-port enumeration stays enabled; udev is installed above to provide udevadm.
+          xvfb-run -a npm test -- \
+            --grep 'FM Voice keyboard shows MIDI status and disables keys until output connects|Node MIDI input port enumeration works in the extension host|native MIDI input receives note on and off from a virtual port in the extension host|NanoDrive8 Keyboard Webview uses serial availability without browser audio' \
+            --invert --retries 1
