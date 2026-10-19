@@ -74,7 +74,7 @@ jobs:
       - run: npm run compile-tests
       - name: Test dedicated NanoDrive8 process
         run: node node_modules/mocha/bin/mocha.js --ui tdd --timeout 15000 out/test/nanodrive.test.js out/test/nanodriveProcess.test.js
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: nanodrive-windows
           path: dist/native/mmlx-nanodrive.exe
@@ -127,7 +127,7 @@ jobs:
           manifest.repository ??= { type: 'git', url: `https://github.com/${process.env.GITHUB_REPOSITORY}.git` };
           fs.writeFileSync('package.json', JSON.stringify(manifest, null, 2) + '\n');
           NODE
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@v8
         with:
           name: nanodrive-windows
           path: dist/native
@@ -139,7 +139,7 @@ jobs:
           if [[ "$VERSION" == *-* ]]; then options+=(--pre-release); fi
           npx --no-install vsce package "${options[@]}" --out "release/mmlx-lsp-${VERSION}.vsix"
           unzip -l "release/mmlx-lsp-${VERSION}.vsix" | grep -F 'extension/dist/native/mmlx-nanodrive.exe'
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: vsix
           path: release/*.vsix
@@ -232,7 +232,7 @@ jobs:
           Copy-Item native/helix/README.md "$staging/README.md"
           Copy-Item LICENSE "$staging/LICENSE"
           Compress-Archive -Path $staging -DestinationPath "release/$name.zip"
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: native-${{ matrix.platform }}
           path: |
@@ -252,7 +252,7 @@ jobs:
       TAG: ${{ github.ref_name }}
       VERSION: ${{ needs.metadata.outputs.version }}
     steps:
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@v8
         with:
           path: release
           merge-multiple: true
