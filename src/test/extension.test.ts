@@ -20,7 +20,7 @@ import { NanoDriveThreadClient, type NanoDriveThreadEvent } from '../nanodriveTh
 import { PlaybackSourceTracker, selectionTraceSource } from '../playbackSource';
 import { requestMmlPlaybackState, type MmlPlaybackStateScan } from '../mmlPlaybackState';
 import { registerStepifySelectionCommand } from '../stepify';
-import { registerTrackLengthStatus } from '../trackLengthStatus';
+import { registerTrackLengthHover } from '../trackLengthHover';
 import { WasiMcpHttpBridge } from '../mcpServer';
 import type { NanoDriveConnection } from '../nanodrive';
 import { Port as NanoDriveTestPort, codec as nanoDriveTestCodec } from './nanodrive.test';
@@ -251,16 +251,10 @@ suite('mmlx extension', () => {
 		}
 	});
 
-	test('track tick status shows selected-range duration instead of cursor ticks', async function () {
+	test('track tick hover calculates on demand for the hovered position or selected range', async function () {
 		this.timeout(5000);
 		const document = await vscode.workspace.openTextDocument({ language: 'mmlx', content: 'A l8 c4 d4\nB c1\n' });
 		const editor = await vscode.window.showTextDocument(document);
-		const createStatusBarItem = vscode.window.createStatusBarItem;
-		let status: vscode.StatusBarItem | undefined;
-		const captureStatusBarItem = ((alignment?: vscode.StatusBarAlignment, priority?: number) => {
-			status = createStatusBarItem.call(vscode.window, alignment, priority);
-			return status;
-		}) as typeof vscode.window.createStatusBarItem;
 		const requests: { method: string; params: Record<string, unknown> }[] = [];
 		const client = {
 			isRunning: () => true,
@@ -278,36 +272,36 @@ suite('mmlx extension', () => {
 			}
 		} as unknown as LanguageClient;
 		const context = { subscriptions: [] as vscode.Disposable[] } as unknown as vscode.ExtensionContext;
-		const output = vscode.window.createOutputChannel('Track length status test');
-		const waitForText = async (text: string): Promise<void> => {
-			for (let attempt = 0; attempt < 100; attempt++) {
-				if (status?.text === text) { return; }
-				await new Promise(resolve => setTimeout(resolve, 10));
-			}
-			assert.fail(`Timed out waiting for status text ${JSON.stringify(text)} (actual=${status?.text})`);
-		};
+		const output = vscode.window.createOutputChannel('Track length hover test');
 		try {
-			vscode.window.createStatusBarItem = captureStatusBarItem;
-			try {
-				registerTrackLengthStatus(context, () => client, output);
-			} finally {
-				vscode.window.createStatusBarItem = createStatusBarItem;
-			}
-			await waitForText('$(music) A: 96 ticks');
+			registerTrackLengthHover(context, () => client, output);
+			assert.strictEqual(requests.length, 0);
+			const positionHovers = await vscode.commands.executeCommand<vscode.Hover[]>(
+				'vscode.executeHoverProvider', document.uri, new vscode.Position(0, 2)
+			);
+			assert.ok(positionHovers?.some(hover =>
+				hover.contents.some(content => content instanceof vscode.MarkdownString
+					&& content.value.includes('A: 96 ticks'))));
 			assert.strictEqual(requests.at(-1)?.method, 'mmlx/trackLengthAtPosition');
+			assert.deepStrictEqual(requests.at(-1)?.params, {
+				textDocument: { uri: document.uri.toString() },
+				position: { line: 0, character: 2 }
+			});
+
 			editor.selection = new vscode.Selection(0, 2, 0, 5);
-			await waitForText('$(music) Selection: 48 ticks (loop)');
+			const rangeHovers = await vscode.commands.executeCommand<vscode.Hover[]>(
+				'vscode.executeHoverProvider', document.uri, new vscode.Position(0, 3)
+			);
+			assert.ok(rangeHovers?.some(hover =>
+				hover.contents.some(content => content instanceof vscode.MarkdownString
+					&& content.value.includes('Selection: 48 ticks (loop)'))));
 			const rangeRequest = requests.at(-1);
 			assert.strictEqual(rangeRequest?.method, 'mmlx/trackLengthInRange');
 			assert.deepStrictEqual(rangeRequest?.params, {
 				textDocument: { uri: document.uri.toString() },
 				range: { start: { line: 0, character: 2 }, end: { line: 0, character: 5 } }
 			});
-			editor.selection = new vscode.Selection(0, 5, 0, 5);
-			await waitForText('$(music) A: 96 ticks');
-			assert.strictEqual(requests.at(-1)?.method, 'mmlx/trackLengthAtPosition');
 		} finally {
-			vscode.window.createStatusBarItem = createStatusBarItem;
 			for (const subscription of context.subscriptions) { subscription.dispose(); }
 			output.dispose();
 		}

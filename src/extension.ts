@@ -4,7 +4,7 @@ import { Wasm } from '@vscode/wasm-wasi/v1';
 import { createStdioOptions, createUriConverters, startServer } from '@vscode/wasm-wasi-lsp';
 import { registerBuildTasks } from './tasks';
 import { registerMcpServerProvider } from './mcpServer';
-import { registerTrackLengthStatus } from './trackLengthStatus';
+import { registerTrackLengthHover } from './trackLengthHover';
 import { registerStepifySelectionCommand } from './stepify';
 import { registerVoiceView, type VoiceViewProvider } from './voiceView';
 
@@ -67,7 +67,7 @@ export async function activate(context: ExtensionContext): Promise<void> {
 		}
 	});
 	await client.start();
-	registerTrackLengthStatus(context, () => client, channel);
+	registerTrackLengthHover(context, () => client, channel);
 	registerStepifySelectionCommand(context, () => client);
 	voiceView = registerVoiceView(context, () => client, wasm, playbackLog, mcpServer);
 	context.subscriptions.push(commands.registerCommand('mmlx.showVoiceReferences', async (
