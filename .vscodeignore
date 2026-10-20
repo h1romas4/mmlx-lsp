@@ -21,6 +21,7 @@ vsc-extension-quickstart.md
 **/*.ts
 **/.vscode-test.*
 server/**
+crates/**/target/**
 .cargo/**
 toolchains/**
 wasi-sdk.tar.gz
