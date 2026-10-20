@@ -5,6 +5,7 @@ All notable changes to the "mmlx-lsp" extension will be documented in this file.
 ## [Unreleased]
 
 - Show MML track and selection tick lengths on hover, calculated on demand.
+- Hide tick-length hover over voice definitions and comments.
 
 ## [0.26.0] - 2026-10-18
 

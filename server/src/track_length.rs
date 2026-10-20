@@ -26,6 +26,9 @@ pub struct TrackLengthRangeParams {
 pub fn at_position(source: &str, position: lsp_types::Position) -> Option<TrackLength> {
     let offset = crate::completion::byte_offset(source, position)?;
     let parsed = mmlx::mdx::frontend::parse(source).ok()?;
+    if !has_track_source_at(&parsed, source, offset) {
+        return None;
+    }
     let channel = channel_at_position(source, offset)?;
     let (track_index, track) = parsed
         .ast()
@@ -53,6 +56,9 @@ pub fn in_range(source: &str, range: lsp_types::Range) -> Option<TrackLengthRang
         return None;
     }
     let parsed = mmlx::mdx::frontend::parse(source).ok()?;
+    if !has_track_source_in_range(&parsed, source, start, end) {
+        return None;
+    }
     let mut ticks = 0;
     let mut looping = false;
     for (index, track) in parsed.ast().tracks.iter().enumerate() {
@@ -71,6 +77,128 @@ pub fn in_range(source: &str, range: lsp_types::Range) -> Option<TrackLengthRang
         }
     }
     Some(TrackLengthRange { ticks, looping })
+}
+
+fn has_track_source_at(
+    parsed: &mmlx::mdx::frontend::ParsedMml<'_>,
+    source: &str,
+    offset: usize,
+) -> bool {
+    if parsed
+        .syntax()
+        .voices()
+        .iter()
+        .any(|voice| voice.span.start() <= offset && offset < voice.span.end())
+    {
+        return false;
+    }
+    track_code_spans(source)
+        .into_iter()
+        .any(|(start, end, line_end)| {
+            start <= offset && (offset < end || (offset == end && end == line_end))
+        })
+}
+
+fn has_track_source_in_range(
+    parsed: &mmlx::mdx::frontend::ParsedMml<'_>,
+    source: &str,
+    start: usize,
+    end: usize,
+) -> bool {
+    if start == end {
+        return has_track_source_at(parsed, source, start);
+    }
+    track_code_spans(source)
+        .into_iter()
+        .any(|(span_start, span_end, _)| spans_intersect(start, end, span_start, span_end))
+}
+
+fn track_code_spans(source: &str) -> Vec<(usize, usize, usize)> {
+    let mut spans = Vec::new();
+    let mut block_comment = false;
+    let mut line_start = 0;
+    while line_start < source.len() {
+        let line_end = source[line_start..]
+            .find('\n')
+            .map_or(source.len(), |index| line_start + index);
+        let line = &source[line_start..line_end];
+        let prefix = line.trim_start_matches([' ', '\t']);
+        let prefix_start = line_start + line.len() - prefix.len();
+        let header_len = prefix
+            .bytes()
+            .take_while(|byte| matches!(byte, b'A'..=b'H' | b'P'..=b'W'))
+            .count();
+        let track_line = header_len > 0;
+        let mut code_start = (track_line && !block_comment).then_some(prefix_start);
+        let mut cursor = prefix_start;
+        let mut string = false;
+        while cursor < line_end {
+            let rest = &source[cursor..line_end];
+            if block_comment {
+                if rest.starts_with("*/") {
+                    block_comment = false;
+                    cursor += 2;
+                    if track_line {
+                        code_start = Some(cursor);
+                    }
+                } else {
+                    cursor += rest.chars().next().unwrap().len_utf8();
+                }
+                continue;
+            }
+            if string {
+                if rest.starts_with('\\') {
+                    cursor += 1;
+                    if cursor < line_end {
+                        cursor += source[cursor..line_end].chars().next().unwrap().len_utf8();
+                    }
+                } else {
+                    let character = rest.chars().next().unwrap();
+                    cursor += character.len_utf8();
+                    string = character != '"';
+                }
+                continue;
+            }
+            if rest.starts_with("/*") {
+                if let Some(start) = code_start.take()
+                    && start < cursor
+                {
+                    spans.push((start, cursor, line_end));
+                }
+                block_comment = true;
+                cursor += 2;
+            } else {
+                let character = rest.chars().next().unwrap();
+                if character == ';' || character == '!' {
+                    if let Some(start) = code_start.take()
+                        && start < cursor
+                    {
+                        spans.push((start, cursor, line_end));
+                    }
+                    break;
+                }
+                if character == '"' {
+                    string = true;
+                }
+                cursor += character.len_utf8();
+            }
+        }
+        if let Some(start) = code_start
+            && start < line_end
+            && cursor == line_end
+        {
+            spans.push((start, line_end, line_end));
+        }
+        if line_end == source.len() {
+            break;
+        }
+        line_start = line_end + 1;
+    }
+    spans
+}
+
+fn spans_intersect(start: usize, end: usize, span_start: usize, span_end: usize) -> bool {
+    start < span_end && span_start < end
 }
 
 fn channel_at_position(source: &str, offset: usize) -> Option<char> {
@@ -254,6 +382,15 @@ mod tests {
     }
 
     #[test]
+    fn rejects_hover_positions_in_voice_definitions_and_comments() {
+        let source = "@1 = { 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32, 33, 34, 35, 36, 37, 38, 39, 40, 41, 42, 43, 44, 45, 46, 47 }\n; A c4\nA c4 ; trailing comment\n";
+        assert!(at(source, 0, 8).is_none());
+        assert!(at(source, 1, 4).is_none());
+        assert!(at(source, 2, 9).is_none());
+        assert!(at(source, 2, 2).is_some());
+    }
+
+    #[test]
     fn measures_selected_tick_duration_and_uses_the_longest_parallel_track() {
         let source = "A l8 c d e4 f\nB c1\n";
         let selected = in_range(
@@ -285,6 +422,32 @@ mod tests {
             in_range(
                 source,
                 lsp_types::Range::new(Position::new(0, 5), Position::new(0, 2))
+            )
+            .is_none()
+        );
+    }
+
+    #[test]
+    fn rejects_selection_ranges_containing_only_voice_definitions_or_comments() {
+        let source = "@1 = { 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32, 33, 34, 35, 36, 37, 38, 39, 40, 41, 42, 43, 44, 45, 46, 47 }\n; A c4\nA c4 ; trailing comment\n";
+        assert!(
+            in_range(
+                source,
+                lsp_types::Range::new(Position::new(0, 0), Position::new(0, 16))
+            )
+            .is_none()
+        );
+        assert!(
+            in_range(
+                source,
+                lsp_types::Range::new(Position::new(1, 0), Position::new(1, 6))
+            )
+            .is_none()
+        );
+        assert!(
+            in_range(
+                source,
+                lsp_types::Range::new(Position::new(2, 5), Position::new(2, 23))
             )
             .is_none()
         );
