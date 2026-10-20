@@ -105,6 +105,12 @@
         "when": "editorTextFocus && editorLangId == mmlx"
       },
       {
+        "command": "editor.action.showHover",
+        "key": "ctrl+alt+t",
+        "mac": "cmd+alt+t",
+        "when": "editorTextFocus && editorLangId == mmlx"
+      },
+      {
         "command": "mmlx.toggleVoiceLock",
         "key": "ctrl+alt+l",
         "mac": "cmd+alt+l",
