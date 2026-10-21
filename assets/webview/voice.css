@@ -261,6 +261,10 @@ input:disabled, select:disabled { opacity: .6; }
 .envelope-handle.dragging { cursor: grabbing; opacity: 1; }
 .envelope-handle.dragging .handle-dot { fill: var(--operator-color); }
 .envelope-handle:focus-visible .handle-dot { stroke: var(--vscode-focusBorder, #39a9c7); stroke-width: 3; }
+.operator-context-menu { position: fixed; z-index: 1000; min-width: 220px; max-width: calc(100vw - 8px); max-height: calc(100vh - 8px); overflow: auto; padding: 4px; border: 1px solid var(--vscode-menu-border, var(--vscode-widget-border, #777)); border-radius: 4px; background: var(--vscode-menu-background, var(--vscode-editor-background, #fafafa)); color: var(--vscode-menu-foreground, var(--vscode-editor-foreground, #292929)); box-shadow: 0 4px 12px #0005; }
+.operator-context-menu-item { display: block; width: 100%; padding: 5px 10px; border: 0; background: transparent; color: inherit; text-align: left; font: inherit; cursor: pointer; }
+.operator-context-menu-item:hover, .operator-context-menu-item:focus-visible { background: var(--vscode-menu-selectionBackground, var(--vscode-list-hoverBackground, #ddd)); color: var(--vscode-menu-selectionForeground, var(--vscode-editor-foreground, #292929)); outline: none; }
+.operator-context-menu-item:disabled { opacity: .5; cursor: default; }
 .operator.disabled > svg { opacity: .3; }
 .operator.disabled .envelope { stroke-dasharray: 5 4; }
 svg text { fill: var(--vscode-descriptionForeground, #666); font: 11px var(--vscode-font-family, sans-serif); }

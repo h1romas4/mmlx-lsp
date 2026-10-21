@@ -94,7 +94,14 @@ export function createVoiceControls(root, onEdit = () => {}) {
 	let snapshot;
 	let drag;
 	let pendingVoice;
+	let operatorClipboard;
+	let operatorClipboardSource;
 	const algorithm = root.querySelector('#algorithm');
+	const operatorMenu = document.createElement('div');
+	operatorMenu.className = 'operator-context-menu';
+	operatorMenu.setAttribute('role', 'menu');
+	operatorMenu.hidden = true;
+	root.append(operatorMenu);
 	voiceLock.addEventListener('click', () => onEdit({ type: 'toggleVoiceLock' }));
 	for (let index = 0; index < 8; index++) {
 		const option = document.createElement('option');
@@ -223,10 +230,68 @@ export function createVoiceControls(root, onEdit = () => {}) {
 		const changes = handleFields[kind].filter(Boolean)
 			.filter(field => operator[field] !== original[field])
 			.map(field => ({ index: index * 11 + fields.indexOf(field), value: operator[field] }));
+		commitChanges(changes);
+	}
+
+	function commitChanges(changes) {
 		if (!changes.length) { render(snapshot); return; }
+		if (!snapshot?.editable || !Number.isInteger(snapshot.editToken)) { render(snapshot); return; }
 		const token = snapshot.editToken;
 		previewEdit(changes);
 		onEdit({ type: 'editVoice', token, changes });
+	}
+
+	function pasteOperatorParameters(targetIndexes) {
+		if (!operatorClipboard || !snapshot?.voice) { return; }
+		const changes = [];
+		for (const target of targetIndexes) {
+			const current = snapshot.voice.operators[target];
+			for (const field of fields) {
+				if (current[field] !== operatorClipboard[field]) {
+					changes.push({ index: target * 11 + fields.indexOf(field), value: operatorClipboard[field] });
+				}
+			}
+		}
+		commitChanges(changes);
+	}
+
+	function closeOperatorMenu() {
+		operatorMenu.hidden = true;
+		operatorMenu.replaceChildren();
+	}
+
+	function showOperatorMenu(index, event) {
+		event.preventDefault();
+		if (!snapshot?.voice || drag) { return; }
+		closeOperatorMenu();
+		const operatorLabel = target => `OP ${target + 1} (${algorithmConnections[snapshot.voice.algorithm].carriers.includes(target) ? 'Carrier' : 'Modulator'})`;
+		const addItem = (label, action, disabled = false) => {
+			const item = document.createElement('button');
+			item.type = 'button';
+			item.className = 'operator-context-menu-item';
+			item.setAttribute('role', 'menuitem');
+			item.textContent = label;
+			item.disabled = disabled;
+			item.addEventListener('click', () => {
+				action();
+				closeOperatorMenu();
+			});
+			operatorMenu.append(item);
+		};
+		addItem(`Copy ${operatorLabel(index)} parameters`, () => {
+			operatorClipboard = { ...snapshot.voice.operators[index] };
+			operatorClipboardSource = index;
+		});
+		const otherIndexes = elements.map((_element, target) => target).filter(target => target !== operatorClipboardSource);
+		const editable = !!snapshot.editable && Number.isInteger(snapshot.editToken);
+		addItem('Paste to all other operators', () => pasteOperatorParameters(otherIndexes), !operatorClipboard || !editable);
+		for (const target of otherIndexes) {
+			addItem(`Paste to ${operatorLabel(target)}`, () => pasteOperatorParameters([target]), !operatorClipboard || !editable);
+		}
+		operatorMenu.hidden = false;
+		operatorMenu.style.left = `${Math.max(0, Math.min(event.clientX, window.innerWidth - operatorMenu.offsetWidth))}px`;
+		operatorMenu.style.top = `${Math.max(0, Math.min(event.clientY, window.innerHeight - operatorMenu.offsetHeight))}px`;
+		operatorMenu.querySelector('button:not(:disabled)')?.focus();
 	}
 
 	function previewEdit(changes) {
@@ -248,6 +313,17 @@ export function createVoiceControls(root, onEdit = () => {}) {
 		}, true);
 	}
 
+	document.addEventListener('pointerdown', event => {
+		if (!operatorMenu.hidden && !operatorMenu.contains(event.target)) { closeOperatorMenu(); }
+	});
+	document.addEventListener('keydown', event => {
+		if (operatorMenu.hidden) { return; }
+		if (event.key === 'Escape') {
+			event.preventDefault();
+			closeOperatorMenu();
+		}
+	});
+
 	root.addEventListener('keydown', event => { if (event.key === 'Escape') { cancelDrag(); } });
 	window.addEventListener('blur', cancelDrag);
 	document.addEventListener('visibilitychange', () => { if (document.hidden) { cancelDrag(); } });
@@ -265,6 +341,7 @@ export function createVoiceControls(root, onEdit = () => {}) {
 			algorithm.value = index;
 			algorithm.dispatchEvent(new Event('change'));
 		});
+		figure.addEventListener('contextmenu', event => event.preventDefault());
 		figure.addEventListener('keydown', event => {
 			if (event.key === 'Enter' || event.key === ' ') {
 				event.preventDefault();
@@ -344,6 +421,7 @@ export function createVoiceControls(root, onEdit = () => {}) {
 		role.className = 'operator-role';
 		identity.append('OP ', badge, role);
 		const graph = svgElement('svg', { viewBox: '0 0 320 145', role: 'group', 'aria-label': `OP ${index + 1} normalized envelope` });
+		graph.addEventListener('contextmenu', event => showOperatorMenu(index, event));
 		const toggleBar = svgElement('svg', { class: 'operator-toggle-bar', viewBox: '0 0 86 22', role: 'group', 'aria-label': `OP ${index + 1} toggles` });
 		const opToggle = createOperatorToggle('op', 'OP', maskInputs[index], 50, 32);
 		graph.append(svgElement('path', { d: 'M 12 16 V 116 H 308 M 12 66 H 308', class: 'axis', fill: 'none' }));
@@ -475,7 +553,7 @@ export function createVoiceControls(root, onEdit = () => {}) {
 		heading.append(identity, toggleBar);
 		section.append(heading, graph, list);
 		operators.append(section);
-		elements.push({ section, heading, badge, role, curve, values, handles, toggles: [opToggle, ameToggle] });
+		elements.push({ section, heading, badge, role, graph, curve, values, handles, toggles: [opToggle, ameToggle] });
 	}
 
 	function envelope(operator) {

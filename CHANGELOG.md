@@ -4,6 +4,10 @@ All notable changes to the "mmlx-lsp" extension will be documented in this file.
 
 ## [Unreleased]
 
+- Copy FM Voice operator parameters internally and paste them to multiple other operators from the envelope context menu.
+- Identify each operator as a carrier or modulator in the envelope context menu.
+- Suppress the context menu on FM Voice algorithm diagrams.
+
 ## [0.27.0] - 2026-10-21
 
 - Show MML track and selection tick lengths on hover, calculated on demand.

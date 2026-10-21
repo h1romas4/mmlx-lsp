@@ -2319,9 +2319,45 @@ suite('mmlx extension', () => {
 				renderVoice();
 				check(voiceLabel.hidden && voiceLabel.textContent === '', 'Voice labels clear when no name is defined');
 				const sections = [...document.querySelectorAll('#operators .operator')];
+				const copiedOperator = { ar: 22, d1r: 10, d2r: 8, rr: 6, d1l: 4, tl: 47, ks: 2, mul: 12, dt1: 3, dt2: 1, ame: 1 };
+				const emptyOperator = { ar: 0, d1r: 0, d2r: 0, rr: 0, d1l: 0, tl: 0, ks: 0, mul: 0, dt1: 0, dt2: 0, ame: 0 };
+				send({ type: 'voice', editable: true, editToken: 42, source: 'test.mml',
+					voice: { number: 1, algorithm: 2, feedback: 7, operatorMask: 15,
+						operators: [copiedOperator, emptyOperator, emptyOperator, emptyOperator] } });
+				const operatorMenu = document.querySelector('.operator-context-menu');
+				const openOperatorMenu = index => sections[index]
+					.querySelector('svg[aria-label^="OP "][aria-label$=" normalized envelope"]')
+					.dispatchEvent(new MouseEvent('contextmenu', { bubbles: true, cancelable: true, clientX: 10, clientY: 10 }));
+				openOperatorMenu(0);
+				check(operatorMenu.hidden === false && [...operatorMenu.querySelectorAll('button')]
+					.some(button => button.textContent === 'Copy OP 1 (Modulator) parameters'),
+				'Operator copy menu must identify its source as a carrier or modulator');
+				[...operatorMenu.querySelectorAll('button')].find(button => button.textContent === 'Copy OP 1 (Modulator) parameters').click();
+				openOperatorMenu(1);
+				[...operatorMenu.querySelectorAll('button')].find(button => button.textContent === 'Paste to all other operators').click();
+				const operatorPaste = messages.at(-1);
+				check(operatorPaste.type === 'editVoice' && operatorPaste.token === 42 && operatorPaste.changes.length === 33
+					&& operatorPaste.changes.every(change => change.index >= 11)
+					&& operatorPaste.changes.every(change => change.value === copiedOperator[
+						['ar', 'd1r', 'd2r', 'rr', 'd1l', 'tl', 'ks', 'mul', 'dt1', 'dt2', 'ame'][change.index % 11]]),
+				'Paste to all other operators must submit one edit containing all copied parameters');
+				send({ type: 'voice', editable: true, editToken: 42, source: 'test.mml',
+					voice: { number: 1, algorithm: 2, feedback: 7, operatorMask: 15,
+						operators: [copiedOperator, emptyOperator, emptyOperator, emptyOperator] } });
+				openOperatorMenu(3);
+				[...operatorMenu.querySelectorAll('button')].find(button => button.textContent === 'Paste to OP 2 (Modulator)').click();
+				const singleOperatorPaste = messages.at(-1);
+				check(singleOperatorPaste.type === 'editVoice' && singleOperatorPaste.token === 42
+					&& singleOperatorPaste.changes.length === 11
+					&& singleOperatorPaste.changes.every(change => change.index >= 11 && change.index < 22),
+				"Paste to an individual operator must submit only that operator's parameters");
+				renderVoice();
 				const algorithmSelect = document.querySelector('#algorithm');
 				check(algorithmSelect.closest('label').hidden, 'Redundant algorithm dropdown must be hidden');
 				const algorithmDiagram = document.querySelector('[data-algorithm="5"]');
+				const algorithmContextMenu = new MouseEvent('contextmenu', { bubbles: true, cancelable: true });
+				algorithmDiagram.dispatchEvent(algorithmContextMenu);
+				check(algorithmContextMenu.defaultPrevented, 'Right-clicking an algorithm diagram must not show a context menu');
 				algorithmDiagram.dispatchEvent(new MouseEvent('click', { bubbles: true }));
 				check(messages.at(-1).type === 'editVoice' && messages.at(-1).index === 44 && messages.at(-1).value === 5, 'Algorithm diagrams must remain selectable without the dropdown');
 				renderVoice();

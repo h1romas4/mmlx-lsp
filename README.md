@@ -52,6 +52,7 @@ Dedicated bottom panel opened with **mmlx: Show mmlx Panel**.
 ### FM Voice
 
 - **FM Voice editing** for parameters, algorithms, and envelopes directly in the source by placing the cursor in an `@` definition.
+- **Operator parameter copy/paste:** Right-click an operator envelope to copy its parameters, then paste them to all other operators or an individual operator.
 - **Emulation output:** Select **Emulation** under **Keyboard > Output** to play up to eight notes with the on-screen keyboard or MIDI-IN.
 - **NanoDrive8 output:** Connect NanoDrive8 in **Settings**, then select **NanoDrive8** and connect under **Keyboard > Output**.
 - **Chip State MML:** Test short MML phrases with the displayed voice using Enter or Play/Stop.
