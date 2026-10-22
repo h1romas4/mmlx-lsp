@@ -2351,6 +2351,13 @@ suite('mmlx extension', () => {
 					&& singleOperatorPaste.changes.length === 11
 					&& singleOperatorPaste.changes.every(change => change.index >= 11 && change.index < 22),
 				"Paste to an individual operator must submit only that operator's parameters");
+				send({ type: 'voice', editable: true, editToken: 42, source: 'test.mml',
+					voice: { number: 2, algorithm: 2, feedback: 7, operatorMask: 15,
+						operators: [copiedOperator, emptyOperator, emptyOperator, emptyOperator] } });
+				openOperatorMenu(1);
+				check([...operatorMenu.querySelectorAll('button')].filter(button => button.textContent.startsWith('Paste'))
+					.every(button => button.disabled),
+				'Changing voices must clear copied operator parameters');
 				renderVoice();
 				const algorithmSelect = document.querySelector('#algorithm');
 				check(algorithmSelect.closest('label').hidden, 'Redundant algorithm dropdown must be hidden');

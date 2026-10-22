@@ -595,6 +595,12 @@ export function createVoiceControls(root, onEdit = () => {}) {
 	function render(message) {
 		if (message?.type !== 'voice') { return; }
 		releaseDrag();
+		if (!snapshot?.voice || !message.voice || snapshot.source !== message.source
+			|| snapshot.voice.number !== message.voice.number) {
+			operatorClipboard = undefined;
+			operatorClipboardSource = undefined;
+			closeOperatorMenu();
+		}
 		if (pendingVoice && message.editing && !message.error && !message.retained
 			&& message.source === pendingVoice.source && message.voice?.number === pendingVoice.voice.number) {
 			message = { ...message, voice: pendingVoice.voice };

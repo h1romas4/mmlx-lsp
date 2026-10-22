@@ -4,6 +4,8 @@ All notable changes to the "mmlx-lsp" extension will be documented in this file.
 
 ## [Unreleased]
 
+- Clear copied FM Voice operator parameters when switching voices.
+
 ## [0.28.0] - 2026-10-21
 
 - Copy FM Voice operator parameters internally and paste them to multiple other operators from the envelope context menu.
