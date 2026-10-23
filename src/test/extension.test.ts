@@ -2359,6 +2359,26 @@ suite('mmlx extension', () => {
 					.every(button => button.disabled),
 				'Changing voices must clear copied operator parameters');
 				renderVoice();
+				const op1Ar = sections[0].querySelector('input[aria-label="OP 1 AR"]');
+				const op1D1r = sections[0].querySelector('input[aria-label="OP 1 D1R"]');
+				op1Ar.focus();
+				const focusNext = new KeyboardEvent('keydown', { key: 'ArrowRight', altKey: true, bubbles: true, cancelable: true });
+				op1Ar.dispatchEvent(focusNext);
+				check(focusNext.defaultPrevented && document.activeElement === op1D1r,
+					'Alt+ArrowRight must focus the adjacent FM Voice parameter without changing its value');
+				const focusPrevious = new KeyboardEvent('keydown', { key: 'ArrowLeft', altKey: true, bubbles: true, cancelable: true });
+				op1D1r.dispatchEvent(focusPrevious);
+				check(focusPrevious.defaultPrevented && document.activeElement === op1Ar,
+					'Alt+ArrowLeft must focus the adjacent FM Voice parameter in the opposite direction');
+				const op1D1l = sections[0].querySelector('input[aria-label="OP 1 D1L"]');
+				const focusDown = new KeyboardEvent('keydown', { key: 'ArrowDown', altKey: true, bubbles: true, cancelable: true });
+				op1Ar.dispatchEvent(focusDown);
+				check(focusDown.defaultPrevented && document.activeElement === op1D1l,
+					'Alt+ArrowDown must focus the parameter below the current FM Voice control');
+				const focusUp = new KeyboardEvent('keydown', { key: 'ArrowUp', altKey: true, bubbles: true, cancelable: true });
+				op1D1l.dispatchEvent(focusUp);
+				check(focusUp.defaultPrevented && document.activeElement === op1Ar,
+					'Alt+ArrowUp must focus the parameter above the current FM Voice control');
 				const algorithmSelect = document.querySelector('#algorithm');
 				check(algorithmSelect.closest('label').hidden, 'Redundant algorithm dropdown must be hidden');
 				const algorithmDiagram = document.querySelector('[data-algorithm="5"]');

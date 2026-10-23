@@ -113,6 +113,7 @@ export function createVoiceControls(root, onEdit = () => {}) {
 	function bindInput(input, index, readValue = () => input.type === 'checkbox' ? Number(input.checked)
 		: input.tagName === 'SELECT' ? Number(input.value) : input.valueAsNumber) {
 		input.dataset.parameter = index;
+		input.setAttribute('aria-keyshortcuts', 'Alt+ArrowUp Alt+ArrowDown Alt+ArrowLeft Alt+ArrowRight');
 		input.disabled = true;
 		inputs.push(input);
 		input.addEventListener('change', () => {
@@ -304,8 +305,39 @@ export function createVoiceControls(root, onEdit = () => {}) {
 		render({ ...snapshot, voice, editable: false, editing: true });
 	}
 
+	function moveParameterFocus(event) {
+		if (!event.altKey || event.ctrlKey || event.metaKey || event.shiftKey
+			|| !['ArrowLeft', 'ArrowRight', 'ArrowUp', 'ArrowDown'].includes(event.key)
+			|| !inputs.includes(event.target) || event.target.disabled
+			|| event.target.getAttribute('aria-disabled') === 'true') { return false; }
+		const current = event.target.getBoundingClientRect();
+		const horizontal = event.key === 'ArrowLeft' || event.key === 'ArrowRight';
+		const direction = event.key === 'ArrowLeft' || event.key === 'ArrowUp' ? -1 : 1;
+		const currentPrimary = horizontal ? current.left + current.width / 2 : current.top + current.height / 2;
+		const currentSecondary = horizontal ? current.top + current.height / 2 : current.left + current.width / 2;
+		const nearest = inputs
+			.filter(input => input !== event.target && !input.disabled && input.getAttribute('aria-disabled') !== 'true'
+				&& input.getClientRects().length > 0)
+			.map(input => {
+				const rect = input.getBoundingClientRect();
+				const primary = horizontal ? rect.left + rect.width / 2 : rect.top + rect.height / 2;
+				const secondary = horizontal ? rect.top + rect.height / 2 : rect.left + rect.width / 2;
+				const distance = (primary - currentPrimary) * direction;
+				return { input, distance, score: distance + Math.abs(secondary - currentSecondary) * 2 };
+			})
+			.filter(candidate => candidate.distance > 0)
+			.sort((a, b) => a.score - b.score)[0];
+		if (nearest) { nearest.input.focus(); }
+		return true;
+	}
+
 	for (const type of ['pointerdown', 'click', 'keydown', 'beforeinput']) {
 		voicePanel.addEventListener(type, event => {
+			if (type === 'keydown' && moveParameterFocus(event)) {
+				event.preventDefault();
+				event.stopImmediatePropagation();
+				return;
+			}
 			if (!voicePanel.classList.contains('voice-editing') || (type === 'keydown' && event.key === 'Tab')) { return; }
 			if (!event.target.closest('[data-parameter], .algorithm-diagram, .envelope-handle')) { return; }
 			event.preventDefault();

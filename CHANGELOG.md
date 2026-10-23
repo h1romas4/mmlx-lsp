@@ -4,6 +4,7 @@ All notable changes to the "mmlx-lsp" extension will be documented in this file.
 
 ## [Unreleased]
 
+- Navigate between FM Voice parameter controls with Alt+Arrow keys.
 - Clear copied FM Voice operator parameters when switching voices.
 
 ## [0.28.0] - 2026-10-21
