@@ -32,11 +32,12 @@ export type NanoDriveAdpcmMode = 'through' | 'resample' | 'lpf';
 export type NanoDriveCodec = (params: { operation: 'encode'; command: NanoDriveCommand; requestId: number; payload: number[] }
     | { operation: 'decode'; body: number[]; request: number[] }
     | { operation: 'audition'; session: number; requestId: number; command: NanoDriveInput }
-    | { operation: 'upload'; asset: 'source' | 'pdx'; offset: number; bytes: number[] }
-    | { operation: 'playbackInfo' | 'playbackStop' }
+    | { operation: 'upload'; asset: 'source' | 'mdx' | 'pdx'; offset: number; bytes: number[] }
+    | { operation: 'playbackInfo' | 'playbackMdxInfo' | 'playbackStop' }
     | { operation: 'sourceTraceInit'; looped: boolean }
     | { operation: 'sourceTraceNext'; until: number }
     | { operation: 'playbackInit'; looped: boolean; adpcmMode?: NanoDriveAdpcmMode; muted?: number }
+    | { operation: 'playbackMdxInit'; looped: boolean; adpcmMode?: NanoDriveAdpcmMode; muted?: number }
     | { operation: 'playbackNext'; requestId: number }
     | { operation: 'playbackFilter'; bytes: number[] }
     | { operation: 'playbackPrepare'; bytes: number[]; position: number }
@@ -256,7 +257,7 @@ export class NanoDriveConnection {
         return stopping.finally(() => { if (this.voiceTestStopping === stopping) { this.voiceTestStopping = undefined; } });
     }
 
-    async startPlayback(source: string, looped: boolean, loadPdx: (name: string) => Promise<Uint8Array>,
+    async startPlayback(source: string | Uint8Array, looped: boolean, loadPdx: (name: string) => Promise<Uint8Array>,
         options: { adpcmMode?: NanoDriveAdpcmMode; pdxConfigured?: boolean } = {}): Promise<void> {
         if (this.hardwarePlayback.busy || !this.snapshot.connected) { return; }
         await this.playbackStopping;
@@ -267,9 +268,15 @@ export class NanoDriveConnection {
         this.hardwarePlayback = { busy: true, playing: false, loading: true, position: 0, finished: false, error: '' };
         this.onPlayback(this.playbackState);
         const check = () => { if (token !== this.playbackGeneration || connection !== this.generation) { throw new Error('NanoDrive8 playback canceled.'); } };
+        const binaryMdx = source instanceof Uint8Array;
         const upload = async (asset: 'source' | 'pdx', bytes: Uint8Array) => {
             for (let offset = 0; offset < Math.max(1, bytes.length); offset += 8192) {
                 check(); await this.codec({ operation: 'upload', asset, offset, bytes: Array.from(bytes.subarray(offset, offset + 8192)) }); check();
+            }
+        };
+        const uploadMdx = async (bytes: Uint8Array) => {
+            for (let offset = 0; offset < Math.max(1, bytes.length); offset += 8192) {
+                check(); await this.codec({ operation: 'upload', asset: 'mdx', offset, bytes: Array.from(bytes.subarray(offset, offset + 8192)) }); check();
             }
         };
         let poll: Promise<void> | undefined;
@@ -287,13 +294,16 @@ export class NanoDriveConnection {
         let producing: Promise<void> | undefined; let productionFailure: unknown;
         try {
             await this.disconnectOutput(); check();
-            await upload('source', new TextEncoder().encode(source));
+            if (binaryMdx) { await uploadMdx(source); }
+            else { await upload('source', new TextEncoder().encode(source)); }
             await upload('pdx', new Uint8Array(0));
-            const info = await this.codec({ operation: 'playbackInfo' }); check();
+            const info = await this.codec({ operation: binaryMdx ? 'playbackMdxInfo' : 'playbackInfo' }); check();
             if (info && 'pdxName' in info && (info.pdxName || (info.audio && options.pdxConfigured))) {
                 const pdx = await loadPdx(info.pdxName ?? ''); check(); await upload('pdx', pdx);
             }
-            const prepared = await this.codec({ operation: 'playbackInit', looped, adpcmMode: options.adpcmMode ?? 'resample', ...(this.playbackMuted ? { muted: this.playbackMuted } : {}) }); check();
+            const prepared = await this.codec(binaryMdx
+                ? { operation: 'playbackMdxInit', looped, adpcmMode: options.adpcmMode ?? 'resample', ...(this.playbackMuted ? { muted: this.playbackMuted } : {}) }
+                : { operation: 'playbackInit', looped, adpcmMode: options.adpcmMode ?? 'resample', ...(this.playbackMuted ? { muted: this.playbackMuted } : {}) }); check();
             if (!prepared || !('audio' in prepared) || typeof prepared.audio !== 'boolean') { throw new Error('Invalid NanoDrive8 playback mode.'); }
             resetting = true;
             await this.request('reset'); resetting = false; check();

@@ -21,6 +21,7 @@ import { PlaybackSourceTracker, selectionTraceSource } from '../playbackSource';
 import { requestMmlPlaybackState, type MmlPlaybackStateScan } from '../mmlPlaybackState';
 import { registerStepifySelectionCommand } from '../stepify';
 import { registerTrackLengthHover } from '../trackLengthHover';
+import { parseMdxMetadata } from '../mdxEditor';
 import { WasiMcpHttpBridge } from '../mcpServer';
 import type { NanoDriveConnection } from '../nanodrive';
 import { Port as NanoDriveTestPort, codec as nanoDriveTestCodec } from './nanodrive.test';
@@ -208,6 +209,15 @@ function waitForDiagnostics(uri: vscode.Uri, count: number): Promise<void> {
 }
 
 suite('mmlx extension', () => {
+	test('MDX binary viewer reads Shift JIS title and referenced PDX metadata', () => {
+		const bytes = Uint8Array.from([
+			0x83, 0x65, 0x83, 0x58, 0x83, 0x67, 0x0d, 0x0a, 0x1a,
+			...Buffer.from('SAMPLE.PDX', 'ascii'), 0
+		]);
+		assert.deepStrictEqual(parseMdxMetadata(bytes), { title: 'テスト', pdxName: 'SAMPLE.PDX' });
+		assert.strictEqual(parseMdxMetadata(Uint8Array.from([0, 1, 2])), undefined);
+	});
+
 	test('MML playback state requests use UTF-8 byte offsets for the Rust parser', async () => {
 		const source = '🎵 A t120';
 		let request: { method: string; params: { source: string; offset: number } } | undefined;

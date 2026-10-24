@@ -111,6 +111,40 @@ pub enum Playback {
 }
 
 impl Playback {
+    pub fn from_mdx(
+        mdx_bytes: Vec<u8>,
+        pdx: Option<Vec<u8>>,
+        looped: bool,
+        adpcm_mode: AdpcmMode,
+    ) -> Result<Self, String> {
+        let package = MdxPackage::parse_owned(mdx_bytes, pdx).map_err(|error| error.to_string())?;
+        let audio = uses_pcm(&package.mdx);
+        if audio
+            && package.pdx.is_none()
+            && let Some(name) = package.pdx_name()
+        {
+            return Err(format!("PDX file required: {name}"));
+        }
+        Ok(if audio {
+            Self::Audio(AudioPlayback::new(package, looped, adpcm_mode))
+        } else {
+            Self::Fm(FmPlayback::new(package, looped))
+        })
+    }
+
+    pub fn info_mdx(mdx_bytes: &[u8]) -> Result<(bool, Option<String>), String> {
+        let package = MdxPackage::parse(mdx_bytes, None).map_err(|error| error.to_string())?;
+        let audio = uses_pcm(&package.mdx);
+        Ok((
+            audio,
+            if audio {
+                package.pdx_name().map(ToOwned::to_owned)
+            } else {
+                None
+            },
+        ))
+    }
+
     pub fn new(
         source: &str,
         pdx: Option<Vec<u8>>,
@@ -921,6 +955,45 @@ mod tests {
         assert!(codec.signal.abs() <= 2);
         assert!(matches!(codec.pair([0, 0]), 0x80 | 0x08));
     }
+
+    #[test]
+    fn binary_mdx_playback_produces_fm_registers_and_timed_keys() {
+        let parsed = mmlx::mdx::parse("A t120 o4 l8 cdef").unwrap();
+        let mdx = mmlx::mdx::compile(&parsed).unwrap().to_bytes().unwrap();
+        assert_eq!(Playback::info_mdx(&mdx).unwrap(), (false, None));
+        let mut playback =
+            Playback::from_mdx(mdx, None, false, AdpcmMode::Resample).unwrap();
+        let mut keys = Vec::new();
+        let mut data = Vec::new();
+        loop {
+            let chunk = playback.next(0).unwrap();
+            keys.extend(chunk.keys);
+            data.extend(chunk.bytes);
+            if chunk.ended { break; }
+        }
+        assert!(!data.is_empty());
+        assert!(keys.iter().any(|event| event.note == Some(60)));
+    }
+
+    #[test]
+    fn binary_mdx_playback_uses_pdx_for_pcm_tracks() {
+        let parsed = mmlx::mdx::parse("P p1 F2 o1 c1").unwrap();
+        let mdx = mmlx::mdx::compile(&parsed).unwrap().to_bytes().unwrap();
+        let (audio, _) = Playback::info_mdx(&mdx).unwrap();
+        assert!(audio);
+        let mut builder = soundlog::mdx::pdx::PdxBuilder::new();
+        builder.set_sample(0, 9, vec![0x7f; 32768]).unwrap();
+        let mut playback = Playback::from_mdx(
+            mdx,
+            Some(builder.finalize().to_bytes()),
+            false,
+            AdpcmMode::Through,
+        )
+        .unwrap();
+        assert!(playback.audio());
+        assert!(!playback.next(0).unwrap().bytes.is_empty());
+    }
+
     #[test]
     fn playback_produces_bounded_monotonic_fm_data_and_end_frames() {
         let parsed = mmlx::mdx::parse("A t120 o4 l4 c").unwrap();

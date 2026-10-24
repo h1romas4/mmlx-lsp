@@ -175,7 +175,9 @@ async function playbackAction(action) {
 			if (playbackMode === 'nanodrive8' && action === 'playFromCursor') { return; }
 			const sampleRate = playbackMode === 'nanodrive8' ? undefined : await playbackAudio.connect();
 			if (operation !== playbackOperation) { return; }
-			vscode.postMessage({ type: 'playbackAction', action, mode: playbackMode, id, document, sampleRate, browser: playbackMode === 'emulation', looped: playbackControls.looped, volume: playbackControls.volume, muted: playbackControls.outputMuted });
+			vscode.postMessage({ type: 'playbackAction', action, mode: playbackMode, id, document, format: playbackState?.format,
+				sampleRate, browser: playbackMode === 'emulation' && playbackState?.format !== 'mdx',
+				looped: playbackControls.looped, volume: playbackControls.volume, muted: playbackControls.outputMuted });
 		} else {
 			if (action === 'pause') { await playbackAudio.pause(); }
 			else if (action === 'resume') { await playbackAudio.resume(); }

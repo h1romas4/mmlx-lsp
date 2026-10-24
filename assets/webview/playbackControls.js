@@ -69,7 +69,7 @@ export function createPlaybackControls(root, onModeChange = () => {}, onAction =
 		const available = state?.available && (!hardware || nanoDriveAvailable);
 		channels?.setAvailable(Boolean(available) && !loading && (!state?.busy || state?.playing || state?.paused));
 		const busy = state?.playing || state?.paused || state?.loading || state?.busy;
-		setText(source, state?.source || 'No MML selected');
+		setText(source, state?.source || 'No file selected');
 		if (!loading || loadingVisible) {
 			const message = loadingVisible ? 'Preparing' : state?.playing ? 'Playing' : state?.paused ? 'Paused' : available ? 'Stopped' : 'Unavailable';
 			if (status.textContent !== message) {
@@ -78,7 +78,7 @@ export function createPlaybackControls(root, onModeChange = () => {}, onAction =
 			}
 		}
 		play.disabled = !available || loading || state?.busy || (hardware && state?.playing === true) || (state?.playing === true && state?.finished === true);
-		cursor.disabled = !available || loading || hardware;
+		cursor.disabled = !available || loading || hardware || state?.format === 'mdx';
 		if (!loading) {
 			const title = !hardware && state?.playing ? 'Pause' : state?.paused ? 'Resume' : 'Play';
 			if (play.title !== title) { play.title = title; play.setAttribute('aria-label', title); }

@@ -153,7 +153,7 @@ export class NanoDriveThreadClient implements Pick<NanoDriveConnection, Method |
 		if (Number.isFinite(args[0]) && args[0] >= 0 && args[0] <= 1) { this.volume = args[0]; }
 		return this.call('setVolume', args);
 	}
-	startPlayback(source: string, looped: boolean, loadPdx: (name: string) => Promise<Uint8Array>, options?: Parameters<NanoDriveConnection['startPlayback']>[3]): Promise<void> {
+	startPlayback(source: string | Uint8Array, looped: boolean, loadPdx: (name: string) => Promise<Uint8Array>, options?: Parameters<NanoDriveConnection['startPlayback']>[3]): Promise<void> {
 		return this.call('startPlayback', [source, looped, options], loadPdx);
 	}
 	stopPlayback(...args: Parameters<NanoDriveConnection['stopPlayback']>): Promise<void> { return this.worker ? this.call('stopPlayback', args) : Promise.resolve(); }

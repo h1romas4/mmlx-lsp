@@ -271,6 +271,61 @@ impl Playback {
         )
     }
 
+    pub fn with_mdx(
+        mdx_bytes: Vec<u8>,
+        sample_rate: u32,
+        looped: bool,
+        pdx: Option<Vec<u8>>,
+        adpcm_mode: AdpcmMode,
+    ) -> Result<Self, String> {
+        let package = MdxPackage::parse_owned(mdx_bytes, pdx).map_err(|error| error.to_string())?;
+        if package.pdx.is_none()
+            && package
+                .mdx
+                .tracks
+                .iter()
+                .skip(8)
+                .flatten()
+                .any(|command| matches!(command, MdxCommand::Note(_)))
+            && let Some(name) = package.pdx_name()
+        {
+            return Err(format!("PDX file required: {name}"));
+        }
+        let options = MdxToVgmOptions {
+            adpcm_mode,
+            loop_count: if looped { None } else { Some(1) },
+            ..MdxToVgmOptions::default()
+        };
+        Self::with_document(
+            package,
+            sample_rate,
+            options,
+            None,
+            Rc::new(RefCell::new(Ym2151::default())),
+            None,
+        )
+    }
+
+    pub fn info_mdx(mdx_bytes: &[u8]) -> Result<(bool, Option<String>), String> {
+        let package =
+            MdxPackage::parse(mdx_bytes, None).map_err(|error| error.to_string())?;
+        let audio = package
+            .mdx
+            .tracks
+            .iter()
+            .skip(8)
+            .flatten()
+            .any(|command| matches!(command, MdxCommand::Note(_)));
+        Ok((
+            audio,
+            if audio {
+                package.pdx_name().map(ToOwned::to_owned)
+            } else {
+                None
+            },
+        ))
+    }
+
     fn package(source: &str, pdx: Option<Vec<u8>>) -> Result<MdxPackage, String> {
         let parsed = mmlx::mdx::parse(source).map_err(|error| error.to_string())?;
         let mdx = mmlx::mdx::compile(&parsed).map_err(|error| error.to_string())?;
@@ -503,6 +558,7 @@ mod tests {
             for _ in 0..4 {
                 playback.render().unwrap();
             }
+
             playback.set_muted(if mask == 1 { 128 } else { 1 }).unwrap();
             assert!(energy(playback.render().unwrap()) > 1.0);
             playback.set_muted(mask).unwrap();
@@ -524,6 +580,45 @@ mod tests {
                     .any(|event| event.note == Some(60))
             );
         }
+    }
+
+    #[test]
+    fn binary_mdx_playback_parses_the_file_and_renders_fm_audio() {
+        let parsed = mmlx::mdx::parse(SOURCE).unwrap();
+        let mdx = mmlx::mdx::compile(&parsed).unwrap().to_bytes().unwrap();
+        assert_eq!(Playback::info_mdx(&mdx).unwrap(), (false, None));
+        let mut playback =
+            Playback::with_mdx(mdx, 48000, false, None, AdpcmMode::Resample).unwrap();
+        let pcm = playback.render().unwrap();
+        assert!(pcm.chunks_exact(4).any(|sample| {
+            f32::from_le_bytes(sample.try_into().unwrap()).abs() > 0.0001
+        }));
+    }
+
+    #[test]
+    fn binary_mdx_playback_loads_pdx_for_pcm_tracks() {
+        let parsed = mmlx::mdx::parse("P p1 F2 o1 c1").unwrap();
+        let mdx = mmlx::mdx::compile(&parsed).unwrap().to_bytes().unwrap();
+        let (audio, _) = Playback::info_mdx(&mdx).unwrap();
+        assert!(audio);
+
+        let mut builder = soundlog::mdx::pdx::PdxBuilder::new();
+        builder.set_sample(0, 9, vec![0x7f; 32768]).unwrap();
+        let mut playback = Playback::with_mdx(
+            mdx,
+            48000,
+            false,
+            Some(builder.finalize().to_bytes()),
+            AdpcmMode::Through,
+        )
+        .unwrap();
+        let mut pcm = Vec::new();
+        while !playback.finished() {
+            pcm.extend(playback.render().unwrap());
+        }
+        assert!(pcm.chunks_exact(4).any(|sample| {
+            f32::from_le_bytes(sample.try_into().unwrap()).abs() > 0.0001
+        }));
     }
 
     #[test]

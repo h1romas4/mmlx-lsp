@@ -44,6 +44,11 @@ enum Command {
     PlaybackInfo {
         source: String,
     },
+    Mdx {
+        offset: usize,
+        bytes: Vec<u8>,
+    },
+    PlaybackMdxInfo,
     Pdx {
         offset: usize,
         bytes: Vec<u8>,
@@ -53,6 +58,14 @@ enum Command {
         #[serde(default)]
         looped: bool,
         cursor: Option<usize>,
+        #[serde(rename = "adpcmMode")]
+        adpcm_mode: Option<String>,
+        #[serde(default)]
+        muted: u16,
+    },
+    PlaybackMdx {
+        #[serde(default)]
+        looped: bool,
         #[serde(rename = "adpcmMode")]
         adpcm_mode: Option<String>,
         #[serde(default)]
@@ -116,6 +129,7 @@ pub fn run(input: impl BufRead, mut output: impl Write) -> Result<(), String> {
 pub struct Session {
     engine: Option<Emulation>,
     playback: Option<Playback>,
+    mdx: Vec<u8>,
     pdx: Vec<u8>,
     output_rate: u32,
 }
@@ -128,6 +142,7 @@ impl Session {
         let Self {
             engine,
             playback,
+            mdx,
             pdx,
             output_rate,
         } = self;
@@ -190,6 +205,24 @@ impl Session {
                         .map_err(|error| error.to_string())?;
                 frame(&mut output, 5, &info).map_err(|error| error.to_string())?;
             }
+            Command::Mdx { offset, bytes } => {
+                if offset == 0 {
+                    mdx.clear();
+                }
+                if offset != mdx.len()
+                    || bytes.len() > 8192
+                    || mdx.len().saturating_add(bytes.len()) > 16 * 1024 * 1024
+                {
+                    return Err("Invalid MDX upload".into());
+                }
+                mdx.extend(bytes);
+            }
+            Command::PlaybackMdxInfo => {
+                let (audio, name) = Playback::info_mdx(mdx)?;
+                let info = serde_json::to_vec(&serde_json::json!({ "audio": audio, "pdxName": name }))
+                    .map_err(|error| error.to_string())?;
+                frame(&mut output, 5, &info).map_err(|error| error.to_string())?;
+            }
             Command::Pdx { offset, bytes } => {
                 if offset == 0 {
                     pdx.clear();
@@ -225,6 +258,32 @@ impl Session {
                     *output_rate,
                     looped,
                     cursor,
+                    asset,
+                    mode,
+                )?);
+                playback.as_mut().unwrap().set_muted(muted)?;
+                playback_state(&mut output, playback.as_ref().unwrap())?;
+            }
+            Command::PlaybackMdx {
+                looped,
+                adpcm_mode,
+                muted,
+            } => {
+                let mode = match adpcm_mode.as_deref().unwrap_or("resample") {
+                    "through" => AdpcmMode::Through,
+                    "resample" => AdpcmMode::Resample,
+                    "lpf" => AdpcmMode::Lpf,
+                    _ => return Err("Invalid ADPCM mode".into()),
+                };
+                let asset = if pdx.is_empty() {
+                    None
+                } else {
+                    Some(std::mem::take(pdx))
+                };
+                *playback = Some(Playback::with_mdx(
+                    std::mem::take(mdx),
+                    *output_rate,
+                    looped,
                     asset,
                     mode,
                 )?);

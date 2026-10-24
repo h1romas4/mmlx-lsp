@@ -38,6 +38,7 @@ enum Operation {
         bytes: Vec<u8>,
     },
     PlaybackInfo,
+    PlaybackMdxInfo,
     SourceTraceInit {
         looped: bool,
     },
@@ -45,6 +46,13 @@ enum Operation {
         until: f64,
     },
     PlaybackInit {
+        looped: bool,
+        #[serde(default)]
+        muted: u16,
+        #[serde(rename = "adpcmMode")]
+        adpcm_mode: Option<String>,
+    },
+    PlaybackMdxInit {
         looped: bool,
         #[serde(default)]
         muted: u16,
@@ -106,6 +114,7 @@ enum Operation {
 #[serde(rename_all = "camelCase")]
 enum Asset {
     Source,
+    Mdx,
     Pdx,
 }
 
@@ -164,6 +173,7 @@ enum Input {
 pub struct Bridge {
     session: Option<(u32, Audition)>,
     source: Vec<u8>,
+    mdx: Vec<u8>,
     pdx: Vec<u8>,
     playback: Option<playback::Playback>,
     mute: playback::MuteFilter,
@@ -420,6 +430,7 @@ impl Bridge {
             } => {
                 let target = match asset {
                     Asset::Source => &mut self.source,
+                    Asset::Mdx => &mut self.mdx,
                     Asset::Pdx => &mut self.pdx,
                 };
                 if offset == 0 {
@@ -449,6 +460,12 @@ impl Bridge {
                     json!({ "audio":audio,"pdxName":if audio { package.pdx_name() } else { None } }),
                 ))
             }
+            Operation::PlaybackMdxInfo => {
+                let (audio, name) = playback::Playback::info_mdx(&self.mdx)?;
+                Ok(Output::Json(
+                    json!({ "audio":audio,"pdxName":if audio { name } else { None } }),
+                ))
+            }
             Operation::PlaybackInit {
                 looped,
                 muted,
@@ -464,6 +481,33 @@ impl Bridge {
                     std::str::from_utf8(&self.source).map_err(|error| error.to_string())?;
                 self.playback = Some(playback::Playback::new(
                     source,
+                    if self.pdx.is_empty() {
+                        None
+                    } else {
+                        Some(std::mem::take(&mut self.pdx))
+                    },
+                    looped,
+                    adpcm_mode,
+                )?);
+                self.mute = playback::MuteFilter::default();
+                self.mute.set_muted(muted, 0, None)?;
+                Ok(Output::Json(
+                    json!({"audio":self.playback.as_ref().unwrap().audio()}),
+                ))
+            }
+            Operation::PlaybackMdxInit {
+                looped,
+                muted,
+                adpcm_mode,
+            } => {
+                let adpcm_mode = match adpcm_mode.as_deref().unwrap_or("resample") {
+                    "through" => AdpcmMode::Through,
+                    "resample" => AdpcmMode::Resample,
+                    "lpf" => AdpcmMode::Lpf,
+                    _ => return Err("Invalid ADPCM mode".into()),
+                };
+                self.playback = Some(playback::Playback::from_mdx(
+                    std::mem::take(&mut self.mdx),
                     if self.pdx.is_empty() {
                         None
                     } else {

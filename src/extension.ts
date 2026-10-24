@@ -7,6 +7,7 @@ import { registerMcpServerProvider } from './mcpServer';
 import { registerTrackLengthHover } from './trackLengthHover';
 import { registerStepifySelectionCommand } from './stepify';
 import { registerVoiceView, type VoiceViewProvider } from './voiceView';
+import { registerMdxEditor } from './mdxEditor';
 
 let client: LanguageClient | undefined;
 let voiceView: VoiceViewProvider | undefined;
@@ -70,6 +71,7 @@ export async function activate(context: ExtensionContext): Promise<void> {
 	registerTrackLengthHover(context, () => client, channel);
 	registerStepifySelectionCommand(context, () => client);
 	voiceView = registerVoiceView(context, () => client, wasm, playbackLog, mcpServer);
+	registerMdxEditor(context, uri => voiceView?.setActiveMdxUri(uri));
 	context.subscriptions.push(commands.registerCommand('mmlx.showVoiceReferences', async (
 		documentUri: string | { scheme: string; authority?: string; path?: string; query?: string; fragment?: string },
 		position: { line: number; character: number },

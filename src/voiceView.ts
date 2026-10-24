@@ -132,6 +132,8 @@ export class VoiceViewProvider implements WebviewViewProvider {
 	private pendingInputState?: { previous: MmlPlaybackState | undefined; next: MmlPlaybackState; committed: boolean };
 	private selectionStateRequest = 0;
 	private playbackDocument?: TextDocument;
+	private playbackMdxUri?: Uri;
+	private pendingPlaybackSource?: { document?: TextDocument; mdxUri?: Uri };
 	private playbackConnected = false;
 	private browserPlayback = false;
 	private browserPdxLoader?: (name: string) => Promise<Uint8Array>;
@@ -738,10 +740,13 @@ export class VoiceViewProvider implements WebviewViewProvider {
 	private sendPlayback(): void {
 		this.reportPlaybackError(this.playbackState.error);
 		const document = this.playbackDocument;
+		const mdxUri = this.playbackMdxUri;
+		const uri = mdxUri ?? document?.uri;
 		void this.view?.webview.postMessage({ type: 'playback', id: this.playbackId,
-			available: !!document && !document.isClosed && workspace.isTrusted && (!!this.playback || this.nanodriveAvailable),
+			available: !!uri && (!document || !document.isClosed) && workspace.isTrusted && (!!this.playback || this.nanodriveAvailable),
 			mode: this.playbackMode, busy: this.nanodrive.playbackState.busy,
-			document: document?.uri.toString() ?? '', source: document ? basename(document.fileName) : '',
+			document: uri?.toString() ?? '', format: mdxUri ? 'mdx' : 'mml',
+			source: mdxUri ? basename(mdxUri.fsPath) : document ? basename(document.fileName) : '',
 			...this.playbackState });
 	}
 
@@ -756,50 +761,85 @@ export class VoiceViewProvider implements WebviewViewProvider {
 		if (reset) { this.playbackState.position = 0; }
 		this.playback?.disconnect(error);
 		void this.nanodrive.stopPlayback(error);
-		const document = window.activeTextEditor?.document;
-		this.playbackDocument = document?.languageId === 'mmlx' ? document : undefined;
+		if (this.pendingPlaybackSource) {
+			this.playbackDocument = this.pendingPlaybackSource.document;
+			this.playbackMdxUri = this.pendingPlaybackSource.mdxUri;
+			this.pendingPlaybackSource = undefined;
+		}
 		this.sendPlayback();
 	}
 
-	private async playbackAction(message: { action?: unknown; mode?: unknown; id?: unknown; document?: unknown; sampleRate?: unknown; browser?: unknown; looped?: unknown; volume?: unknown; muted?: unknown; error?: unknown }): Promise<void> {
+	setActiveMdxUri(uri: Uri | undefined): void {
+		const document = uri ? undefined : window.activeTextEditor?.document.languageId === 'mmlx'
+			? window.activeTextEditor.document : undefined;
+		this.selectPlaybackSource(document, uri);
+	}
+
+	private selectPlaybackSource(document: TextDocument | undefined, mdxUri: Uri | undefined): void {
+		if (this.playbackState.playing || this.playbackState.paused || this.playbackState.loading) {
+			if (document?.uri.toString() === this.playbackDocument?.uri.toString()
+				&& mdxUri?.toString() === this.playbackMdxUri?.toString()) {
+				this.pendingPlaybackSource = undefined;
+			} else if (document?.uri.toString() !== this.pendingPlaybackSource?.document?.uri.toString()
+				|| mdxUri?.toString() !== this.pendingPlaybackSource?.mdxUri?.toString()) {
+				this.pendingPlaybackSource = { document, mdxUri };
+			}
+			this.sendPlayback();
+			return;
+		}
+		this.pendingPlaybackSource = undefined;
+		if (document?.uri.toString() === this.playbackDocument?.uri.toString()
+			&& mdxUri?.toString() === this.playbackMdxUri?.toString()) { this.sendPlayback(); return; }
+		this.playbackDocument = document;
+		this.playbackMdxUri = mdxUri;
+		this.stopPlayback();
+	}
+
+	private async playbackAction(message: { action?: unknown; mode?: unknown; id?: unknown; document?: unknown; format?: unknown; sampleRate?: unknown; browser?: unknown; looped?: unknown; volume?: unknown; muted?: unknown; error?: unknown }): Promise<void> {
 		if (!Number.isSafeInteger(message.id)) { return; }
 		try {
 		if (message.action === 'play' || message.action === 'playFromCursor') {
 			const document = this.playbackDocument;
+			const mdxUri = this.playbackMdxUri;
+			const uri = mdxUri ?? document?.uri;
+			const binaryMdx = mdxUri !== undefined && message.format === 'mdx';
 			const hardware = message.mode === 'nanodrive8';
-			if (!document || document.isClosed || message.document !== document.uri.toString() || !workspace.isTrusted
+			if (!uri || (!mdxUri && (!document || document.isClosed)) || message.document !== uri.toString()
+				|| (mdxUri && !binaryMdx) || !workspace.isTrusted
 				|| (hardware ? !this.nanodriveAvailable || !this.nanodrive.state.connected : !this.playback) || this.nanodrive.playbackState.busy
-				|| (hardware && message.action === 'playFromCursor')) {
+				|| (message.action === 'playFromCursor' && (hardware || binaryMdx))) {
 				this.sendPlayback(); return;
 			}
 			const editor = this.editor;
-			if (message.action === 'playFromCursor' && editor?.document !== document) { this.sendPlayback(); return; }
-			const source = document.getText();
-			const cursor = message.action === 'playFromCursor' && editor
+			if (!binaryMdx && message.action === 'playFromCursor' && editor?.document !== document) { this.sendPlayback(); return; }
+			const source = document?.getText();
+			const mdx = binaryMdx ? await workspace.fs.readFile(mdxUri) : undefined;
+			if (mdx && mdx.byteLength > 16 * 1024 * 1024) { throw new Error('MDX is too large for playback (maximum 16 MiB).'); }
+			const cursor = source !== undefined && document && message.action === 'playFromCursor' && editor
 				? new TextEncoder().encode(source.slice(0, document.offsetAt(editor.selection.active))).length : undefined;
 			this.playbackId = message.id as number;
 			this.playbackMode = hardware ? 'nanodrive8' : 'emulation';
-			this.browserPlayback = !hardware && message.browser === true;
+			this.browserPlayback = !hardware && !binaryMdx && message.browser === true;
 			this.reportPlaybackError('');
 			if (this.browserPlayback) { this.playbackConnected = false; }
 			this.playbackMuted = Number.isInteger(message.muted) && (message.muted as number) >= 0 && (message.muted as number) <= 511 ? message.muted as number : 0;
 			this.playbackState = { playing: false, paused: false, loading: true, position: 0, finished: false, error: '' };
-			const folder = workspace.getWorkspaceFolder(document.uri);
+			const folder = workspace.getWorkspaceFolder(uri);
 			const configuration = workspace.getConfiguration('mmlx', folder?.uri);
 			const adpcmMode = configuration.get<NanoDriveAdpcmMode>('build.adpcmMode', 'resample');
 			const configured = configuration.get<string>('build.pdx', '');
-			const loadPdx = async (name: string) => workspace.fs.readFile(configured ? resolveUri(configured, folder) : await findPdx(document.uri, name));
-			void this.playbackSources?.start(document, message.looped === true);
+			const loadPdx = async (name: string) => workspace.fs.readFile(configured ? resolveUri(configured, folder) : await findPdx(uri, name));
+			if (!binaryMdx && document) { void this.playbackSources?.start(document, message.looped === true); }
 			if (hardware) {
 				if (typeof message.volume === 'number' && Number.isFinite(message.volume) && message.volume >= 0 && message.volume <= 1) {
 					void this.nanodrive.setVolume(message.volume);
 				}
 				this.playback?.disconnect();
 				await this.nanodrive.setMuted(this.playbackMuted);
-				await this.nanodrive.startPlayback(source, message.looped === true, loadPdx, { adpcmMode, pdxConfigured: configured.length > 0 });
-			} else if (message.browser === true) {
+				await this.nanodrive.startPlayback(mdx ?? source!, message.looped === true, loadPdx, { adpcmMode, pdxConfigured: configured.length > 0 });
+			} else if (this.browserPlayback) {
 				this.playback?.disconnect();
-				if (!Number.isInteger(message.sampleRate) || (message.sampleRate as number) < 8000 || (message.sampleRate as number) > 192000
+				if (!source || !Number.isInteger(message.sampleRate) || (message.sampleRate as number) < 8000 || (message.sampleRate as number) > 192000
 					|| Buffer.byteLength(JSON.stringify({ source })) >= 2 * 1024 * 1024) { this.stopPlayback(true, 'Invalid playback parameters.'); return; }
 				this.browserPlayback = true; this.browserPdxLoader = loadPdx;
 				this.playbackState = { playing: false, paused: false, loading: true, position: 0, finished: false, error: '' };
@@ -808,7 +848,8 @@ export class VoiceViewProvider implements WebviewViewProvider {
 					wasm: this.view.webview.asWebviewUri(Uri.joinPath(this.context.extensionUri, 'server', 'target', 'wasm32-wasip1', 'release', 'mmlx-emulator.wasm')).toString(),
 					options: { source, looped: message.looped === true, cursor, adpcmMode, muted: this.playbackMuted, pdxConfigured: configured.length > 0 } });
 			} else { this.browserPlayback = false; await this.playback!.connect(message.sampleRate as number, null, {
-				source, looped: message.looped === true, cursor, adpcmMode, muted: this.playbackMuted, pdxConfigured: configured.length > 0, loadPdx
+				...(binaryMdx ? { mdx } : { source }), looped: message.looped === true, cursor,
+				adpcmMode, muted: this.playbackMuted, pdxConfigured: configured.length > 0, loadPdx
 			}); }
 		} else if (message.id === this.playbackId) {
 			if (message.action === 'stop' || message.action === 'ended') {
@@ -1122,10 +1163,7 @@ export class VoiceViewProvider implements WebviewViewProvider {
 	private follow(editor: TextEditor | undefined): void {
 		this.sendEditorSelection(window.activeTextEditor);
 		const document = editor?.document.languageId === 'mmlx' ? editor.document : undefined;
-		if (document !== this.playbackDocument && !this.playbackState.playing && !this.playbackState.paused && !this.playbackState.loading) {
-			this.playbackDocument = document;
-			this.stopPlayback();
-		} else { this.sendPlayback(); }
+		this.selectPlaybackSource(document, editor ? undefined : this.playbackMdxUri);
 		if (editor?.document.languageId !== 'mmlx') { return; }
 		this.editor = editor;
 		const target = this.editTarget;

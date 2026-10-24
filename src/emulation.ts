@@ -31,7 +31,7 @@ export class EmulationSession {
 		private readonly onDormant: (dormant: boolean) => void = () => {}) {}
 
 	async connect(sampleRate: number, voice: unknown = null, playback?: {
-		source: string; looped: boolean; cursor?: number; adpcmMode?: 'through' | 'resample' | 'lpf';
+		source?: string; mdx?: Uint8Array; looped: boolean; cursor?: number; adpcmMode?: 'through' | 'resample' | 'lpf';
 		muted?: number;
 		pdxConfigured?: boolean; loadPdx?: (name: string) => Promise<Uint8Array>;
 	}): Promise<void> {
@@ -40,7 +40,11 @@ export class EmulationSession {
 		this.onState({ connected: false, connecting: true, error: '' });
 		try {
 			if (!Number.isInteger(sampleRate) || sampleRate < 8000 || sampleRate > 192000) { throw new Error('Invalid audio sample rate.'); }
-			if (playback && new TextEncoder().encode(JSON.stringify({ type: 'playback', ...playback })).length >= 2 * 1024 * 1024) {
+			if (playback && playback.mdx && playback.mdx.byteLength > 16 * 1024 * 1024) {
+				throw new Error('MDX is too large for playback (maximum size: 16 MiB).');
+			}
+			if (playback && !playback.mdx
+				&& new TextEncoder().encode(JSON.stringify({ type: 'playback', ...playback })).length >= 2 * 1024 * 1024) {
 				throw new Error('MML is too large for playback (maximum command size: 2 MiB).');
 			}
 			this.module ??= Promise.resolve(workspace.fs.readFile(Uri.joinPath(this.extensionUri,
@@ -83,7 +87,13 @@ export class EmulationSession {
 								if (generation !== this.generation) { return; }
 							}
 						}
-						if (generation === this.generation) { await this.command({ type: 'playback', ...playback }); }
+						if (generation === this.generation) {
+							const command = playback.mdx
+								? { type: 'playbackMdx', looped: playback.looped, adpcmMode: playback.adpcmMode, muted: playback.muted }
+								: { type: 'playback', source: playback.source, looped: playback.looped, cursor: playback.cursor,
+									adpcmMode: playback.adpcmMode, muted: playback.muted };
+							await this.command(command);
+						}
 					})().catch(fail);
 				} else if (kind === 6) {
 					if (!ready || !playback) { throw new Error('Unexpected FM keyboard events.'); }
@@ -128,7 +138,17 @@ export class EmulationSession {
 				fail(new Error(stderr.trim() || `Emulator exited (${code}).`));
 			}, fail);
 			this.command({ type: 'init', sampleRate });
-			if (playback) { this.command(playback.loadPdx ? { type: 'playbackInfo', source: playback.source } : { type: 'playback', ...playback }); }
+			if (playback?.mdx) {
+				void (async () => {
+					for (let offset = 0; offset < playback.mdx!.length; offset += 8192) {
+						if (generation !== this.generation) { return; }
+						await this.command({ type: 'mdx', offset, bytes: Array.from(playback.mdx!.subarray(offset, offset + 8192)) });
+					}
+					if (generation === this.generation) { await this.command({ type: 'playbackMdxInfo' }); }
+				})().catch(fail);
+			} else if (playback) {
+				this.command(playback.loadPdx ? { type: 'playbackInfo', source: playback.source } : { type: 'playback', ...playback });
+			}
 			else { this.setVoice(voice); }
 			await initialized;
 			if (generation !== this.generation) { return; }

@@ -24,7 +24,8 @@
   "activationEvents": [
     "onLanguage:mmlx",
     "onTaskType:mmlx",
-    "onMcpServerDefinitionProvider:mmlx-lsp.mcp"
+    "onMcpServerDefinitionProvider:mmlx-lsp.mcp",
+    "onCustomEditor:mmlx.mdxBinaryEditor"
   ],
   "extensionDependencies": [
     "ms-vscode.wasm-wasi-core"
@@ -142,6 +143,18 @@
         }
       ]
     },
+    "customEditors": [
+      {
+        "viewType": "mmlx.mdxBinaryEditor",
+        "displayName": "MDX Binary Viewer",
+        "selector": [
+          {
+            "filenamePattern": "*.mdx"
+          }
+        ],
+        "priority": "default"
+      }
+    ],
     "mcpServerDefinitionProviders": [
       {
         "id": "mmlx-lsp.mcp",
