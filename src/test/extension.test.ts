@@ -2580,7 +2580,8 @@ suite('mmlx extension', () => {
 			assert.match(document.uri.path, /^Untitled-\d+$/);
 			assert.strictEqual(document.languageId, 'mmlx');
 			assert.ok(document.isUntitled && document.isDirty);
-			const expected = new TextDecoder().decode(await vscode.workspace.fs.readFile(vscode.Uri.joinPath(extension.extensionUri, 'assets', 'webview', 'example.mml')));
+			const expected = new TextDecoder().decode(await vscode.workspace.fs.readFile(
+				vscode.Uri.joinPath(extension.extensionUri, 'assets', 'mml', 'a-little-prelude.mml')));
 			assert.strictEqual(document.getText(), expected);
 			assert.strictEqual(original.getText(), 'A t120 c4\n');
 			await waitForDiagnostics(document.uri, 0);

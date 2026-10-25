@@ -47,7 +47,7 @@ Dedicated bottom panel opened with **mmlx: Show mmlx Panel**.
 
 ### Get Started
 
-- **Get Started** opens an editable example `.mml` in a new, unsaved editor. Start with `example.mml` and let your next tune find its rhythm.
+- **Get Started** opens **A Little Prelude**, an editable sample `.mml` in a new, unsaved editor. Explore its melody, harmonies, and bass, then make it your own.
 
 ### FM Voice
 

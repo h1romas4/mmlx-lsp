@@ -440,7 +440,7 @@ export class VoiceViewProvider implements WebviewViewProvider {
 
 	private async openStarter(): Promise<void> {
 		try {
-			const content = new TextDecoder().decode(await workspace.fs.readFile(Uri.joinPath(this.context.extensionUri, 'assets', 'webview', 'example.mml')));
+			const content = new TextDecoder().decode(await workspace.fs.readFile(Uri.joinPath(this.context.extensionUri, 'assets', 'mml', 'a-little-prelude.mml')));
 			const document = await workspace.openTextDocument({ language: 'mmlx', content });
 			await window.showTextDocument(document, { preview: false });
 		} catch (error) {

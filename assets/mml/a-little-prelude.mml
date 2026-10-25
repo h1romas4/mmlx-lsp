@@ -1,0 +1,61 @@
+#title "A Little Prelude by mmlx"
+
+; Park your cursor in this voice, then give it a spin in the mmlx panel's FM Voice tab.
+; Warm Bass
+@1 = {
+    /* AR  D1R D2R RR D1L  TL KS MUL DT1 DT2 AME */
+        31, 6,  0,  6,  1, 53, 0,  4,  0,  0,  0,
+        31, 7,  1,  6,  1, 47, 0,  1,  0,  0,  0,
+        31, 6,  1,  6,  2, 35, 0,  1,  0,  0,  0,
+        31, 5,  0,  9,  1,  0, 0,  1,  0,  0,  0,
+    /* CON FL OP */
+        0,  2, 15
+}
+
+; Electric Piano
+@2 = {
+    /* AR  D1R D2R RR D1L  TL KS MUL DT1 DT2 AME */
+        31, 14, 15, 14,  6, 58, 1, 12,  0,  0,  0,
+        31, 18,  6,  8,  1,  4, 1,  1,  0,  0,  0,
+        31, 15,  5, 11,  1, 40, 1,  1,  4,  0,  0,
+        31, 18,  6,  8,  1,  0, 1,  1,  4,  0,  0,
+    /* CON FL OP */
+        4,  0, 15
+}
+
+; Ready to let it fly? Open the Playback tab and press Play!
+; Or select a passage, connect an output in the FM Voice panel,
+; then hit Ctrl+Alt+P (Cmd+Option+P on macOS) and hear it come alive!
+
+; A: Electric piano melody
+A t80 @2 v12 o4 l16 q8
+A ab>cd
+A e8d16ererd16e4e8e8 d16&d4rdd2r
+A c8<b16>c16rc8<b16>c4c8c8 f4.g16r8e16r8e4
+A e8d16ererd16e4e8e8 d4.d8d-8<g8a8>d-8
+A c8<d8f8a8>c8<a8f8d8 b4d16f16g16a16a-4d-16f16a-16b-16
+A b1
+; B: Electric piano upper harmony
+B @2 v12 o5 l16 q8
+B r4
+B c8<b16>crcr<b16>c4c8c8 <b16&b4rbb2r
+B a1 >d2rc16r8c4
+B c8<b16>crcr<b16>c4c8c8 <b-2a2
+B a1 g2f4..r16
+B e1
+; C: Electric piano lower harmony
+C @2 v12 o4 l16 q8
+C r4
+C a8g16ararg16a4a8a8 g16&g4rgg2r
+C f1 b-2rb-16r8b-4
+C a8g16ararg16a4a8a8 g2g2
+C f1 f2d-4..r16
+C c1
+; D: Bass
+D @1 v15 o2 l4 q8
+D r8>c8_<f8q6
+D f4c8f8g16a16>c8<a8e8 e4b8e8g16a16b8e8c+8
+D d2a4f8f+8 g4.d8>c4<b-8q8>c8_<f8q6
+D f4.c8f8g16a16c8e8 e2a4e8c+8
+D d4a8d8f4a8a-8 g4d8b8d-4a-8b8
+D q8c1

@@ -2,7 +2,10 @@
 
 All notable changes to the "mmlx-lsp" extension will be documented in this file.
 
-## [Unreleased]
+## [1.0.0] - 2026-10-25
+
+- Mark the first stable release of mmlx-lsp.
+- Refresh Get Started with **A Little Prelude**, an editable MML sample featuring melody, harmony, and bass.
 
 ## [0.29.0] - 2026-10-23
 

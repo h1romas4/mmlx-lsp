@@ -5,4 +5,5 @@
   },
   "mmlx.build.onSave": false,
   "mmlx.midi.input": "MODX:MODX MIDI 1 32:0",
+  "mmlx.serial.connection": "/dev/ttyACM1",
 }
