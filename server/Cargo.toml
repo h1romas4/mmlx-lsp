@@ -34,7 +34,7 @@ base64 = "0.22"
 hound = "3.5"
 lsp-server = "0.10"
 lsp-types = "0.97"
-mmlx = { version = "0.2.0", features = ["source-map"] }
+mmlx = { version = "0.3.0", features = ["source-map"] }
 ndsif = { path = "../crates/ndsif", optional = true }
 rmcp = { version = "3.5.1", default-features = false, features = ["macros", "server", "transport-async-rw"], optional = true }
 schemars = { version = "1", optional = true }
@@ -42,7 +42,7 @@ rust-i18n = "4"
 serde-saphyr = { version = "1", optional = true }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
-soundlog = { version = "0.15.0", features = ["mdx"] }
+soundlog = { version = "0.16.0", features = ["mdx"] }
 tokio = { version = "1", features = ["io-util", "macros", "rt", "sync"], optional = true }
 ymfm-sys = { version = "0.2", optional = true }
 rubato = { version = "0.16", default-features = false, optional = true }

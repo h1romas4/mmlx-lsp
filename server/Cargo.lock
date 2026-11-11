@@ -713,9 +713,9 @@ checksum = "cf8baf1c55e62ffcace7a9f06f4bd9cd3f0c4beb022d3b367256b91b87513d98"
 
 [[package]]
 name = "mmlx"
-version = "0.2.0"
+version = "0.3.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "add0396aa1e9482903a2b1ae24b85b7478292e09d9294f8ac939fc4f96cc3959"
+checksum = "2a409c2ba50da06a5fd3929577ab4fc40a79af00159579b38c048aa1ebc4fda9"
 dependencies = [
  "pest",
  "pest_derive",
@@ -1193,9 +1193,9 @@ checksum = "f9395f0f0eee849a9b707b2f06bb92a6a422090e2123bb2ef8e87a0e61892a8e"
 
 [[package]]
 name = "soundlog"
-version = "0.15.0"
+version = "0.16.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "c58288925c5be96f6adac2d7bacb5448cc0ccbdcdf9431247f78d2b1938bb227"
+checksum = "c3abcf081406d9d95c7ffc86aabc4f255ade014483f8917af63e18b8c5f49e63"
 
 [[package]]
 name = "stable_deref_trait"

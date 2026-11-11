@@ -138,9 +138,9 @@ struct MmlCheckRequest {
     /// MML source text.
     source: String,
     /// Maximum playback ticks to execute (defaults to 100000).
-    max_ticks: Option<u64>,
+    max_ticks: Option<u32>,
     /// Maximum MDX commands to execute (defaults to 1000000).
-    max_commands: Option<u64>,
+    max_commands: Option<u32>,
 }
 
 #[derive(Deserialize, JsonSchema)]
