@@ -323,7 +323,7 @@ mod tests {
 
     #[test]
     fn cursor_playback_does_not_emit_audio_before_the_start_position() {
-        let source = include_str!("../../../assets/webview/example.mml");
+        let source = include_str!("../../tests/fixtures/example.mml");
         let cursor = source.find("cdef").unwrap() + 2;
         let command = serde_json::json!({ "type": "playback", "source": source, "cursor": cursor });
         let mut output = Vec::new();

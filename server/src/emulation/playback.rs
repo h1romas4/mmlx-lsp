@@ -903,7 +903,7 @@ mod tests {
 
     #[test]
     fn example_keeps_operator_levels_at_each_key_on() {
-        let source = include_str!("../../../assets/webview/example.mml");
+        let source = include_str!("../../tests/fixtures/example.mml");
         let parsed = mmlx::mdx::parse(source).unwrap();
         let mdx = mmlx::mdx::compile(&parsed).unwrap();
         let options = MdxToVgmOptions {
@@ -937,7 +937,7 @@ mod tests {
     #[test]
     fn repeated_example_notes_retrigger_the_envelope() {
         let source =
-            include_str!("../../../assets/webview/example.mml").replace("cdefgab>c4", "cccccccc");
+            include_str!("../../tests/fixtures/example.mml").replace("cdefgab>c4", "cccccccc");
         let mut playback = Playback::new(&source, 48000, false).unwrap();
         let mut samples = Vec::new();
         for _ in 0..200 {
