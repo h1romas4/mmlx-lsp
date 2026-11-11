@@ -13,7 +13,7 @@ use lsp_types::{
 #[cfg(test)]
 use mmlx_lsp_server::diagnostics as mdx_diagnostics;
 use mmlx_lsp_server::{
-    dialect::Dialect, i18n, playback::state as playback_state, stepify, track_length, voice,
+    dialect::Dialect, i18n, macros, playback::state as playback_state, stepify, track_length, voice,
 };
 
 fn main() -> Result<(), Box<dyn Error>> {
@@ -176,7 +176,16 @@ fn handle_request(
             Ok(params) => {
                 let lenses = documents
                     .get(params.text_document.uri.as_str())
-                    .map(|source| voice::code_lenses(source, params.text_document.uri, language))
+                    .map(|source| {
+                        let mut lenses =
+                            voice::code_lenses(source, params.text_document.uri.clone(), language);
+                        lenses.extend(macros::code_lenses(
+                            source,
+                            params.text_document.uri,
+                            language,
+                        ));
+                        lenses
+                    })
                     .unwrap_or_default();
                 Response::new_ok(request.id, lenses)
             }
@@ -746,6 +755,12 @@ mod tests {
         assert!(diagnostics(&source).is_empty());
         assert!(diagnostics("A c4 d4 e4").is_empty());
         assert!(diagnostics("A r4").is_empty());
+    }
+
+    #[test]
+    fn mml_macros_have_no_diagnostics() {
+        let source = "$P={o4 [r4 r8]2}\nA t120 $P";
+        assert!(diagnostics(source).is_empty());
     }
 
     #[test]

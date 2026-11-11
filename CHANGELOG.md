@@ -2,6 +2,11 @@
 
 All notable changes to the "mmlx-lsp" extension will be documented in this file.
 
+## [1.1.0] - 2026-11-12
+
+- Add MML macro definition guidance, macro completion with expansion details, and CodeLens navigation to macro references.
+- Extend syntax highlighting and the MCP-provided Pest grammar with macro syntax.
+
 ## [1.0.0] - 2026-10-25
 
 - Mark the first stable release of mmlx-lsp.

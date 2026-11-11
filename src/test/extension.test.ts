@@ -4927,6 +4927,58 @@ finally:
 		}
 	});
 
+	test('shows macro references and offers defined macros in $ completion', async function () {
+		this.timeout(30000);
+		const extension = vscode.extensions.all.find(extension => extension.packageJSON.name === 'mmlx-lsp');
+		assert.ok(extension);
+		await extension.activate();
+		const workspaceFolder = vscode.workspace.workspaceFolders?.[0];
+		assert.ok(workspaceFolder, 'macro reference navigation test needs a workspace folder');
+		const uri = vscode.Uri.joinPath(workspaceFolder.uri, `.mmlx-macro-refs-${randomUUID()}.mml`);
+		await vscode.workspace.fs.writeFile(uri, Buffer.from('$A={r4}\nA $A $A\n'));
+		try {
+			const document = await vscode.workspace.openTextDocument(uri);
+			const lenses = await vscode.commands.executeCommand<vscode.CodeLens[]>(
+				'vscode.executeCodeLensProvider', document.uri);
+			assert.strictEqual(lenses?.length, 1);
+			assert.match(lenses[0].command?.title ?? '', /2 (references|件の参照)/);
+			assert.strictEqual(lenses[0].command?.command, 'mmlx.showMacroReferences');
+			await vscode.window.showTextDocument(document);
+			await vscode.commands.executeCommand(
+				lenses[0].command!.command,
+				...(lenses[0].command!.arguments ?? [])
+			);
+			assert.strictEqual(
+				vscode.window.activeTextEditor?.document.uri.toString(),
+				document.uri.toString(),
+				'macro reference navigation must resolve the workspace URI'
+			);
+
+			const completion = await vscode.commands.executeCommand<vscode.CompletionList>(
+				'vscode.executeCompletionItemProvider', document.uri, new vscode.Position(1, 6), '$');
+			const definedMacro = completion?.items.find(item => item.label === '$A');
+			assert.ok(definedMacro);
+			assert.strictEqual(definedMacro.detail, 'MML macro');
+
+			const definitionDocument = await vscode.workspace.openTextDocument({
+				language: 'mmlx',
+				content: '$'
+			});
+			const definitionCompletion = await vscode.commands.executeCommand<vscode.CompletionList>(
+				'vscode.executeCompletionItemProvider',
+				definitionDocument.uri,
+				new vscode.Position(0, 1),
+				'$'
+			);
+			const definitionGuide = definitionCompletion?.items.find(
+				item => item.detail === '$<A-Z> = { ... }'
+			);
+			assert.ok(definitionGuide, 'typing $ outside a track should offer the macro definition guide');
+		} finally {
+			await vscode.workspace.fs.delete(uri);
+		}
+	});
+
 	test('formats FM voice definitions without changing other MML', async function () {
 		this.timeout(30000);
 		const extension = vscode.extensions.all.find(extension => extension.packageJSON.name === 'mmlx-lsp');

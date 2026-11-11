@@ -9,7 +9,14 @@ mdx:
     label: '@ 音色定義'
     syntax: '@<音色番号> = { ... }'
     description: 47 パラメーターを持つ FM 音色を定義します。
+  macro_definition:
+    label: マクロ定義
+    syntax: '$<A-Z> = { ... }'
+    description: 1 行の MML マクロを定義します。使用より前に定義し、マクロの入れ子参照はできません。
   voice_reference:
+    one: 1 件の参照
+    many: "%{count} 件の参照"
+  macro_reference:
     one: 1 件の参照
     many: "%{count} 件の参照"
   commands:

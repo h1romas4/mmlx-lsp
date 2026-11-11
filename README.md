@@ -12,10 +12,11 @@ Currently supports the MDX (MXDRV) dialect and `.mml` files.
 
 ## Features
 
-- **Syntax highlighting** for notes, commands, track labels, voice definitions, and comments.
+- **Syntax highlighting** for notes, commands, track labels, voice and macro definitions, and comments.
 - **Error diagnostics** for parsing, compilation, and playback checks.
 - **Voice-definition formatting** with aligned YM2151 operator parameters.
-- **Command completion** with argument snippets and FM voice-definition templates.
+- **Command and macro completion** with argument snippets, FM voice and macro-definition guides, and macro expansions.
+- **Macro references** displayed on definitions and navigable in the editor.
 - **Parameter hints** while entering command arguments.
 - **Japanese and English** command descriptions and parameter hints.
 - **FM voice outlines** labeled with the voice number and adjacent semicolon name, when present.

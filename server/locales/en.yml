@@ -9,7 +9,14 @@ mdx:
     label: '@ Voice definition'
     syntax: '@<voice number> = { ... }'
     description: Defines an FM voice with 47 parameters.
+  macro_definition:
+    label: Macro definition
+    syntax: '$<A-Z> = { ... }'
+    description: Defines a single-line MML macro. Define it before use; nested macro references are not allowed.
   voice_reference:
+    one: 1 reference
+    many: "%{count} references"
+  macro_reference:
     one: 1 reference
     many: "%{count} references"
   commands:

@@ -75,6 +75,70 @@
     }
   },
   {
+    "type": "macro_definition",
+    "named": true,
+    "fields": {
+      "name": {
+        "multiple": false,
+        "required": true,
+        "types": [
+          {
+            "type": "macro_name",
+            "named": true
+          }
+        ]
+      }
+    },
+    "children": {
+      "multiple": true,
+      "required": false,
+      "types": [
+        {
+          "type": "control_command",
+          "named": true
+        },
+        {
+          "type": "macro_reference",
+          "named": true
+        },
+        {
+          "type": "note",
+          "named": true
+        },
+        {
+          "type": "numeric_note",
+          "named": true
+        },
+        {
+          "type": "operator",
+          "named": true
+        },
+        {
+          "type": "repeat_end",
+          "named": true
+        },
+        {
+          "type": "repeat_start",
+          "named": true
+        },
+        {
+          "type": "rest",
+          "named": true
+        }
+      ]
+    }
+  },
+  {
+    "type": "macro_name",
+    "named": true,
+    "fields": {}
+  },
+  {
+    "type": "macro_reference",
+    "named": true,
+    "fields": {}
+  },
+  {
     "type": "metadata",
     "named": true,
     "fields": {},
@@ -193,6 +257,10 @@
       "required": false,
       "types": [
         {
+          "type": "macro_definition",
+          "named": true
+        },
+        {
           "type": "metadata",
           "named": true
         },
@@ -228,6 +296,10 @@
       "types": [
         {
           "type": "control_command",
+          "named": true
+        },
+        {
+          "type": "macro_reference",
           "named": true
         },
         {

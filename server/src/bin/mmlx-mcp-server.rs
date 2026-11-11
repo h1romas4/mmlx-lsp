@@ -2406,6 +2406,37 @@ mod tests {
     }
 
     #[test]
+    fn mml_parse_expands_macros_into_compiled_track_commands() {
+        let parse = |source: &str| {
+            result_text(
+                MmlxMcpServer
+                    .mml_parse(Parameters(MmlParseRequest {
+                        source: source.to_owned(),
+                        start_command: 0,
+                        max_commands: 500,
+                    }))
+                    .unwrap(),
+            )
+        };
+        let macro_report = parse("$P={o4 [r4 r8]2}\nA t120 $P");
+        let expanded_report = parse("A t120 o4 [r4 r8]2");
+        let macro_commands = macro_report["tracks"][0]["commands"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|entry| entry["command"].as_str().unwrap())
+            .collect::<Vec<_>>();
+        let expanded_commands = expanded_report["tracks"][0]["commands"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|entry| entry["command"].as_str().unwrap())
+            .collect::<Vec<_>>();
+
+        assert_eq!(macro_commands, expanded_commands);
+    }
+
+    #[test]
     fn workspace_pdx_build_reads_relative_wav_and_writes_output() {
         let root = test_workspace();
         fs::create_dir(root.join("samples")).unwrap();
@@ -2533,6 +2564,8 @@ mod tests {
         assert_eq!(report["copied_from"], "crates/mmlx/src/mdx/mml.pest");
         let grammar = report["grammar"].as_str().unwrap();
         assert!(grammar.contains("document = { SOI ~ line* ~ EOI }"));
+        assert!(grammar.contains("macro_definition = { \"$\" ~ macro_name"));
+        assert!(grammar.contains("macro_call = @{ \"$\" ~ ('A'..'Z') }"));
         assert!(grammar.contains("numeric_note = { \"n\" ~ number ~ (\",\" ~ duration)? }"));
     }
 

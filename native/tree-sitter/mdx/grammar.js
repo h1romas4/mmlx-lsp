@@ -8,7 +8,7 @@ module.exports = grammar({
       repeat(choice(seq($._line, $._newline), $._newline)),
       optional($._line),
     ),
-    _line: $ => choice($.metadata, $.voice_definition, $.track_line),
+    _line: $ => choice($.metadata, $.voice_definition, $.macro_definition, $.track_line),
     _newline: () => /\r?\n/,
 
     metadata: $ => seq($.metadata_command, $.string),
@@ -19,12 +19,18 @@ module.exports = grammar({
       '@', field('number', $.number), '=', '{',
       repeat(choice($.number, ',', $._newline)), '}',
     ),
+    macro_definition: $ => seq(
+      field('name', $.macro_name), '=', '{',
+      repeat($._command), '}',
+    ),
+    macro_name: () => /\$[A-Z]/,
 
     track_line: $ => prec.right(seq(field('channel', $.channel), repeat($._command))),
     channel: () => /[A-HP-W]+/,
     channel_reference: () => /[A-HP-W]/,
 
-    _command: $ => choice($.note, $.numeric_note, $.rest, $.control_command, $.repeat_start, $.repeat_end, $.operator),
+    _command: $ => choice($.macro_reference, $.note, $.numeric_note, $.rest, $.control_command, $.repeat_start, $.repeat_end, $.operator),
+    macro_reference: () => /\$[A-Z]/,
     note: $ => seq($.note_name, optional($.accidental), optional($.length)),
     note_name: () => /[a-g]/,
     accidental: () => choice('+', '-'),

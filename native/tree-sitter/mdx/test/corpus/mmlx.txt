@@ -92,3 +92,19 @@ AP @t200@1o4l8c+8.d-4^%24r%12~8n12,16D-12MP0,4,-5MPONMPOFMA0,4,-5MAONMAOFMH0,1,2
     (control_command (command) (channel_reference))
     (control_command (command))
     (operator)))
+
+==================
+Macro definitions and references
+==================
+$A={o4 c4}
+A $A $A
+---
+(source_file
+  (macro_definition
+    (macro_name)
+    (control_command (command) (number))
+    (note (note_name) (length (length_term (number)))))
+  (track_line
+    (channel)
+    (macro_reference)
+    (macro_reference)))

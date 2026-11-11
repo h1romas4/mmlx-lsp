@@ -57,6 +57,10 @@
         },
         {
           "type": "SYMBOL",
+          "name": "macro_definition"
+        },
+        {
+          "type": "SYMBOL",
           "name": "track_line"
         }
       ]
@@ -144,6 +148,42 @@
         }
       ]
     },
+    "macro_definition": {
+      "type": "SEQ",
+      "members": [
+        {
+          "type": "FIELD",
+          "name": "name",
+          "content": {
+            "type": "SYMBOL",
+            "name": "macro_name"
+          }
+        },
+        {
+          "type": "STRING",
+          "value": "="
+        },
+        {
+          "type": "STRING",
+          "value": "{"
+        },
+        {
+          "type": "REPEAT",
+          "content": {
+            "type": "SYMBOL",
+            "name": "_command"
+          }
+        },
+        {
+          "type": "STRING",
+          "value": "}"
+        }
+      ]
+    },
+    "macro_name": {
+      "type": "PATTERN",
+      "value": "\\$[A-Z]"
+    },
     "track_line": {
       "type": "PREC_RIGHT",
       "value": 0,
@@ -181,6 +221,10 @@
       "members": [
         {
           "type": "SYMBOL",
+          "name": "macro_reference"
+        },
+        {
+          "type": "SYMBOL",
           "name": "note"
         },
         {
@@ -208,6 +252,10 @@
           "name": "operator"
         }
       ]
+    },
+    "macro_reference": {
+      "type": "PATTERN",
+      "value": "\\$[A-Z]"
     },
     "note": {
       "type": "SEQ",

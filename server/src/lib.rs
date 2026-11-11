@@ -10,6 +10,7 @@ pub mod dialect;
 pub mod emulation;
 pub mod formatter;
 pub mod i18n;
+pub mod macros;
 #[cfg(feature = "nanodrive")]
 pub mod nanodrive;
 pub mod playback;

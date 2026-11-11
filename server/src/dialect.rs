@@ -59,7 +59,7 @@ impl Dialect {
                 )),
                 completion_provider: Some(CompletionOptions {
                     resolve_provider: Some(false),
-                    trigger_characters: Some(vec!["#".into(), "@".into(), "M".into()]),
+                    trigger_characters: Some(vec!["#".into(), "@".into(), "$".into(), "M".into()]),
                     ..CompletionOptions::default()
                 }),
                 signature_help_provider: Some(SignatureHelpOptions {
@@ -204,6 +204,7 @@ mod tests {
             .trigger_characters
             .unwrap();
         assert!(triggers.contains(&"#".to_string()));
+        assert!(triggers.contains(&"$".to_string()));
     }
 
     #[test]

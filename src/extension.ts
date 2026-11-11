@@ -70,7 +70,7 @@ export async function activate(context: ExtensionContext): Promise<void> {
 	registerTrackLengthHover(context, () => client, channel);
 	registerStepifySelectionCommand(context, () => client);
 	voiceView = registerVoiceView(context, () => client, wasm, playbackLog, mcpServer);
-	context.subscriptions.push(commands.registerCommand('mmlx.showVoiceReferences', async (
+	const showReferences = async (
 		documentUri: string | { scheme: string; authority?: string; path?: string; query?: string; fragment?: string },
 		position: { line: number; character: number },
 		references: {
@@ -105,7 +105,9 @@ export async function activate(context: ExtensionContext): Promise<void> {
 			new Position(position.line, position.character),
 			locations
 		);
-	}));
+	};
+	context.subscriptions.push(commands.registerCommand('mmlx.showVoiceReferences', showReferences));
+	context.subscriptions.push(commands.registerCommand('mmlx.showMacroReferences', showReferences));
 	context.subscriptions.push(commands.registerCommand('mmlx.toggleComment', async () => {
 		const editor = window.activeTextEditor;
 		if (!editor || editor.document.languageId !== 'mmlx') { return; }

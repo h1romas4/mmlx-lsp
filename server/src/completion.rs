@@ -115,12 +115,20 @@ pub fn items(
     if let Some(items) = attribute_items(source, offset, snippets) {
         return items;
     }
+    if let Some(items) = crate::macros::completion_items(source, position) {
+        return items;
+    }
     let line = before.rsplit('\n').next().unwrap_or("").trim_start();
     let header = line
         .bytes()
         .take_while(|byte| matches!(byte, b'A'..=b'H' | b'P'..=b'W'))
         .count();
     if header == 0 {
+        if let Some(item) =
+            crate::macros::definition_completion_item(source, offset, snippets, language)
+        {
+            return vec![item];
+        }
         return voice_definition_item(source, offset, position, snippets, language)
             .into_iter()
             .collect();
@@ -875,6 +883,16 @@ mod tests {
                 }
             }
         }
+    }
+
+    #[test]
+    fn macro_definition_completion_shows_guide_outside_track_lines() {
+        let guide = items("$", Position::new(0, 1), true)
+            .into_iter()
+            .next()
+            .expect("macro definition guide");
+        assert_eq!(guide.label, "マクロ定義");
+        assert!(items("A $", Position::new(0, 3), true).is_empty());
     }
 
     #[test]
