@@ -4,6 +4,8 @@ All notable changes to the "mmlx-lsp" extension will be documented in this file.
 
 ## [Unreleased]
 
+## [1.2.0] - 2026-11-19
+
 - Add a Playback timeline for moving the playhead and navigating the MML editor cursor.
 - Queue playback commands until a user gesture in the Playback panel can initialize browser audio.
 - Add an `mmlx.stopPlayback` command for stopping playback from the command palette or a task.
