@@ -2,6 +2,10 @@
 
 All notable changes to the "mmlx-lsp" extension will be documented in this file.
 
+## [Unreleased]
+
+- Update ymfm-sys to 0.3.0.
+
 ## [1.1.0] - 2026-11-12
 
 - Add MML macro definition guidance, macro completion with expansion details, and CodeLens navigation to macro references.
