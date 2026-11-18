@@ -44,7 +44,7 @@ serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 soundlog = { version = "0.16.0", features = ["mdx"] }
 tokio = { version = "1", features = ["io-util", "macros", "rt", "sync"], optional = true }
-ymfm-sys = { version = "0.2", optional = true }
+ymfm-sys = { version = "0.3", optional = true }
 rubato = { version = "0.16", default-features = false, optional = true }
 
 [dev-dependencies]
