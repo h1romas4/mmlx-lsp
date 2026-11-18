@@ -753,6 +753,8 @@ checksum = "743fb55ba31b18fb1ecef6bdc9aa2743314978ac084044301a7eee33fb99a20d"
 [[package]]
 name = "ndsif"
 version = "0.1.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "e2ba7c78a336e79d4dd8181d497c342c461e4241bf134dcaf0838c2cb84927e8"
 dependencies = [
  "cobs",
  "crc",

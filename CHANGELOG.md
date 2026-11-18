@@ -5,6 +5,7 @@ All notable changes to the "mmlx-lsp" extension will be documented in this file.
 ## [Unreleased]
 
 - Update ymfm-sys to 0.3.0.
+- Use ndsif 0.1.0 from crates.io.
 
 ## [1.1.0] - 2026-11-12
 
