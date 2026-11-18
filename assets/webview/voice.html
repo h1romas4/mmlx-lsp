@@ -113,6 +113,34 @@
 				</figure>
 			</div>
 			</div>
+			<details id="playback-timeline" class="playback-timeline" aria-labelledby="playback-timeline-heading" open>
+				<summary class="playback-timeline-header">
+					<span id="playback-timeline-heading" class="playback-timeline-title" role="heading" aria-level="2">MML Timeline</span>
+					<span class="playback-timeline-settings" role="group" aria-label="Timeline measure settings">
+						<label>Time signature
+							<select id="timeline-numerator" aria-label="Time signature numerator">
+								<option>1</option><option>2</option><option>3</option><option selected>4</option>
+								<option>5</option><option>6</option><option>7</option><option>8</option>
+								<option>9</option><option>10</option><option>11</option><option>12</option>
+							</select>
+							<span aria-hidden="true">/</span>
+							<select id="timeline-denominator" aria-label="Time signature denominator">
+								<option>2</option><option selected>4</option><option>8</option><option>16</option>
+							</select>
+						</label>
+						<label title="Shift bar lines later or earlier by this many beats">
+							Beat offset
+							<input id="timeline-offset" type="number" min="-32" max="32" step="0.25" value="0" aria-label="Beat offset">
+						</label>
+					</span>
+				</summary>
+				<div class="playback-timeline-chart">
+					<div class="playback-timeline-labels" aria-hidden="true"></div>
+					<div class="playback-timeline-scroll">
+						<canvas role="img" aria-label="MML playback timeline"></canvas>
+					</div>
+				</div>
+			</details>
 			<div id="playback-channels" class="playback-channels" role="group" aria-label="Playback channels"></div>
 		</section>
 		<section id="utils-controls" role="tabpanel" aria-labelledby="utils-tab" hidden>

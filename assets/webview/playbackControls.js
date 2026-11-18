@@ -40,6 +40,12 @@ export function createPlaybackControls(root, onModeChange = () => {}, onAction =
 	function setText(element, value) {
 		if (element.textContent !== value) { element.textContent = value; }
 	}
+	function playAction() {
+		if (!play.disabled) { onAction(snapshot?.playing ? 'pause' : snapshot?.paused ? 'resume' : 'play'); }
+	}
+	function playFromCursorAction() {
+		if (!cursor.disabled) { onAction('playFromCursor'); }
+	}
 	function render(state) {
 		if ((state?.loading && !snapshot?.loading) || state?.document !== snapshot?.document
 			|| (!state?.playing && !state?.paused && !state?.loading)) { resetKeys(); }
@@ -71,7 +77,8 @@ export function createPlaybackControls(root, onModeChange = () => {}, onAction =
 		const busy = state?.playing || state?.paused || state?.loading || state?.busy;
 		setText(source, state?.source || 'No MML selected');
 		if (!loading || loadingVisible) {
-			const message = loadingVisible ? 'Preparing' : state?.playing ? 'Playing' : state?.paused ? 'Paused' : available ? 'Stopped' : 'Unavailable';
+			const message = loadingVisible ? 'Preparing' : state?.awaitingGesture ? 'Click Playback to start audio'
+				: state?.playing ? 'Playing' : state?.paused ? 'Paused' : available ? 'Stopped' : 'Unavailable';
 			if (status.textContent !== message) {
 				setText(status, message);
 				status.setAttribute('data-state', message.toLowerCase());
@@ -96,8 +103,8 @@ export function createPlaybackControls(root, onModeChange = () => {}, onAction =
 		}
 	}
 	mode.addEventListener('change', () => { onModeChange(mode.value); render(snapshot); });
-	play.addEventListener('click', () => onAction(snapshot?.playing ? 'pause' : snapshot?.paused ? 'resume' : 'play'));
-	cursor.addEventListener('click', () => onAction('playFromCursor'));
+	play.addEventListener('click', playAction);
+	cursor.addEventListener('click', playFromCursorAction);
 	stop.addEventListener('click', () => onAction('stop'));
 	loop.addEventListener('click', () => { looped = !looped; render(snapshot); onModeChange(mode.value); });
 	volume.addEventListener('input', () => onVolume(Number(volume.value) / 100));
@@ -108,6 +115,8 @@ export function createPlaybackControls(root, onModeChange = () => {}, onAction =
 			keyEvents.push(...events); advanceKeys(keyPosition);
 		},
 		setPosition(position) { if (snapshot?.playing) { advanceKeys(position); } },
+		play: playAction,
+		playFromCursor: playFromCursorAction,
 		setNanoDriveAvailable(value) { nanoDriveAvailable = value === true; render(snapshot); },
 		setMode(value) { mode.value = value === 'nanodrive8' ? 'nanodrive8' : 'emulation'; render(snapshot); },
 		setOptions(repeat, level) { looped = repeat === true; volume.value = String(Math.max(0, Math.min(100, Number(level) || 0))); render(snapshot); },

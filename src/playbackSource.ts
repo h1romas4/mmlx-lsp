@@ -2,9 +2,113 @@ import { Range, ThemeColor, window, workspace, type Disposable, type TextDocumen
 import type { NanoDriveWorker } from './nanodriveWorker';
 import type { MmlPlaybackState, MmlPlaybackStateScan } from './mmlPlaybackState';
 
-export interface SourceEvent { position: number; channel: number; start: number | null; end: number | null; }
+export interface SourceEvent {
+	position: number;
+	channel: number;
+	kind?: 'note' | 'rest' | 'clear' | 'tempo';
+	start: number | null;
+	end: number | null;
+	tempo?: number;
+}
 export interface SourceBatch { events: SourceEvent[]; position: number; finished: boolean; }
 export interface SelectionTraceSource { source: string; documentOffsets: number[]; }
+export type PlaybackTimelineEvent = Pick<SourceEvent, 'position' | 'channel' | 'kind' | 'start' | 'end' | 'tempo'>;
+
+export class PlaybackTimelineTracker implements Disposable {
+	private generation = 0;
+	private timer: ReturnType<typeof setTimeout> | undefined;
+
+	constructor(private readonly worker: Pick<NanoDriveWorker, 'request' | 'dispose'>,
+		private readonly onEvents: (events: PlaybackTimelineEvent[]) => void,
+		private readonly onStatus: (status: string) => void = () => {}) {}
+
+	setSource(source: string | undefined, preserve = true): void {
+		this.generation++;
+		const generation = this.generation;
+		clearTimeout(this.timer);
+		this.timer = undefined;
+		if (!preserve) { this.onEvents([]); }
+		if (!source) {
+			this.onEvents([]);
+			this.onStatus('');
+			return;
+		}
+		this.onStatus('Updating timeline…');
+		this.timer = setTimeout(() => {
+			this.timer = undefined;
+			void this.build(source, generation);
+		}, 200);
+	}
+
+	private async build(source: string, generation: number): Promise<void> {
+		try {
+			const bytes = new TextEncoder().encode(source);
+			for (let offset = 0; offset < Math.max(1, bytes.length); offset += 8192) {
+				if (generation !== this.generation) { return; }
+				await this.worker.request({
+					operation: 'upload', asset: 'source', offset,
+					bytes: Array.from(bytes.subarray(offset, offset + 8192))
+				});
+			}
+			if (generation !== this.generation) { return; }
+			await this.worker.request({ operation: 'sourceTraceInit', looped: false });
+			const events: PlaybackTimelineEvent[] = [];
+			let previousPosition = 0;
+			let previousEventPosition = 0;
+			let batches = 0;
+			let finished = false;
+			while (!finished) {
+				if (generation !== this.generation) { return; }
+				const result = await this.worker.request({ operation: 'sourceTraceNext', until: 1_000_000_000 });
+				batches++;
+				if (!result || !('events' in result) || !Array.isArray(result.events) || result.events.length > 256
+					|| !Number.isFinite(result.position) || result.position < previousPosition
+					|| typeof result.finished !== 'boolean' || batches > 100_000) {
+					throw new Error('Invalid playback timeline events.');
+				}
+				for (const event of result.events) {
+					if (!event || !Number.isFinite(event.position) || event.position < 0) { throw new Error('Invalid playback timeline position.'); }
+					if (event.position < previousEventPosition) { throw new Error('Playback timeline events are out of order.'); }
+					if (!Number.isInteger(event.channel) || event.channel < 0 || event.channel > 15) { throw new Error('Invalid playback timeline channel.'); }
+					if (!['note', 'rest', 'clear', 'tempo'].includes(event.kind ?? '')) { throw new Error('Invalid playback timeline event kind.'); }
+					const marker = event.kind === 'clear' || event.kind === 'tempo';
+					const hasRange = Number.isInteger(event.start) && Number.isInteger(event.end)
+						&& event.start! >= 0 && event.end! > event.start!;
+					if (marker ? event.start !== null || event.end !== null : !hasRange) {
+						throw new Error('Invalid playback timeline source range.');
+					}
+					if (event.kind === 'tempo' && (!Number.isInteger(event.tempo) || event.tempo! < 1 || event.tempo! > 255)) {
+						throw new Error('Invalid playback timeline tempo.');
+					}
+					previousEventPosition = event.position;
+					events.push({
+						position: event.position, channel: event.channel, kind: event.kind,
+						start: event.start, end: event.end,
+						...(event.tempo === undefined ? {} : { tempo: event.tempo })
+					});
+					if (events.length > 50_000) { throw new Error('Playback timeline contains too many events.'); }
+				}
+				previousPosition = result.position;
+				finished = result.finished;
+			}
+			if (generation === this.generation) {
+				this.onEvents(events);
+				this.onStatus('');
+			}
+		} catch (error) {
+			if (generation === this.generation) {
+				this.onStatus(`Timeline update failed: ${error instanceof Error ? error.message : String(error)}`);
+			}
+		}
+	}
+
+	dispose(): void {
+		this.generation++;
+		clearTimeout(this.timer);
+		this.timer = undefined;
+		void this.worker.dispose();
+	}
+}
 
 export function selectionTraceSource(
 	mml: string, inheritedState: MmlPlaybackState, selectionState: MmlPlaybackStateScan, documentStart: number
@@ -200,8 +304,11 @@ export class PlaybackSourceTracker implements Disposable {
 		let changed = false;
 		while (this.queue.length && this.queue[0].position <= this.position) {
 			const event = this.queue.shift()!; changed = true;
-			if (event.start === null) { this.active.delete(event.channel); }
-			else { this.active.set(event.channel, new Range(this.document.positionAt(this.offsets[event.start]), this.document.positionAt(this.offsets[event.end!]))); }
+			if (event.kind === 'tempo') { continue; }
+			if (event.kind === 'clear' || (event.kind === undefined && event.start === null)) { this.active.delete(event.channel); }
+			else if (event.start !== null && event.end !== null) {
+				this.active.set(event.channel, new Range(this.document.positionAt(this.offsets[event.start]), this.document.positionAt(this.offsets[event.end])));
+			}
 		}
 		if (changed) { this.render(); }
 	}

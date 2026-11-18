@@ -1,7 +1,8 @@
 import { randomBytes } from 'node:crypto';
 import { basename } from 'node:path';
 import {
-	commands, ConfigurationTarget, ExtensionContext, Position, Range, TextDocument, TextEditor, Uri, WebviewView, WebviewViewProvider,
+	commands, ConfigurationTarget, ExtensionContext, Position, Range, Selection, TextDocument, TextEditor, TextEditorRevealType, Uri,
+	WebviewView, WebviewViewProvider,
 	window, workspace, WorkspaceEdit, type OutputChannel
 } from 'vscode';
 import type { LanguageClient } from 'vscode-languageclient/node';
@@ -11,7 +12,7 @@ import { createMidiInput, MidiInputConnection, type MidiInputPort } from './midi
 import { NanoDriveConnection, openNanoDrivePort, type NanoDriveAdpcmMode, type NanoDriveCodec, type NanoDriveInput, type NanoDrivePort } from './nanodrive';
 import { NanoDriveWorker } from './nanodriveWorker';
 import { NanoDriveThreadClient } from './nanodriveThreadClient';
-import { PlaybackSourceTracker, selectionTraceSource } from './playbackSource';
+import { PlaybackSourceTracker, PlaybackTimelineTracker, selectionTraceSource } from './playbackSource';
 import { requestMmlPlaybackState, type MmlPlaybackState, type MmlPlaybackStateScan } from './mmlPlaybackState';
 import type { McpServerController } from './mcpServer';
 import { findPdx, resolveUri } from './tasks';
@@ -75,6 +76,19 @@ const buildSettingsValidators: Record<keyof typeof buildSettingsDefaults, (value
 	maxTicks: value => typeof value === 'number' && Number.isInteger(value) && value >= 1 && value <= 4294967295
 };
 
+function utf16OffsetAtUtf8Byte(source: string, byteOffset: number): number | undefined {
+	if (!Number.isSafeInteger(byteOffset) || byteOffset < 0) { return undefined; }
+	let bytes = 0;
+	let characters = 0;
+	for (const character of source) {
+		if (bytes === byteOffset) { return characters; }
+		bytes += Buffer.byteLength(character);
+		if (bytes > byteOffset) { return undefined; }
+		characters += character.length;
+	}
+	return bytes === byteOffset ? characters : undefined;
+}
+
 export function registerVoiceView(
 	context: ExtensionContext,
 	getClient: () => LanguageClient | undefined,
@@ -88,6 +102,9 @@ export function registerVoiceView(
 		window.registerWebviewViewProvider('mmlx.voice', provider, { webviewOptions: { retainContextWhenHidden: true } }),
 		commands.registerCommand('mmlx.showVoicePanel', () => commands.executeCommand('mmlx.voice.focus')),
 		commands.registerCommand('mmlx.playSelection', () => provider.playEditorSelection()),
+		commands.registerCommand('mmlx.play', () => provider.playbackShortcut('play')),
+		commands.registerCommand('mmlx.playFromCursor', () => provider.playbackShortcut('playFromCursor')),
+		commands.registerCommand('mmlx.stopPlayback', () => provider.stopPlaybackCommand()),
 		commands.registerCommand('mmlx.toggleVoiceLock', () => provider.toggleVoiceLock()),
 		commands.registerCommand('mmlx.resetSoundChip', () => provider.resetSoundChip().catch(error => {
 			void window.showErrorMessage(`Sound chip reset failed: ${error instanceof Error ? error.message : String(error)}`);
@@ -97,6 +114,8 @@ export function registerVoiceView(
 
 export class VoiceViewProvider implements WebviewViewProvider {
 	private view: WebviewView | undefined;
+	private webviewReady = false;
+	private pendingPlaybackShortcut?: 'play' | 'playFromCursor';
 	private editor = window.activeTextEditor;
 	private sequence = 0;
 	private timer: ReturnType<typeof setTimeout> | undefined;
@@ -120,6 +139,7 @@ export class VoiceViewProvider implements WebviewViewProvider {
 	private emulationConnected = false;
 	private readonly playback?: EmulationSession;
 	private readonly playbackSources?: PlaybackSourceTracker;
+	private readonly playbackTimeline?: PlaybackTimelineTracker;
 	private readonly selectionPlaybackSources?: PlaybackSourceTracker;
 	private selectionPlaybackTimer: ReturnType<typeof setInterval> | undefined;
 	private selectionPlaybackStartedAt = 0;
@@ -132,6 +152,9 @@ export class VoiceViewProvider implements WebviewViewProvider {
 	private pendingInputState?: { previous: MmlPlaybackState | undefined; next: MmlPlaybackState; committed: boolean };
 	private selectionStateRequest = 0;
 	private playbackDocument?: TextDocument;
+	private playbackTimelineDocument?: TextDocument;
+	private readonly starterDocuments = new WeakSet<TextDocument>();
+	private initialPlaybackCursor?: { document: TextDocument; position: Position };
 	private playbackConnected = false;
 	private browserPlayback = false;
 	private browserPdxLoader?: (name: string) => Promise<Uint8Array>;
@@ -172,6 +195,9 @@ export class VoiceViewProvider implements WebviewViewProvider {
 		this.playbackSources = wasm ? new PlaybackSourceTracker(new NanoDriveWorker(context.extensionUri, wasm), message => {
 			if (this.playbackState.playing || this.playbackState.loading) { void window.showWarningMessage(`Playback highlighting: ${message}`); }
 		}) : undefined;
+		this.playbackTimeline = wasm ? new PlaybackTimelineTracker(new NanoDriveWorker(context.extensionUri, wasm),
+			events => { void this.view?.webview.postMessage({ type: 'playbackTimeline', events,
+				document: this.playbackTimelineDocument?.uri.toString() ?? '', version: this.playbackTimelineDocument?.version ?? -1 }); }) : undefined;
 		this.selectionPlaybackSources = wasm ? new PlaybackSourceTracker(new NanoDriveWorker(context.extensionUri, wasm), message => {
 			if (this.voiceTestSource === 'selection') { void window.showWarningMessage(`Selection playback highlighting: ${message}`); }
 		}) : undefined;
@@ -284,13 +310,21 @@ export class VoiceViewProvider implements WebviewViewProvider {
 				if (event.affectsConfiguration('mmlx.serial') || event.affectsConfiguration('mmlx.midi')) { this.sendConnectionSettings(); }
 			}),
 			workspace.onDidChangeTextDocument(event => {
+				if (event.document === this.playbackDocument) {
+					this.updatePlaybackTimeline();
+					this.sendPlaybackCursor(window.activeTextEditor);
+				}
 				if (event.document.uri.toString() === this.editor?.document.uri.toString()) {
 					this.sendEditorSelection(window.activeTextEditor);
 					this.schedule();
 				}
 			}),
 			workspace.onDidCloseTextDocument(document => {
-				if (document === this.playbackDocument) { this.playbackDocument = undefined; this.stopPlayback(); }
+				if (document === this.playbackDocument) {
+					this.playbackDocument = undefined;
+					this.updatePlaybackTimeline();
+					this.stopPlayback();
+				}
 				if (document.uri.toString() === this.editor?.document.uri.toString()) {
 					this.editor = undefined;
 					this.sequence++;
@@ -306,6 +340,7 @@ export class VoiceViewProvider implements WebviewViewProvider {
 
 	async resolveWebviewView(view: WebviewView): Promise<void> {
 		this.view = view;
+		this.webviewReady = false;
 		this.updateConnectionMarker();
 		const media = Uri.joinPath(this.context.extensionUri, 'assets', 'webview');
 		const icons = Uri.joinPath(this.context.extensionUri, 'assets', 'icon');
@@ -314,6 +349,7 @@ export class VoiceViewProvider implements WebviewViewProvider {
 		this.context.subscriptions.push(
 			view.webview.onDidReceiveMessage(message => {
 				if (message?.type === 'ready') {
+					this.webviewReady = true;
 					this.outputId = 0;
 					this.keyboardOutputMode = 'emulation';
 					void this.nanodrive.disconnect();
@@ -321,10 +357,16 @@ export class VoiceViewProvider implements WebviewViewProvider {
 					this.stopPlayback();
 					this.send(); this.schedule(); this.sendBuildSettings();
 					this.sendEditorSelection(window.activeTextEditor);
+					this.sendPlaybackCursor(window.activeTextEditor);
 					void this.view?.webview.postMessage({ type: 'midiNotes', notes: this.midiInput.notes });
 					void this.view?.webview.postMessage({ type: 'pitchBend', value: this.pitchBendValue });
 					void this.view?.webview.postMessage({ type: 'sustainState', active: this.sustainPedals.size > 0 });
 					void this.refreshSerialPorts(); void this.refreshMidiInputPorts();
+					if (this.pendingPlaybackShortcut) {
+						const action = this.pendingPlaybackShortcut;
+						this.pendingPlaybackShortcut = undefined;
+						void this.view?.webview.postMessage({ type: 'playbackShortcut', action });
+					}
 				}
 				else if (message?.type === 'openStarter') { void this.openStarter(); }
 				else if (message?.type === 'openPdxStarter') { void this.openPdxStarter(); }
@@ -356,6 +398,7 @@ export class VoiceViewProvider implements WebviewViewProvider {
 				else if (message?.type === 'resetOutput') { void this.resetOutput(message); }
 				else if (message?.type === 'voiceTestAction') { void this.voiceTestAction(message); }
 				else if (message?.type === 'playbackAction') { void this.playbackAction(message); }
+				else if (message?.type === 'playbackTimelineNavigate') { void this.navigatePlaybackTimeline(message); }
 				else if (message?.type === 'browserPlaybackState' && this.browserPlayback && message.id === this.playbackId
 					&& this.playbackMode === 'emulation' && workspace.isTrusted && typeof message.position === 'number'
 					&& Number.isFinite(message.position) && message.position >= 0 && typeof message.finished === 'boolean') {
@@ -422,7 +465,7 @@ export class VoiceViewProvider implements WebviewViewProvider {
 				else { this.note({ type: 'allOff', source: 0 }); }
 			}),
 			view.onDidDispose(() => {
-				if (this.view === view) { this.view = undefined; void this.disconnectNanoDrive(); this.emulation?.disconnect(); this.stopPlayback(); this.sequence++; this.midiInput.disconnect(); }
+				if (this.view === view) { this.view = undefined; this.webviewReady = false; void this.disconnectNanoDrive(); this.emulation?.disconnect(); this.stopPlayback(); this.sequence++; this.midiInput.disconnect(); }
 			})
 		);
 		const template = new TextDecoder().decode(await workspace.fs.readFile(Uri.joinPath(media, 'voice.html')));
@@ -442,6 +485,7 @@ export class VoiceViewProvider implements WebviewViewProvider {
 		try {
 			const content = new TextDecoder().decode(await workspace.fs.readFile(Uri.joinPath(this.context.extensionUri, 'assets', 'mml', 'a-little-prelude.mml')));
 			const document = await workspace.openTextDocument({ language: 'mmlx', content });
+			this.starterDocuments.add(document);
 			await window.showTextDocument(document, { preview: false });
 		} catch (error) {
 			void window.showErrorMessage(`Could not open example MML: ${error instanceof Error ? error.message : String(error)}`);
@@ -742,7 +786,52 @@ export class VoiceViewProvider implements WebviewViewProvider {
 			available: !!document && !document.isClosed && workspace.isTrusted && (!!this.playback || this.nanodriveAvailable),
 			mode: this.playbackMode, busy: this.nanodrive.playbackState.busy,
 			document: document?.uri.toString() ?? '', source: document ? basename(document.fileName) : '',
+			timelineOffset: document && this.starterDocuments.has(document) ? 1 : 0,
 			...this.playbackState });
+	}
+
+	private updatePlaybackTimeline(): void {
+		const document = this.playbackDocument;
+		const changed = document !== this.playbackTimelineDocument;
+		this.playbackTimelineDocument = document;
+		if (changed) { void this.view?.webview.postMessage({ type: 'playbackTimelineReset' }); }
+		this.playbackTimeline?.setSource(
+			document && !document.isClosed && workspace.isTrusted ? document.getText() : undefined,
+			!changed
+		);
+	}
+
+	private sendPlaybackCursor(editor: TextEditor | undefined): void {
+		const document = editor?.document;
+		if (!editor || !document || document !== this.playbackDocument || document.languageId !== 'mmlx'
+			|| this.playbackState.playing || this.playbackState.loading) { return; }
+		if (this.initialPlaybackCursor?.document === document) {
+			if (editor.selection.active.isEqual(this.initialPlaybackCursor.position)) { return; }
+			this.initialPlaybackCursor = undefined;
+		}
+		const sourceOffset = new TextEncoder().encode(document.getText().slice(0, document.offsetAt(editor.selection.active))).length;
+		void this.view?.webview.postMessage({
+			type: 'playbackCursor', document: document.uri.toString(), version: document.version, sourceOffset
+		});
+	}
+
+	private async navigatePlaybackTimeline(message: { document?: unknown; version?: unknown; sourceOffset?: unknown }): Promise<void> {
+		const document = this.playbackDocument;
+		if (!workspace.isTrusted || !document || document.isClosed || message.document !== document.uri.toString()
+			|| message.version !== document.version || typeof message.sourceOffset !== 'number'
+			|| !Number.isSafeInteger(message.sourceOffset)) { return; }
+		const offset = utf16OffsetAtUtf8Byte(document.getText(), message.sourceOffset);
+		if (offset === undefined) { return; }
+		try {
+			const editor = await window.showTextDocument(document, { preserveFocus: false });
+			const position = document.positionAt(offset);
+			editor.selection = new Selection(position, position);
+			editor.revealRange(new Range(position, position), TextEditorRevealType.InCenterIfOutsideViewport);
+		} catch (failure) {
+			const detail = failure instanceof Error ? failure.message : String(failure);
+			this.playbackLog?.appendLine(`${new Date().toISOString()} Timeline navigation failed: ${detail}`);
+			void window.showErrorMessage(`Could not navigate to the MML source: ${detail}`);
+		}
 	}
 
 	private stopPlayback(reset = true, error = ''): void {
@@ -756,12 +845,19 @@ export class VoiceViewProvider implements WebviewViewProvider {
 		if (reset) { this.playbackState.position = 0; }
 		this.playback?.disconnect(error);
 		void this.nanodrive.stopPlayback(error);
-		const document = window.activeTextEditor?.document;
-		this.playbackDocument = document?.languageId === 'mmlx' ? document : undefined;
+		const editor = window.activeTextEditor;
+		const activeDocument = editor?.document;
+		const document = activeDocument?.languageId === 'mmlx' && !activeDocument.isClosed ? activeDocument : undefined;
+		if (!document || document !== this.playbackDocument) {
+			this.initialPlaybackCursor = document && editor ? { document, position: editor.selection.active } : undefined;
+		}
+		this.playbackDocument = document;
+		this.updatePlaybackTimeline();
 		this.sendPlayback();
+		this.sendPlaybackCursor(editor);
 	}
 
-	private async playbackAction(message: { action?: unknown; mode?: unknown; id?: unknown; document?: unknown; sampleRate?: unknown; browser?: unknown; looped?: unknown; volume?: unknown; muted?: unknown; error?: unknown }): Promise<void> {
+	private async playbackAction(message: { action?: unknown; mode?: unknown; id?: unknown; document?: unknown; sampleRate?: unknown; browser?: unknown; looped?: unknown; volume?: unknown; muted?: unknown; position?: unknown; error?: unknown }): Promise<void> {
 		if (!Number.isSafeInteger(message.id)) { return; }
 		try {
 		if (message.action === 'play' || message.action === 'playFromCursor') {
@@ -812,7 +908,11 @@ export class VoiceViewProvider implements WebviewViewProvider {
 			}); }
 		} else if (message.id === this.playbackId) {
 			if (message.action === 'stop' || message.action === 'ended') {
-				this.stopPlayback(message.action === 'stop', typeof message.error === 'string' ? message.error.slice(0, 4096) : '');
+				if (message.action === 'stop' && typeof message.position === 'number'
+					&& Number.isFinite(message.position) && message.position >= 0) {
+					this.playbackState.position = message.position;
+				}
+				this.stopPlayback(false, typeof message.error === 'string' ? message.error.slice(0, 4096) : '');
 			}
 			else if (this.playbackMode === 'emulation' && message.action === 'pause' && this.playbackState.playing && !this.playbackState.finished) {
 				this.playbackState.playing = false; this.playbackState.paused = true; this.sendPlayback();
@@ -1123,11 +1223,11 @@ export class VoiceViewProvider implements WebviewViewProvider {
 		this.sendEditorSelection(window.activeTextEditor);
 		const document = editor?.document.languageId === 'mmlx' ? editor.document : undefined;
 		if (document !== this.playbackDocument && !this.playbackState.playing && !this.playbackState.paused && !this.playbackState.loading) {
-			this.playbackDocument = document;
 			this.stopPlayback();
-		} else { this.sendPlayback(); }
+		}
 		if (editor?.document.languageId !== 'mmlx') { return; }
 		this.editor = editor;
+		this.sendPlaybackCursor(editor);
 		const target = this.editTarget;
 		const range = target?.voice.range;
 		if (target && range && !this.editing && !this.snapshot.retained && !this.snapshot.error
@@ -1196,6 +1296,29 @@ export class VoiceViewProvider implements WebviewViewProvider {
 		const mml = editor.document.getText(editor.selection);
 		if (!mml.trim() || mml.length > 8192) { return; }
 		await this.voiceTestAction({ id: this.outputId, action: 'playSelection', mml });
+	}
+
+	playbackShortcut(action: 'play' | 'playFromCursor'): void {
+		if (this.view && this.webviewReady) {
+			void this.view.webview.postMessage({ type: 'playbackShortcut', action });
+			return;
+		}
+		const editor = window.activeTextEditor;
+		if (editor?.document.languageId === 'mmlx') { this.follow(editor); }
+		this.pendingPlaybackShortcut = action;
+		void commands.executeCommand('mmlx.voice.focus').then(undefined, failure => {
+			if (this.pendingPlaybackShortcut === action) { this.pendingPlaybackShortcut = undefined; }
+			void window.showErrorMessage(`Could not open the Playback panel: ${failure instanceof Error ? failure.message : String(failure)}`);
+		});
+	}
+
+	stopPlaybackCommand(): void {
+		this.pendingPlaybackShortcut = undefined;
+		if (this.view && this.webviewReady) {
+			void this.view.webview.postMessage({ type: 'playbackShortcut', action: 'stop' });
+			return;
+		}
+		this.stopPlayback(false);
 	}
 
 	private schedule(): void {
@@ -1344,6 +1467,7 @@ export class VoiceViewProvider implements WebviewViewProvider {
 
 	dispose(): void {
 		clearInterval(this.selectionPlaybackTimer); this.selectionPlaybackSources?.dispose(); this.playbackSources?.dispose();
+		this.playbackTimeline?.dispose();
 		this.view = undefined;
 		if (this.nanodrive instanceof NanoDriveThreadClient) { void this.nanodrive.dispose(); }
 		else { void this.disconnectNanoDrive(); }

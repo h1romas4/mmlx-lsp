@@ -15,8 +15,20 @@ use std::{cell::RefCell, rc::Rc};
 pub struct SourceEvent {
     pub position: f64,
     pub channel: usize,
+    pub kind: SourceEventKind,
     pub start: Option<usize>,
     pub end: Option<usize>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub tempo: Option<u8>,
+}
+
+#[derive(Clone, Copy, Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub enum SourceEventKind {
+    Note,
+    Rest,
+    Clear,
+    Tempo,
 }
 
 pub struct SourceTrace {
@@ -73,22 +85,40 @@ impl SourceTrace {
                     command,
                     MdxCommand::EndOfTrack(_) | MdxCommand::EndOfTrackLoop(_)
                 );
-                if (timed && span.is_some()) || clear {
+                let tempo = match command {
+                    MdxCommand::Tempo(tempo) => Some(tempo.value.max(1)),
+                    _ => None,
+                };
+                if (timed && span.is_some()) || clear || tempo.is_some() {
                     let id = u16::try_from(locations.len() + 1)
                         .map_err(|_| "Too many playback source locations")?;
                     locations.push(SourceEvent {
                         position: 0.0,
                         channel: track,
+                        kind: if clear {
+                            SourceEventKind::Clear
+                        } else if tempo.is_some() {
+                            SourceEventKind::Tempo
+                        } else if matches!(command, MdxCommand::Note(_)) {
+                            SourceEventKind::Note
+                        } else {
+                            SourceEventKind::Rest
+                        },
                         start: if clear {
+                            None
+                        } else if tempo.is_some() {
                             None
                         } else {
                             span.map(|span| span.start())
                         },
                         end: if clear {
                             None
+                        } else if tempo.is_some() {
+                            None
                         } else {
                             span.map(|span| span.end())
                         },
+                        tempo,
                     });
                     for (register, value) in [(2, id as u8), (3, (id >> 8) as u8)] {
                         commands.push(MdxCommand::OpmRegisterWrite(MdxOpmRegisterWrite {
@@ -311,8 +341,30 @@ mod tests {
         assert!(
             events
                 .iter()
-                .any(|event| event.channel == 0 && event.start.is_none())
+                .any(|event| event.channel == 0 && matches!(event.kind, SourceEventKind::Clear))
         );
+    }
+
+    #[test]
+    fn source_trace_marks_tempo_changes_at_their_playback_positions() {
+        let mut trace = SourceTrace::new("A t120 o4 c4 t60 d4", false).unwrap();
+        let mut events = Vec::new();
+        for _ in 0..100 {
+            let (batch, done) = trace.next(10.0).unwrap();
+            events.extend(batch);
+            if done {
+                break;
+            }
+        }
+
+        let tempos = events
+            .iter()
+            .filter(|event| matches!(event.kind, SourceEventKind::Tempo))
+            .collect::<Vec<_>>();
+        assert_eq!(tempos.len(), 2);
+        assert_eq!(tempos[0].tempo, Some(216));
+        assert_eq!(tempos[1].tempo, Some(175));
+        assert!((tempos[1].position - 0.49152).abs() < 1.0 / 44100.0);
     }
 
     #[test]

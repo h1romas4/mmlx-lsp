@@ -5,6 +5,7 @@ import { createKeyboardControls } from './keyboardControls.js';
 import { createOutputConnection } from './outputConnection.js';
 import { createEmulationAudio } from './emulationAudio.js';
 import { createAudioMonitors } from './audioMonitors.js';
+import { createPlaybackTimeline } from './playbackTimeline.js';
 
 const vscode = acquireVsCodeApi();
 let outputId = 0;
@@ -13,6 +14,7 @@ let playbackId = 0;
 let playbackOperation = 0;
 let playbackState = null;
 let playbackOrigin = 0;
+let pendingPlaybackGesture;
 let nanoDriveConnected = false;
 const playbackAudio = createEmulationAudio(
 	blocks => vscode.postMessage({ type: 'playbackRender', id: playbackId, blocks }),
@@ -27,6 +29,7 @@ const playbackAudio = createEmulationAudio(
 	position => {
 		const consumed = playbackOrigin + position;
 		playbackControls.setPosition(consumed);
+		playbackTimeline.setPosition(consumed, playbackState?.playing === true);
 		if (playbackState?.playing && playbackMode === 'emulation') {
 			vscode.postMessage({ type: 'playbackPosition', id: playbackId, mode: playbackMode, position: consumed });
 		}
@@ -42,6 +45,8 @@ const emulationAudio = createEmulationAudio(
 	});
 const audioMonitors = createAudioMonitors(document.getElementById('audio-monitors'), () => emulationAudio.readAnalysis(), () => saveState());
 const playbackMonitors = createAudioMonitors(document.getElementById('playback-monitors'), () => playbackAudio.readAnalysis());
+const playbackTimeline = createPlaybackTimeline(document.getElementById('playback-timeline'), location =>
+	vscode.postMessage({ type: 'playbackTimelineNavigate', ...location }));
 const voiceControls = createVoiceControls(document.getElementById('voice-controls'), message => vscode.postMessage(message));
 const playbackControls = createPlaybackControls(document.getElementById('playback-controls'), mode => {
 	playbackMode = mode;
@@ -146,10 +151,15 @@ algorithms.addEventListener('toggle', () => saveState());
 const keyboard = document.getElementById('keyboard');
 keyboard.open = saved?.keyboardOpen !== false;
 keyboard.addEventListener('toggle', () => saveState());
+const playbackTimelineSection = document.getElementById('playback-timeline');
+playbackTimelineSection.open = saved?.playbackTimelineOpen !== false;
+playbackTimelineSection.addEventListener('toggle', () => saveState());
 
 function saveState() {
 	vscode.setState({ ...snapshot, activeTab, algorithmsOpen: algorithms.open, playbackMode,
-		playbackLooped: playbackControls.looped, playbackVolume: playbackControls.volume * 100, playbackMuted: playbackControls.muted, playbackSoloed: playbackControls.soloed, keyboardOpen: keyboard.open, keyboardMode, monitorGain: audioMonitors.gain, voiceTestMml: keyboardControls.testMml });
+		playbackLooped: playbackControls.looped, playbackVolume: playbackControls.volume * 100, playbackMuted: playbackControls.muted, playbackSoloed: playbackControls.soloed,
+		keyboardOpen: keyboard.open, playbackTimelineOpen: playbackTimelineSection.open,
+		keyboardMode, monitorGain: audioMonitors.gain, voiceTestMml: keyboardControls.testMml });
 }
 
 function sendPlaybackVolume() {
@@ -160,17 +170,27 @@ function sendPlaybackVolume() {
 
 async function playbackAction(action) {
 	if (action === 'stop') {
+		pendingPlaybackGesture = undefined;
+		const position = playbackTimeline.position;
 		playbackOperation++; playbackAudio.disconnect(); playbackMonitors.setConnected(false);
-		vscode.postMessage({ type: 'playbackAction', action, id: playbackId });
-		playbackState = { ...playbackState, playing: false, paused: false, loading: false, position: 0, error: '' };
+		vscode.postMessage({ type: 'playbackAction', action, id: playbackId, position });
+		playbackState = { ...playbackState, playing: false, paused: false, loading: false, position, error: '' };
+		playbackTimeline.setPosition(position, false);
 		playbackControls.render(playbackState); return;
 	}
 	const operation = ++playbackOperation;
 	try {
 		if (action === 'play' || action === 'playFromCursor') {
+			if (playbackMode === 'emulation' && !navigator.userActivation.hasBeenActive) {
+				pendingPlaybackGesture = action;
+				playbackState = { ...playbackState, loading: false, awaitingGesture: true };
+				playbackControls.render(playbackState);
+				return;
+			}
+			pendingPlaybackGesture = undefined;
 			const id = ++playbackId;
 			const document = playbackState?.document;
-			playbackState = { ...playbackState, playing: false, paused: false, loading: true, startAction: action, position: 0, finished: false, error: '' };
+			playbackState = { ...playbackState, playing: false, paused: false, loading: true, awaitingGesture: false, startAction: action, position: 0, finished: false, error: '' };
 			playbackControls.render(playbackState);
 			if (playbackMode === 'nanodrive8' && action === 'playFromCursor') { return; }
 			const sampleRate = playbackMode === 'nanodrive8' ? undefined : await playbackAudio.connect();
@@ -190,6 +210,14 @@ async function playbackAction(action) {
 		playbackControls.render(playbackState);
 	}
 }
+
+document.addEventListener('click', event => {
+	if (!pendingPlaybackGesture || !navigator.userActivation.isActive
+		|| !(event.target instanceof Element) || !event.target.closest('#playback-tab, #playback-controls')) { return; }
+	const action = pendingPlaybackGesture;
+	pendingPlaybackGesture = undefined;
+	void playbackAction(action);
+});
 
 function selectTab(name, focus = false) {
 	activeTab = name;
@@ -271,14 +299,28 @@ window.addEventListener('message', event => {
 	} else if (message?.type === 'playback') {
 		const changed = message.document !== playbackState?.document;
 		if (!changed && message.id !== playbackId) { return; }
+		if (changed || !message.available) { pendingPlaybackGesture = undefined; }
 		if (changed || !message.available) { playbackOperation++; playbackAudio.disconnect(); }
 		if (message.mode !== 'nanodrive8' && !message.playing && !message.paused) { playbackOrigin = message.position || 0; }
 		playbackState = message;
+		playbackTimeline.setDocument(message.document, message.timelineOffset);
+		if (message.playing || message.loading) { playbackTimeline.setCursor(undefined); }
+		playbackTimeline.setPosition(message.position, message.playing === true);
 		playbackControls.render(message);
 		if (message.mode === 'nanodrive8') { playbackAudio.disconnect(); }
 		else if (message.playing) { playbackAudio.start(); if (message.finished) { playbackAudio.finish(); } }
 		else if (!message.paused && !message.loading) { playbackAudio.disconnect(); }
 		playbackMonitors.setConnected(message.mode !== 'nanodrive8' && (message.playing || message.paused));
+	} else if (message?.type === 'playbackShortcut') {
+		if (message.action === 'play') { playbackControls.play(); }
+		else if (message.action === 'playFromCursor') { playbackControls.playFromCursor(); }
+		else if (message.action === 'stop') { void playbackAction('stop'); }
+	} else if (message?.type === 'playbackTimeline') {
+		if (Array.isArray(message.events)) { playbackTimeline.setEvents(message.events, message.document, message.version); }
+	} else if (message?.type === 'playbackTimelineReset') {
+		playbackTimeline.resetPosition();
+	} else if (message?.type === 'playbackCursor') {
+		playbackTimeline.setCursor(message.sourceOffset, message.document, message.version);
 	} else if (message?.type === 'playbackKeys' && message.id === playbackId && message.mode === playbackMode) {
 		playbackControls.enqueueKeys(message.keys);
 	} else if (message?.type === 'nanoDrivePlayback') {
@@ -324,7 +366,10 @@ window.addEventListener('message', event => {
 		if (message.type === 'midiSettings') { keyboardControls.setMidiState(message); }
 	}
 });
-window.addEventListener('pagehide', () => { audioMonitors.dispose(); playbackMonitors.dispose(); emulationAudio.disconnect(); playbackAudio.disconnect(); });
+window.addEventListener('pagehide', () => {
+	audioMonitors.dispose(); playbackMonitors.dispose(); playbackTimeline.dispose();
+	emulationAudio.disconnect(); playbackAudio.disconnect();
+});
 voiceControls.render(snapshot);
 keyboardControls.setVoiceAvailable(!!snapshot.voice && !snapshot.error);
 keyboardControls.setTestMml(saved?.voiceTestMml);

@@ -70,6 +70,18 @@
         "title": "mmlx: Play MML Selection"
       },
       {
+        "command": "mmlx.play",
+        "title": "mmlx: Play MML"
+      },
+      {
+        "command": "mmlx.playFromCursor",
+        "title": "mmlx: Play MML from Cursor"
+      },
+      {
+        "command": "mmlx.stopPlayback",
+        "title": "mmlx: Stop Playback"
+      },
+      {
         "command": "mmlx.stepifySelection",
         "title": "mmlx: Stepify MML Selection"
       },

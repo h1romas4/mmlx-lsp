@@ -17,7 +17,7 @@ import type { FmKeyEvent } from '../emulationProtocol';
 import { NanoDriveWorker } from '../nanodriveWorker';
 import { NanoDriveRuntime } from '../nanodriveRuntime';
 import { NanoDriveThreadClient, type NanoDriveThreadEvent } from '../nanodriveThreadClient';
-import { PlaybackSourceTracker, selectionTraceSource } from '../playbackSource';
+import { PlaybackSourceTracker, PlaybackTimelineTracker, selectionTraceSource, type PlaybackTimelineEvent } from '../playbackSource';
 import { requestMmlPlaybackState, type MmlPlaybackStateScan } from '../mmlPlaybackState';
 import { registerStepifySelectionCommand } from '../stepify';
 import { registerTrackLengthHover } from '../trackLengthHover';
@@ -1604,6 +1604,75 @@ suite('mmlx extension', () => {
 		} finally { release(); tracker.dispose(); }
 	});
 
+	test('Playback timeline keeps the current display until the latest full trace is ready', async () => {
+		let source = '';
+		let release!: () => void; let entered!: () => void;
+		const delayed = new Promise<void>(resolve => { release = resolve; });
+		const slowTrace = new Promise<void>(resolve => { entered = resolve; });
+		const worker = { dispose: async () => {}, request: async (params: Parameters<NanoDriveWorker['request']>[0]) => {
+			if (params.operation === 'upload') {
+				source = new TextDecoder().decode(new Uint8Array(params.bytes));
+				return null;
+			}
+			if (params.operation === 'sourceTraceInit') { return { events: [], position: 0, finished: false }; }
+			if (params.operation === 'sourceTraceNext') {
+				if (source === 'slow') { entered(); await delayed; }
+				const channel = source === 'latest' ? 2 : source === 'slow' ? 1 : 0;
+				return { events: [{ position: 0, channel, kind: 'note' as const, start: 0, end: 1 }],
+					position: 1, finished: true };
+			}
+			return null;
+		} };
+		const updates: number[][] = [];
+		const statuses: string[] = [];
+		const tracker = new PlaybackTimelineTracker(worker, events => updates.push(events.map(event => event.channel)),
+			status => statuses.push(status));
+		async function waitFor(predicate: () => boolean): Promise<void> {
+			for (let count = 0; count < 300 && !predicate(); count++) { await new Promise(resolve => setTimeout(resolve, 10)); }
+			assert.ok(predicate(), `Timed out waiting for timeline update: ${JSON.stringify(statuses)}`);
+		}
+		try {
+			tracker.setSource('first');
+			await waitFor(() => updates.some(update => update[0] === 0));
+			tracker.setSource('slow');
+			await slowTrace;
+			assert.deepStrictEqual(updates.at(-1), [0], 'The previous complete timeline stays visible while reprocessing');
+			assert.strictEqual(statuses.at(-1), 'Updating timeline…');
+			tracker.setSource('latest');
+			release();
+			await waitFor(() => updates.at(-1)?.[0] === 2);
+			assert.deepStrictEqual(updates.at(-1), [2], 'A stale in-flight trace cannot replace the newest result');
+			assert.ok(!updates.some(update => update[0] === 1), 'The superseded trace is discarded');
+			assert.strictEqual(statuses.at(-1), '');
+		} finally { release(); tracker.dispose(); }
+	});
+
+	test('Playback timeline WASI trace includes notes and tempo changes', async function () {
+		this.timeout(20000);
+		const extension = vscode.extensions.all.find(extension => extension.packageJSON.name === 'mmlx-lsp'); assert.ok(extension);
+		const worker = new NanoDriveWorker(extension.extensionUri, await Wasm.load());
+		let events: PlaybackTimelineEvent[] = [];
+		let status = '';
+		const tracker = new PlaybackTimelineTracker(worker, value => { events = value; }, value => { status = value; });
+		async function waitFor(): Promise<void> {
+			for (let count = 0; count < 1500 && (status || !events.length); count++) {
+				await new Promise(resolve => setTimeout(resolve, 10));
+			}
+			assert.ok(events.length && !status, status || 'Timed out waiting for the playback timeline.');
+		}
+		try {
+			tracker.setSource('A t120 o4 c4 t60 d4');
+			await waitFor();
+			const tempos = events.filter(event => event.kind === 'tempo');
+			assert.deepStrictEqual(tempos.map(event => event.tempo), [216, 175]);
+			assert.ok(Math.abs(tempos[1].position - 0.49152) < 0.002, 'Tempo change is mapped to its playback time');
+			assert.strictEqual(events.filter(event => event.kind === 'note').length, 2);
+			const notes = events.filter(event => event.kind === 'note');
+			assert.ok(notes.every(event => Number.isInteger(event.start) && Number.isInteger(event.end) && event.end! > event.start!),
+				'Timeline notes retain their MML source ranges for cursor mapping');
+		} finally { tracker.dispose(); }
+	});
+
 	test('Playback source WASI highlights consumed FM and PCM positions, loops and clears on edits', async function () {
 		this.timeout(20000);
 		const extension = vscode.extensions.all.find(extension => extension.packageJSON.name === 'mmlx-lsp'); assert.ok(extension);
@@ -1792,8 +1861,12 @@ suite('mmlx extension', () => {
 		this.timeout(20000);
 		const extension = vscode.extensions.all.find(extension => extension.packageJSON.name === 'mmlx-lsp');
 		assert.ok(extension);
-		const document = await vscode.workspace.openTextDocument({ language: 'mmlx', content: playbackSource });
+		const source = '; 日本語 😀\n' + playbackSource;
+		const document = await vscode.workspace.openTextDocument({ language: 'mmlx', content: source });
 		await vscode.window.showTextDocument(document);
+		const initialEditor = vscode.window.activeTextEditor;
+		assert.ok(initialEditor?.document === document);
+		initialEditor.selection = new vscode.Selection(document.positionAt(source.length - 1), document.positionAt(source.length - 1));
 		const context = { extensionUri: extension.extensionUri, subscriptions: [] as vscode.Disposable[] };
 		const events = new vscode.EventEmitter<void>();
 		const messages = new vscode.EventEmitter<unknown>();
@@ -1808,8 +1881,11 @@ suite('mmlx extension', () => {
 			return Promise.resolve(undefined);
 		}) as typeof showErrorMessage;
 		let state: Record<string, unknown> = {};
+		let playbackMessageCount = 0;
 		let blocks = 0;
 		const keyMessages: { id: number; keys: FmKeyEvent[] }[] = [];
+		const cursorMessages: Record<string, unknown>[] = [];
+		const shortcutMessages: Record<string, unknown>[] = [];
 		let browserInit: Record<string, unknown> | undefined;
 		let browserAsset: Record<string, unknown> | undefined;
 		const provider = new VoiceViewProvider(context as unknown as vscode.ExtensionContext, () => undefined,
@@ -1827,7 +1903,9 @@ suite('mmlx extension', () => {
 			webview: { cspSource: 'https://test.invalid', asWebviewUri: (uri: vscode.Uri) => uri,
 				onDidReceiveMessage: messages.event, options: {}, html: '',
 				postMessage: async (message: Record<string, unknown>) => {
-					if (message.type === 'playback') { state = message; }
+					if (message.type === 'playback') { state = message; playbackMessageCount++; }
+					if (message.type === 'playbackCursor') { cursorMessages.push(message); }
+					if (message.type === 'playbackShortcut') { shortcutMessages.push(message); }
 					if (message.type === 'browserPlaybackInit') { browserInit = message; }
 					if (message.type === 'browserPlaybackAsset') { browserAsset = message; }
 					if (message.type === 'playbackPcm') { assert.ok(message.pcm instanceof ArrayBuffer); blocks++; }
@@ -1846,8 +1924,46 @@ suite('mmlx extension', () => {
 		try {
 			await provider.resolveWebviewView(view);
 			assert.ok(!view.webview.html.includes('id="playback-error"'), 'Playback errors are not rendered in the panel');
+			assert.ok(!view.webview.html.includes('data-timeline-status'), 'Timeline analysis status does not shift the layout');
 			assert.strictEqual(state.available, true);
 			assert.ok(!view.webview.html.includes('OKI ADPCM is not supported yet'));
+			messages.fire({ type: 'ready' });
+			await new Promise(resolve => setTimeout(resolve, 0));
+			assert.strictEqual(cursorMessages.length, 0, 'Opening a new MML does not move its timeline to the editor cursor');
+			provider.playbackShortcut('play');
+			provider.playbackShortcut('playFromCursor');
+			provider.stopPlaybackCommand();
+			await until(() => shortcutMessages.length === 3);
+			assert.deepStrictEqual(shortcutMessages.map(message => message.action), ['play', 'playFromCursor', 'stop']);
+			const cursorEditor = vscode.window.activeTextEditor;
+			assert.ok(cursorEditor?.document === document);
+			const cursorOffset = source.indexOf('cdef') + 2;
+			const expectedSourceOffset = new TextEncoder().encode(source.slice(0, cursorOffset)).length;
+			cursorMessages.length = 0;
+			const previousPlaybackMessageCount = playbackMessageCount;
+			cursorEditor.selection = new vscode.Selection(document.positionAt(cursorOffset), document.positionAt(cursorOffset));
+			await until(() => cursorMessages.some(message =>
+				message.version === document.version && message.sourceOffset === expectedSourceOffset));
+			assert.strictEqual(playbackMessageCount, previousPlaybackMessageCount,
+				'Moving the editor cursor does not resend unchanged playback state to the timeline');
+			const cursorMessage = cursorMessages.find(message =>
+				message.version === document.version && message.sourceOffset === expectedSourceOffset);
+			assert.ok(cursorMessage);
+			assert.strictEqual(cursorMessage.document, document.uri.toString());
+			assert.strictEqual(cursorMessage.sourceOffset, expectedSourceOffset,
+				'Editor cursor positions use UTF-8 byte offsets after Unicode text');
+			const targetCursorOffset = source.indexOf('cdef');
+			messages.fire({ type: 'playbackTimelineNavigate', document: document.uri.toString(), version: document.version,
+				sourceOffset: new TextEncoder().encode(source.slice(0, targetCursorOffset)).length });
+			await until(() => {
+				const activeEditor = vscode.window.activeTextEditor;
+				return activeEditor?.document === document
+					&& document.offsetAt(activeEditor.selection.active) === targetCursorOffset;
+			});
+			const navigatedEditor = vscode.window.activeTextEditor;
+			assert.ok(navigatedEditor?.document === document);
+			assert.strictEqual(document.offsetAt(navigatedEditor.selection.active), targetCursorOffset,
+				'Timeline navigation converts UTF-8 source offsets back to the editor cursor');
 			messages.fire({ type: 'playbackAction', action: 'play', id: 1, document: document.uri.toString(), sampleRate: 48000 });
 			await until(() => state.playing === true);
 			assert.ok(view.badge?.tooltip.includes('Playback'));
@@ -1880,8 +1996,8 @@ suite('mmlx extension', () => {
 			await until(() => state.available === true);
 			messages.fire({ type: 'playbackAction', action: 'play', id: 2, document: document.uri.toString(), sampleRate: 48000 });
 			await until(() => state.playing === true);
-			messages.fire({ type: 'playbackAction', action: 'stop', id: 2 });
-			assert.strictEqual(state.playing, false); assert.strictEqual(state.position, 0);
+			messages.fire({ type: 'playbackAction', action: 'stop', id: 2, position: 0.1234 });
+			assert.strictEqual(state.playing, false); assert.strictEqual(state.position, 0.1234);
 			const editor = await vscode.window.showTextDocument(document);
 			const cursor = document.positionAt(document.getText().indexOf('cdef') + 2);
 			editor.selection = new vscode.Selection(cursor, cursor);
@@ -1907,7 +2023,7 @@ suite('mmlx extension', () => {
 			assert.strictEqual(state.loading, false); assert.strictEqual(state.playing, false);
 			messages.fire({ type: 'playbackAction', action: 'stop', id: 5, error: 'Audio output was suspended.' });
 			assert.strictEqual(state.error, 'Audio output was suspended.');
-			assert.strictEqual(document.getText(), playbackSource);
+			assert.strictEqual(document.getText(), source);
 			messages.fire({ type: 'playbackAction', action: 'play', browser: true, id: 6, document: document.uri.toString(), sampleRate: 48000 });
 			await until(() => browserInit?.id === 6);
 			assert.strictEqual(state.loading, true); assert.strictEqual(state.playing, false);
@@ -2549,10 +2665,15 @@ suite('mmlx extension', () => {
 		const context = { extensionUri: extension.extensionUri, subscriptions: [] as vscode.Disposable[] };
 		const events = new vscode.EventEmitter<void>();
 		const messages = new vscode.EventEmitter<unknown>();
+		const playbackMessages: Record<string, unknown>[] = [];
 		const provider = new VoiceViewProvider(context as unknown as vscode.ExtensionContext, () => undefined, async () => [], async () => []);
 		const view = { visible: true, onDidChangeVisibility: events.event, onDidDispose: events.event,
 			webview: { cspSource: 'https://test.invalid', asWebviewUri: (uri: vscode.Uri) => uri,
-				onDidReceiveMessage: messages.event, postMessage: async () => true, options: {}, html: '' } } as unknown as vscode.WebviewView;
+				onDidReceiveMessage: messages.event,
+				postMessage: async (message: Record<string, unknown>) => {
+					if (message.type === 'playback') { playbackMessages.push(message); }
+					return true;
+				}, options: {}, html: '' } } as unknown as vscode.WebviewView;
 		let subscription: vscode.Disposable | undefined;
 		let timer: ReturnType<typeof setTimeout> | undefined;
 		try {
@@ -2566,6 +2687,8 @@ suite('mmlx extension', () => {
 				messages.fire({ type: 'openStarter' });
 			});
 			const document = await openExample();
+			assert.ok(playbackMessages.some(message => message.document === document.uri.toString() && message.timelineOffset === 1),
+				'Opening the Get Started song marks its playback timeline with the one-beat offset');
 			const panelHtml = new TextDecoder().decode(await vscode.workspace.fs.readFile(
 				vscode.Uri.joinPath(extension.extensionUri, 'assets', 'webview', 'voice.html')));
 			assert.match(panelHtml, /<section id="utils-controls"[^>]*>\s*<header><h1>Utilities<\/h1><\/header>\s*<section class="build-settings utility-card mml-utilities"[^>]*>\s*<h2 id="stepify-heading">Stepify MML<\/h2>[\s\S]*<button id="stepify-selection"[^>]*>Stepify MML Selection<\/button>[\s\S]*<h2 id="pdx-utils-heading">Create PDX<\/h2>/);
@@ -2608,11 +2731,16 @@ suite('mmlx extension', () => {
 		await extension.activate();
 		assert.ok((await vscode.commands.getCommands()).includes('mmlx.showVoicePanel'));
 		assert.ok((await vscode.commands.getCommands()).includes('mmlx.playSelection'));
+		assert.ok((await vscode.commands.getCommands()).includes('mmlx.play'));
+		assert.ok((await vscode.commands.getCommands()).includes('mmlx.playFromCursor'));
+		assert.ok((await vscode.commands.getCommands()).includes('mmlx.stopPlayback'));
 		assert.ok((await vscode.commands.getCommands()).includes('mmlx.toggleVoiceLock'));
 		assert.ok((await vscode.commands.getCommands()).includes('mmlx.resetSoundChip'));
 		assert.ok(extension.packageJSON.contributes.keybindings.some((binding: { command: string; key: string; mac?: string; when?: string }) =>
 			binding.command === 'mmlx.playSelection' && binding.key === 'ctrl+alt+p' && binding.mac === 'cmd+alt+p'
 				&& binding.when === 'editorTextFocus && editorLangId == mmlx'));
+		assert.ok(!extension.packageJSON.contributes.keybindings.some((binding: { command: string }) =>
+			binding.command === 'mmlx.play' || binding.command === 'mmlx.playFromCursor'));
 		assert.ok(extension.packageJSON.contributes.keybindings.some((binding: { command: string; key: string; mac?: string; when?: string }) =>
 			binding.command === 'mmlx.toggleVoiceLock' && binding.key === 'ctrl+alt+l' && binding.mac === 'cmd+alt+l'
 				&& binding.when === 'editorTextFocus && editorLangId == mmlx'));
@@ -3695,12 +3823,30 @@ finally:
 				.replaceAll('{{styleUri}}', panel.webview.asWebviewUri(vscode.Uri.joinPath(media, 'voice.css')).toString())
 				.replaceAll('{{scriptUri}}', panel.webview.asWebviewUri(vscode.Uri.joinPath(media, 'voice.js')).toString())
 				.replace('</head>', `<script nonce="${nonce}">
-					const nativeAcquire = acquireVsCodeApi; const messages = []; let api; let audioContexts = 0;
+					const nativeAcquire = acquireVsCodeApi; const messages = []; let api; let audioContexts = 0; let userActivated = false; let allowPlaybackAudio = false;
 					window.acquireVsCodeApi = () => {
 						api = nativeAcquire();
 						return { ...api, getState: () => ({ voiceTestMml: 't120 o4 l8 cdefgab>c4' }), postMessage: message => { messages.push(message); api.postMessage(message); } };
 					};
-					window.AudioContext = class { constructor() { audioContexts++; throw new Error('Unexpected browser audio'); } };
+					Object.defineProperty(navigator, 'userActivation', { configurable: true, value: {
+						get hasBeenActive() { return userActivated; }, get isActive() { return userActivated; }
+					} });
+					window.AudioContext = class {
+						constructor() {
+							audioContexts++;
+							if (!allowPlaybackAudio) throw new Error('Unexpected browser audio');
+							this.state = 'suspended'; this.sampleRate = 48000; this.destination = {};
+							this.audioWorklet = { addModule: async () => {} };
+						}
+						async resume() { this.state = 'running'; }
+						async close() { this.state = 'closed'; }
+						createGain() { return { gain: { value: 0, setTargetAtTime() {} }, connect() {} }; }
+					};
+					window.AudioWorkletNode = class {
+						constructor() { this.port = { postMessage() {} }; }
+						connect() { return this; }
+						disconnect() {}
+					};
 					const send = data => window.dispatchEvent(new MessageEvent('message', { data }));
 					const check = (condition, message) => { if (!condition) throw new Error(message); };
 					window.addEventListener('message', event => {
@@ -3709,6 +3855,13 @@ finally:
 							const playbackTab = document.getElementById('playback-tab');
 							check(playbackTab.textContent.trim() === 'Playback' && !playbackTab.querySelector('[role="img"]'), 'Playback has no construction mark');
 							playbackTab.click();
+							const timelineDetails = document.getElementById('playback-timeline');
+							const timelineSummary = timelineDetails.querySelector('summary');
+							check(timelineDetails.open && timelineSummary.textContent.includes('MML Timeline'), 'The timeline opens by default with a keyboard-style disclosure header');
+							timelineSummary.click();
+							check(!timelineDetails.open, 'The timeline chart can be collapsed from its heading');
+							timelineSummary.click();
+							check(timelineDetails.open, 'The timeline chart can be expanded again');
 							const channels = document.getElementById('playback-channels');
 							const rows = channels.querySelectorAll('.playback-channel');
 							check(rows.length === 9 && rows[8].getAttribute('aria-label') === 'ADPCM', 'Eight FM channels and one mixed ADPCM channel');
@@ -3746,17 +3899,124 @@ finally:
 							check(pcmKeyboard.getAttribute('aria-disabled') === 'true' && Number(getComputedStyle(pcmKeyboard).opacity) < Number(getComputedStyle(rows[0].querySelector('.playback-channel-piano')).opacity), 'Only the ADPCM keyboard is inactive');
 							check(getComputedStyle(rows[8].querySelector('.playback-channel-controls')).opacity === '1', 'ADPCM channel controls are not dimmed with the keyboard');
 							const { createPlaybackControls } = await import(${JSON.stringify(panel.webview.asWebviewUri(vscode.Uri.joinPath(media, 'playbackControls.js')).toString())});
+							const { createPlaybackTimeline } = await import(${JSON.stringify(panel.webview.asWebviewUri(vscode.Uri.joinPath(media, 'playbackTimeline.js')).toString())});
 							const playbackFixture = document.getElementById('playback-controls').cloneNode(true);
 							playbackFixture.hidden = false; playbackFixture.style.width = '300px';
 							playbackFixture.querySelector('#playback-channels').replaceChildren(); document.body.append(playbackFixture);
+							const timelineNavigations = [];
+							const timeline = createPlaybackTimeline(playbackFixture.querySelector('#playback-timeline'),
+								location => timelineNavigations.push(location));
+							timeline.setDocument('untitled:Get-Started', 1);
+							check(timeline.offset === 1, 'The Get Started song uses its one-beat offset');
+							timeline.setDocument('file:///song-a.mml');
+							check(timeline.offset === 0, 'Other MML documents keep the default beat offset');
+							timeline.setOptions(3, 8, 1.5);
+							timeline.setDocument('file:///song-b.mml');
+							check(timeline.numerator === 4 && timeline.denominator === 4 && timeline.offset === 0, 'A new song starts with the default time signature and beat offset');
+							timeline.setOptions(6, 8, -2); timeline.setDocument('file:///song-a.mml');
+							check(timeline.numerator === 3 && timeline.denominator === 8 && timeline.offset === 1.5, 'Returning to a song restores its in-memory timeline settings');
+							timeline.setDocument('file:///song-b.mml');
+							check(timeline.numerator === 6 && timeline.denominator === 8 && timeline.offset === -2, 'Each song retains its own settings during this session');
+							timeline.setEvents([{position:0,channel:0,kind:'tempo',tempo:216},
+								{position:20,channel:0,kind:'note',start:4,end:7},
+								{position:45,channel:1,kind:'note',start:13,end:15},
+								{position:100,channel:0,kind:'clear'}], 'file:///song-b.mml', 1);
+							const timelineScroll = playbackFixture.querySelector('.playback-timeline-scroll');
+							const channelLabels = playbackFixture.querySelector('.playback-timeline-labels');
+							const channelLabelsLeft = channelLabels.getBoundingClientRect().left;
+							timeline.setCursor(5, 'file:///song-b.mml', 2);
+							await new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve)));
+							check(timelineScroll.scrollLeft === 0, 'Cursor positions from a stale document version are ignored');
+							timeline.setCursor(5, 'file:///song-b.mml', 1);
+							await new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve)));
+							check(timelineScroll.scrollLeft > 0, 'The playback timeline scrolls to follow the editor cursor');
+							check(Math.abs(timeline.position - 19.90656) < 0.001,
+								'Editor cursor positions snap to the nearest beat using the current tempo and meter');
+							const requestFrame = window.requestAnimationFrame;
+							let redrawRequests = 0;
+							window.requestAnimationFrame = callback => {
+								redrawRequests++;
+								return requestFrame.call(window, callback);
+							};
+							timeline.setCursor(6, 'file:///song-b.mml', 1);
+							window.requestAnimationFrame = requestFrame;
+							check(redrawRequests === 0, 'Moving the editor cursor within the same beat does not schedule a timeline redraw');
+							const expectedBarStart = 38 * 0.49152 * 80;
+							check(Math.abs(timelineScroll.scrollLeft - expectedBarStart) < 2, 'The cursor event maps to its measure boundary');
+							check(channelLabels.children.length === 9 && channelLabels.getBoundingClientRect().left === channelLabelsLeft,
+								'Channel labels remain fixed beside the horizontally scrolling timeline');
+							const timelineCanvas = playbackFixture.querySelector('#playback-timeline canvas');
+							timelineScroll.scrollLeft = 45 * 80;
+							const canvasBounds = timelineCanvas.getBoundingClientRect();
+							timelineCanvas.dispatchEvent(new MouseEvent('click', { bubbles:true,
+								clientX:canvasBounds.left + 45 * 80, clientY:canvasBounds.top + 20 + 22 + 10 }));
+							await new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve)));
+							check(timelineNavigations.at(-1)?.sourceOffset === 13
+								&& timelineNavigations.at(-1)?.document === 'file:///song-b.mml',
+							'Clicking a channel row navigates to its source event');
+							check(Math.abs(timeline.position - 44.97408) < 0.001,
+								'Clicking a channel row snaps the playhead to the nearest beat');
+							const channelBarStart = 89 * 0.49152 * 80;
+							check(Math.abs(timelineScroll.scrollLeft - channelBarStart) < 2,
+								'Clicking a channel row moves the playhead to that event measure');
+							channelLabels.querySelector('[data-channel="0"]').dispatchEvent(new MouseEvent('click', { bubbles:true }));
+							await new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve)));
+							check(timelineNavigations.at(-1)?.sourceOffset === 4,
+								'Clicking a fixed channel label navigates to that channel near the playhead');
+							timelineScroll.scrollLeft = 45 * 80;
+							const rulerBounds = timelineCanvas.getBoundingClientRect();
+							timelineCanvas.dispatchEvent(new MouseEvent('click', { bubbles:true,
+								clientX:rulerBounds.left + 45 * 80, clientY:rulerBounds.top + 10 }));
+							await new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve)));
+							check(timelineNavigations.at(-1)?.sourceOffset === 13,
+								'Clicking the measure ruler navigates to the nearest source event');
+							timelineScroll.scrollLeft = 50 * 80;
+							const emptyChannelBounds = timelineCanvas.getBoundingClientRect();
+							timelineCanvas.dispatchEvent(new MouseEvent('click', { bubbles:true,
+								clientX:emptyChannelBounds.left + 50 * 80, clientY:emptyChannelBounds.top + 20 + 2 * 22 + 10 }));
+							await new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve)));
+							check(timelineScroll.scrollLeft > 0,
+								'Clicking an empty channel still moves the playhead to the clicked measure');
+							check(Math.abs(timeline.position - 49.88928) < 0.001,
+								'Clicking an empty channel also snaps the playhead to the nearest beat');
+							timeline.setCursor(undefined);
+							timeline.setEvents([{position:0,channel:0,kind:'tempo',tempo:216},
+								{position:20,channel:0,kind:'note',start:4,end:7},
+								{position:100,channel:0,kind:'clear'}], 'file:///song-b.mml', 1);
+							timeline.setPosition(0.1, true);
+							await new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve)));
+							check(timelineScroll.scrollLeft === 0, 'Playback position takes priority over a stale editor cursor');
+							const followedScroll = timelineScroll.scrollLeft;
+							timeline.setPosition(21, false);
+							await new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve)));
+							check(timelineScroll.scrollLeft === followedScroll, 'Paused or stopped playback leaves manual scrolling alone');
+							check(timeline.position === 21, 'Playback clock positions remain exact and are not beat-quantized');
+							timeline.resetPosition();
+							await new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve)));
+							check(timeline.position === 0 && timelineScroll.scrollLeft === 0,
+								'Resetting a newly opened timeline starts at the beginning');
 							const muteChanges = [];
-							const player = createPlaybackControls(playbackFixture, undefined, undefined, undefined, mask => muteChanges.push(mask));
+							const playbackActions = [];
+							const player = createPlaybackControls(playbackFixture, undefined, action => playbackActions.push(action),
+								undefined, mask => muteChanges.push(mask));
 							const muteButtons = playbackFixture.querySelectorAll('.playback-channel-mute');
 							const soloButtons = playbackFixture.querySelectorAll('.playback-channel-solo');
 							const pianos = playbackFixture.querySelectorAll('.playback-channel-piano');
 							const active = channel => pianos[channel].querySelector('.is-active')?.dataset.note;
 							const playing = { available:true, playing:true, position:0 };
 							player.setMode('emulation'); player.render(playing);
+							player.render({...playing,playing:false,paused:false}); player.play();
+							check(playbackActions.at(-1) === 'play', 'Play shortcut starts playback when stopped');
+							player.render(playing); player.play();
+							check(playbackActions.at(-1) === 'pause', 'Play shortcut pauses active playback');
+							player.render({...playing,playing:false,paused:true}); player.play();
+							check(playbackActions.at(-1) === 'resume', 'Play shortcut resumes paused playback');
+							player.playFromCursor();
+							check(playbackActions.at(-1) === 'playFromCursor', 'Cursor shortcut starts from the editor cursor');
+							player.render({...playing,playing:false,paused:false,awaitingGesture:true});
+							check(playbackFixture.querySelector('[role="status"]').textContent === 'Click Playback to start audio',
+								'Playback indicates when a user gesture is needed');
+							player.render(playing);
 							check([...muteButtons, ...soloButtons].every(button => !button.disabled), 'MUTE and SOLO are enabled for all nine channels');
 							muteButtons[0].click(); muteButtons[7].click(); muteButtons[8].click();
 							check(player.muted === 385 && muteChanges.join(',') === '1,129,385', 'FM1, FM8 and mixed ADPCM toggle independently');
@@ -3799,7 +4059,7 @@ finally:
 							player.setMuted(512); check(player.muted === 0, 'Invalid saved masks are discarded');
 							player.setSoloed(511); check(player.soloed === 511 && player.outputMuted === 0 && [...soloButtons].every(button => button.getAttribute('aria-pressed') === 'true'), 'Saved SOLO restores all nine selections');
 							player.setSoloed(512); check(player.soloed === 0 && player.outputMuted === 0, 'Invalid saved SOLO masks are discarded');
-							player.render(null); playbackFixture.remove();
+							player.render(null); timeline.dispose(); playbackFixture.remove();
 							for (const asset of ['volume-x.svg', 'headphones.svg']) {
 								await new Promise((resolve, reject) => {
 									const image = new Image(); image.onload = resolve; image.onerror = () => reject(new Error('Missing icon: ' + asset));
@@ -4057,7 +4317,7 @@ finally:
 							check(playbackRequest.volume === .5, 'Hardware playback starts with the saved volume');
 							check(playbackRequest.muted === 383 && api.getState().playbackMuted === 257 && api.getState().playbackSoloed === 128, 'Playback starts with the effective SOLO mask while preserving MUTE');
 							send({ type: 'nanoDrivePlayback', busy: true }); check(button.disabled, 'Keyboard connection locked by Playback');
-							send({ type: 'playback', id: playbackRequest.id, mode: 'nanodrive8', available: true, document: 'file:///test.mml', playing: true, paused: false, loading: false, busy: true });
+							send({ type: 'playback', id: playbackRequest.id, mode: 'nanodrive8', available: true, document: 'file:///test.mml', playing: true, paused: false, loading: false, busy: true, position: 12.34 });
 							check(play.disabled && play.title === 'Play' && cursor.disabled && !volume.disabled, 'Hardware playback cannot pause or seek but can change output volume');
 							check(!stop.disabled, 'Hardware Stop is enabled');
 							rows[8].querySelector('.playback-channel-solo').click();
@@ -4066,6 +4326,7 @@ finally:
 							check(getComputedStyle(stop).backgroundColor !== inactiveStopBackground && getComputedStyle(stop).backgroundColor === getComputedStyle(play).backgroundColor, 'Enabled Stop must use the active button color');
 							stop.click();
 							check(messages.at(-1).type === 'playbackAction' && messages.at(-1).action === 'stop', 'Hardware Stop request');
+							check(messages.at(-1).position === 12.34, 'Stop preserves the timeline playhead position');
 							send({ type: 'nanoDrivePlayback', busy: false }); check(!button.disabled, 'Keyboard unlock after hardware cleanup');
 							send({ type: 'playback', id: playbackRequest.id, mode: 'nanodrive8', available: true, document: 'file:///test.mml', playing: false, paused: false, loading: false, busy: false });
 							check(stop.disabled && getComputedStyle(stop).backgroundColor === inactiveStopBackground, 'Stopped button must return to the inactive color');
@@ -4078,6 +4339,17 @@ finally:
 							check(messages.at(-1).mode === 'emulation' && messages.at(-1).muted === 510, 'Emulation SOLO uses the same effective output mask');
 							send({ ...serial, connected: false }); check(button.disabled && !mode.disabled, 'Port loss disables output');
 							check(audioContexts === 0, 'NanoDrive8 must not initialize AudioContext');
+							send({ type: 'playback', id: playbackRequest.id, mode: 'emulation', available: true, document: 'file:///test.mml',
+								playing: false, paused: false, loading: false });
+							send({ type: 'playbackShortcut', action: 'play' });
+							await Promise.resolve();
+							check(audioContexts === 0 && document.getElementById('playback-message').textContent === 'Click Playback to start audio',
+								'A playback shortcut waits for a Webview user gesture instead of silently failing');
+							allowPlaybackAudio = true; userActivated = true;
+							document.getElementById('playback-tab').click();
+							await new Promise(resolve => setTimeout(resolve, 0));
+							check(messages.some(message => message.type === 'playbackAction' && message.action === 'play' && message.mode === 'emulation'),
+								'The queued playback shortcut starts after a user gesture in Playback');
 							api.postMessage({ type: 'nanodriveResult' });
 						} catch (error) { api.postMessage({ type: 'nanodriveFailure', error: String(error) }); } };
 						run();
